@@ -16,7 +16,13 @@ OUTPUT ?= $(TEAMS_MANIFEST_DIR)/lemma-teams.zip
 E2E_WORKERS ?= 2
 E2E_PARALLEL := -n $(E2E_WORKERS) --dist loadscope
 
-.PHONY: help test test-unit test-e2e test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip
+# Load test settings (override on the command line)
+LOAD_TEST_COMPOSE := load_tests/docker-compose.load-test.yml
+LOAD_TEST_ENV     := load_tests/.env.load_test
+MAX_SUBSCRIBERS   ?= 100
+WRITER_VUS        ?= 2
+
+.PHONY: help test test-unit test-e2e test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-down load-test
 
 help:
 	@echo "Lemma backend:"
@@ -37,6 +43,16 @@ help:
 	@echo "                         # package Teams manifest zip"
 	@echo "  make docker-build      # build backend image from monorepo root"
 	@echo "  make agentbox-build # build local AgentBox runtime images"
+	@echo ""
+	@echo "Load testing (WebSocket capacity on a simulated 2 CPU / 2 GB server):"
+	@echo "  make load-test         # full end-to-end: build → up → setup → run → stats"
+	@echo "  make load-test-build   # build lemma-backend:load-test Docker image"
+	@echo "  make load-test-up      # start infra + app with resource limits"
+	@echo "  make load-test-migrate # run alembic migrations inside the app container"
+	@echo "  make load-test-setup   # provision test user / pod / table, write .env.load_test"
+	@echo "  make load-test-run     # run k6 WebSocket load test (reads .env.load_test)"
+	@echo "  make load-test-down    # tear down containers and clean up"
+	@echo "  Override: MAX_SUBSCRIBERS=200 WRITER_VUS=4 make load-test"
 	@echo ""
 	@echo "Run app-level commands such as setup/start/logs from the repository root."
 
@@ -107,4 +123,50 @@ teams-manifest-zip:
 	python3 scripts/package_teams_manifest.py \
 		--manifest-dir "$(TEAMS_MANIFEST_DIR)" \
 		--output "$(OUTPUT)"
+
+# --------------------------------------------------------------------------
+# Load testing — WebSocket capacity on a simulated 2 CPU / 2 GB server
+# --------------------------------------------------------------------------
+
+load-test-build:
+	@echo "Building lemma-backend:load-test image from monorepo root…"
+	cd .. && docker build -f lemma-backend/Dockerfile -t lemma-backend:load-test .
+
+load-test-up:
+	docker compose -f $(LOAD_TEST_COMPOSE) up -d
+	@echo "Waiting for app health check…"
+	@until docker compose -f $(LOAD_TEST_COMPOSE) exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; do \
+		printf '.'; sleep 3; \
+	done
+	@echo " App is ready."
+
+load-test-migrate:
+	@echo "Running database migrations…"
+	docker compose -f $(LOAD_TEST_COMPOSE) exec -T app alembic upgrade head
+	@echo "Migrations complete."
+
+load-test-setup: load-test-migrate
+	uv run python load_tests/setup.py
+
+load-test-run:
+	@test -f $(LOAD_TEST_ENV) || (echo "$(LOAD_TEST_ENV) not found — run 'make load-test-setup' first" && exit 1)
+	@echo "Running k6 WebSocket load test (MAX_SUBSCRIBERS=$(MAX_SUBSCRIBERS), WRITER_VUS=$(WRITER_VUS))…"
+	docker run --rm --network host \
+		--env-file $(LOAD_TEST_ENV) \
+		-e MAX_SUBSCRIBERS=$(MAX_SUBSCRIBERS) \
+		-e WRITER_VUS=$(WRITER_VUS) \
+		-v "$$(pwd)/load_tests:/scripts" \
+		grafana/k6:latest run /scripts/ws_concurrent.js
+	@echo ""
+	@echo "Container resource snapshot at test end:"
+	docker stats lemma-load-app --no-stream --format \
+		"table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
+
+load-test-down:
+	docker compose -f $(LOAD_TEST_COMPOSE) down -v
+	rm -f $(LOAD_TEST_ENV)
+
+load-test: load-test-build load-test-up load-test-migrate load-test-setup load-test-run
+	@echo ""
+	@echo "Done. Run 'make load-test-down' to remove containers and credentials."
 

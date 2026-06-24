@@ -7,7 +7,9 @@ filtering, RLS per-user row scoping, and auth rejection.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import urllib.parse
 
 import pytest
 import pytest_asyncio
@@ -24,8 +26,14 @@ def _ws_communicator(
     token: str,
     *,
     table: str | None = None,
+    since: str | None = None,
 ) -> ApplicationCommunicator:
-    query = f"table={table}".encode() if table else b""
+    params: dict[str, str] = {}
+    if table is not None:
+        params["table"] = table
+    if since is not None:
+        params["since"] = since
+    query = urllib.parse.urlencode(params).encode() if params else b""
     path = f"/pods/{pod_id}/datastore/changes"
     headers = [(b"host", b"testserver")]
     if token:
@@ -94,7 +102,7 @@ async def test_changes_ws_streams_record_lifecycle(
     insert = await _recv_json(communicator)
     assert insert["type"] == "datastore.record.insert"
     assert insert["table_name"] == "notes"
-    assert insert["operation"] == "insert"
+    assert insert["operation"] == "INSERT"
     assert insert["payload"]["body"] == "hello"
     assert insert["stream_id"]
     record_id = created["id"]
@@ -110,6 +118,7 @@ async def test_changes_ws_streams_record_lifecycle(
     assert delete["record_id"] == record_id
 
     await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+    await communicator.wait(timeout=3)
 
 
 async def test_changes_ws_table_filter_excludes_other_tables(
@@ -141,6 +150,7 @@ async def test_changes_ws_table_filter_excludes_other_tables(
     assert frame["payload"]["body"] == "kept"
 
     await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+    await communicator.wait(timeout=3)
 
 
 async def test_changes_ws_rls_scopes_rows_to_owner(
@@ -188,6 +198,8 @@ async def test_changes_ws_rls_scopes_rows_to_owner(
 
     await owner_ws.send_input({"type": "websocket.disconnect", "code": 1000})
     await editor_ws.send_input({"type": "websocket.disconnect", "code": 1000})
+    await owner_ws.wait(timeout=3)
+    await editor_ws.wait(timeout=3)
 
 
 async def test_changes_ws_rejects_unauthenticated(
@@ -256,4 +268,179 @@ async def test_changes_ws_disconnect_during_streaming(
     await communicator.send_input({"type": "websocket.disconnect", "code": 1001})
 
     # Server should finish within a short window.
+    await communicator.wait(timeout=3)
+
+
+async def test_changes_ws_stream_resumption_replays_missed_events(
+    notes_pod: DatastoreApi,
+    fixed_test_user,
+    test_app,
+):
+    """Reconnecting with ?since=<stream_id> replays only the events that arrived
+    after that cursor, not earlier ones.
+
+    Simulates the canonical reconnect pattern: client tracks the last stream_id
+    it received, disconnects (e.g. network blip), and reconnects to pick up any
+    changes that happened while it was offline without re-receiving old events.
+    """
+    communicator = _ws_communicator(
+        test_app, notes_pod.pod_id, fixed_test_user["token"]
+    )
+    await communicator.send_input({"type": "websocket.connect"})
+    await _expect_accept_and_ready(communicator)
+
+    # Create two records and collect their frames while connected.
+    r1 = await notes_pod.create_record("notes", {"body": "record-1"})
+    r2 = await notes_pod.create_record("notes", {"body": "record-2"})
+    frame1 = await _recv_json(communicator)
+    frame2 = await _recv_json(communicator)
+    assert frame1["record_id"] == r1["id"]
+    assert frame2["record_id"] == r2["id"]
+    # Save the stream cursor after record-2.
+    cursor_after_r2 = frame2["stream_id"]
+
+    await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+    await communicator.wait(timeout=3)
+
+    # Create more records while the client is offline.
+    r3 = await notes_pod.create_record("notes", {"body": "record-3"})
+    r4 = await notes_pod.create_record("notes", {"body": "record-4"})
+
+    # Reconnect from the cursor after record-2.
+    reconnected = _ws_communicator(
+        test_app, notes_pod.pod_id, fixed_test_user["token"], since=cursor_after_r2
+    )
+    await reconnected.send_input({"type": "websocket.connect"})
+    await _expect_accept_and_ready(reconnected)
+
+    # Should receive record-3 and record-4 — not record-1 or record-2.
+    missed_ids = set()
+    for _ in range(2):
+        frame = await _recv_json(reconnected)
+        assert frame["type"] == "datastore.record.insert"
+        missed_ids.add(frame["record_id"])
+    assert missed_ids == {r3["id"], r4["id"]}
+
+    # No additional frames for this pod.
+    await _assert_no_frame(reconnected)
+
+    await reconnected.send_input({"type": "websocket.disconnect", "code": 1000})
+    await reconnected.wait(timeout=3)
+
+
+async def test_changes_ws_concurrent_subscribers_all_receive_events(
+    notes_pod: DatastoreApi,
+    fixed_test_user,
+    test_app,
+):
+    """Multiple simultaneous WebSocket connections to the same pod all receive
+    the same record-change events.
+
+    Verifies that each connection has an independent subscriber and that the
+    fan-out from the Redis stream reaches every connected client.
+    """
+    token = fixed_test_user["token"]
+    c1 = _ws_communicator(test_app, notes_pod.pod_id, token)
+    c2 = _ws_communicator(test_app, notes_pod.pod_id, token)
+    c3 = _ws_communicator(test_app, notes_pod.pod_id, token)
+
+    for c in (c1, c2, c3):
+        await c.send_input({"type": "websocket.connect"})
+        await _expect_accept_and_ready(c)
+
+    record = await notes_pod.create_record("notes", {"body": "broadcast"})
+    record_id = record["id"]
+
+    # All three connections must receive the same insert frame.
+    frames = await asyncio.gather(
+        _recv_json(c1), _recv_json(c2), _recv_json(c3)
+    )
+    for frame in frames:
+        assert frame["type"] == "datastore.record.insert"
+        assert frame["record_id"] == record_id
+        assert frame["payload"]["body"] == "broadcast"
+
+    for c in (c1, c2, c3):
+        await c.send_input({"type": "websocket.disconnect", "code": 1000})
+    for c in (c1, c2, c3):
+        await c.wait(timeout=3)
+
+
+async def test_changes_ws_no_events_missed_under_rapid_writes(
+    notes_pod: DatastoreApi,
+    fixed_test_user,
+    test_app,
+):
+    """Rapid concurrent writes do not cause events to be dropped by the stream.
+
+    Creates 10 records in parallel and asserts the subscriber eventually
+    receives an insert frame for every one of them. Event ordering across
+    concurrent writes is non-deterministic; completeness is what matters.
+    """
+    communicator = _ws_communicator(
+        test_app, notes_pod.pod_id, fixed_test_user["token"]
+    )
+    await communicator.send_input({"type": "websocket.connect"})
+    await _expect_accept_and_ready(communicator)
+
+    records = await asyncio.gather(
+        *[notes_pod.create_record("notes", {"body": f"item-{i}"}) for i in range(10)]
+    )
+    expected_ids = {r["id"] for r in records}
+
+    received_ids: set[str] = set()
+    for _ in range(10):
+        frame = await _recv_json(communicator, timeout=15)
+        assert frame["type"] == "datastore.record.insert"
+        received_ids.add(frame["record_id"])
+
+    assert received_ids == expected_ids
+
+    await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+    await communicator.wait(timeout=3)
+
+
+async def test_changes_ws_since_replays_preconnect_record(
+    notes_pod: DatastoreApi,
+    fixed_test_user,
+    test_app,
+):
+    """?since=<cursor> delivers records created after that cursor but before the
+    current connection was established (pre-connect / offline events).
+
+    Simulates a client that persists its last-seen stream_id across sessions.
+    On reconnect it supplies the stored cursor so it receives everything that
+    happened while it was fully offline — including events created before any
+    WebSocket was open.
+
+    Note: we use a precise tail cursor rather than the stream origin (0-0) to
+    avoid scanning the full shared Redis stream, which grows with every test in
+    the session and would make the test O(sessions) slow.
+    """
+    # Briefly connect to capture the current stream tail, then disconnect so
+    # we have a cursor that is definitively *before* our test record.
+    probe = _ws_communicator(test_app, notes_pod.pod_id, fixed_test_user["token"])
+    await probe.send_input({"type": "websocket.connect"})
+    ready = await _expect_accept_and_ready(probe)
+    tail_cursor = ready["since"]
+    await probe.send_input({"type": "websocket.disconnect", "code": 1000})
+    await probe.wait(timeout=3)
+
+    # Create a record while fully offline.
+    record = await notes_pod.create_record("notes", {"body": "pre-connect"})
+
+    # Reconnect with the cursor snapshotted before the record was written.
+    communicator = _ws_communicator(
+        test_app, notes_pod.pod_id, fixed_test_user["token"], since=tail_cursor
+    )
+    await communicator.send_input({"type": "websocket.connect"})
+    await _expect_accept_and_ready(communicator)
+
+    # The pre-connect record must be replayed.
+    frame = await _recv_json(communicator, timeout=15)
+    assert frame["type"] == "datastore.record.insert"
+    assert frame["record_id"] == record["id"]
+    assert frame["payload"]["body"] == "pre-connect"
+
+    await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
     await communicator.wait(timeout=3)

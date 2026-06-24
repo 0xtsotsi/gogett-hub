@@ -1,0 +1,119 @@
+# Load-test stack for the lemma-backend WebSocket endpoint.
+#
+# Runs all required infrastructure services plus the app itself with hard
+# resource limits that simulate a 2 CPU / 2 GB RAM production server, so
+# the measured WS capacity and memory consumption reflect real constraints.
+#
+# Usage (see also `make load-test` in lemma-backend/Makefile):
+#
+#   # 1. Bring up infrastructure + app:
+#   docker compose -f load_tests/docker-compose.load-test.yml up -d
+#
+#   # 2. Provision test data (requires uv / Python on the host):
+#   uv run python load_tests/setup.py
+#
+#   # 3. Run k6 (reads creds from the generated .env.load_test):
+#   docker run --rm --network host \
+#     --env-file load_tests/.env.load_test \
+#     -v ./load_tests:/scripts \
+#     grafana/k6:latest run /scripts/ws_concurrent.js
+#
+#   # 4. During/after the run, check memory & CPU:
+#   docker stats lemma-load-app --no-stream
+#
+#   # 5. Tear down when finished:
+#   docker compose -f load_tests/docker-compose.load-test.yml down -v
+
+services:
+
+  db:
+    image: docker.io/pgvector/pgvector:0.8.3-pg15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: lemma
+    volumes:
+      - ./load_tests/postgres-init.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - load_test_net
+
+  redis:
+    image: docker.io/redis/redis-stack:7.2.0-v19
+    networks:
+      - load_test_net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  supertokens:
+    image: docker.io/supertokens/supertokens-postgresql:11.1.0
+    environment:
+      POSTGRESQL_CONNECTION_URI: postgresql://postgres:postgres@db:5432/supertokens
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: >
+        bash -c 'exec 3<>/dev/tcp/127.0.0.1/3567 && echo -e "GET /hello HTTP/1.1\r\nhost: 127.0.0.1:3567\r\nConnection: close\r\n\r\n" >&3 && cat <&3 | grep "Hello"'
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - load_test_net
+
+  app:
+    # Build from the monorepo root: docker build -f lemma-backend/Dockerfile .
+    # If you have not built the image yet, run:
+    #   docker build -t lemma-backend:load-test -f lemma-backend/Dockerfile .
+    # from the repo root, then set LEMMA_IMAGE=lemma-backend:load-test below.
+    image: ${LEMMA_IMAGE:-lemma-backend:load-test}
+    container_name: lemma-load-app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/lemma
+      DATASTORE_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/lemma_datastore
+      REDIS_URL: redis://redis:6379
+      SUPERTOKENS_CORE_URL: http://supertokens:3567
+      ENVIRONMENT: local
+      # Tighten Redis polling for lower latency during the load test.
+      # Default is 500 ms; 200 ms keeps p95 event latency under 500 ms idle.
+      REDIS_STREAM_POLLING_INTERVAL_MS: 200
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      supertokens:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - load_test_net
+    # ── Resource limits ──────────────────────────────────────────────────────
+    # Mirror the target production constraint: 2 vCPU, 2 GB RAM.
+    # Adjust these to test different server tiers.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    # Increase the default open-file limit so the OS can sustain hundreds of
+    # concurrent sockets (default Docker ulimit is 1024).
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+networks:
+  load_test_net:
+    driver: bridge

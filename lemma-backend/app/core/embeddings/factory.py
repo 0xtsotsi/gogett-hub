@@ -13,7 +13,7 @@ def create_embedder() -> Embedder:
     return _create_embedder(
         settings.effective_embedding_provider(),
         settings.local_embedding_model,
-        settings.fireworks_embedding_model,
+        settings.openai_compat_embedding_model,
         settings.embedding_dimension,
     )
 
@@ -22,11 +22,11 @@ def create_embedder() -> Embedder:
 def _create_embedder(
     provider: str,
     local_model: str,
-    fireworks_model: str,
+    openai_compat_model: str,
     dimension: int,
 ) -> Embedder:
-    if provider == "fireworks":
-        from app.core.embeddings.fireworks_embedder import FireworksEmbedder
+    if provider == "openai_compat":
+        from app.core.embeddings.openai_compat_embedder import OpenAICompatEmbedder
 
-        return FireworksEmbedder(model=fireworks_model, dimension=dimension)
+        return OpenAICompatEmbedder(model=openai_compat_model, dimension=dimension)
     return FastEmbedLocalEmbedder(model_name=local_model, dimension=dimension)

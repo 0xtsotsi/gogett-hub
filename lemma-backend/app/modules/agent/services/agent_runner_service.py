@@ -10,6 +10,7 @@ from pydantic_ai import UsageLimits
 
 from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 from opentelemetry import trace
+from app.core.config import settings
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.infrastructure.events.publisher import EventPublisher
 from app.core.log.log import get_logger
@@ -266,6 +267,7 @@ class AgentRunnerService:
                     enable_prompt_caching=(
                         resolved_runtime.profile.protocol
                         == RuntimeProfileProtocol.OPENAI_COMPATIBLE
+                        and settings.lemma_llm_caching_enabled
                     ),
                 )
                 harness_toolsets = []

@@ -22,10 +22,31 @@ from app.modules.agent.agent_runtime_defaults import (
 from app.modules.agent.services.runtime_profile_service import (
     DEFAULT_SYSTEM_AGENT_RUNTIME_PROFILE_ID,
     AgentRuntimeProfileService,
+    OpenAICompatModelEntry,
+    _openai_compat_model_registry,
+    register_openai_compat_models,
 )
 from app.modules.agent.infrastructure.harnesses.pydantic_ai import (
     _runtime_profile_model,
 )
+
+_FIREWORKS_MODELS = {
+    "minimax-m3": OpenAICompatModelEntry("accounts/fireworks/models/minimax-m3", vision=True),
+    "glm-5.2": OpenAICompatModelEntry("accounts/fireworks/models/glm-5p2"),
+    "kimi-k2.7-code": OpenAICompatModelEntry("accounts/fireworks/models/kimi-k2p7-code", vision=True),
+    "kimi-k2.6": OpenAICompatModelEntry("accounts/fireworks/models/kimi-k2p6", vision=True),
+    "deepseek-v4-pro": OpenAICompatModelEntry("accounts/fireworks/models/deepseek-v4-pro"),
+    "deepseek-v4-flash": OpenAICompatModelEntry("accounts/fireworks/models/deepseek-v4-flash"),
+}
+
+
+@pytest.fixture()
+def fireworks_registry():
+    """Register Fireworks models in the OSS registry for tests that need them."""
+    register_openai_compat_models(_FIREWORKS_MODELS)
+    yield
+    for key in _FIREWORKS_MODELS:
+        _openai_compat_model_registry.pop(key, None)
 
 
 def _test_profile(
@@ -263,7 +284,9 @@ def test_system_runtime_profiles_return_empty_without_server_credentials(monkeyp
     assert AgentRuntimeProfileService().system_profiles() == []
 
 
-def test_system_runtime_profiles_only_include_configured_system_lemma(monkeypatch):
+def test_system_runtime_profiles_only_include_configured_system_lemma(
+    monkeypatch, fireworks_registry
+):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "lemma_openai_api_key", "lemma-secret")
@@ -316,7 +339,7 @@ def test_system_runtime_profiles_only_include_configured_system_lemma(monkeypatc
     ]
 
 
-def test_system_openai_catalog_declares_vision_per_model(monkeypatch):
+def test_system_openai_catalog_declares_vision_per_model(monkeypatch, fireworks_registry):
     """Image support is maintained against each model in the profile: m3 + kimi
     accept images (VISION), glm + deepseek do not, so view_image is withheld there."""
     from app.core.config import settings

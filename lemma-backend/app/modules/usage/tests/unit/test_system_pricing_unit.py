@@ -1,9 +1,10 @@
 """DB-free unit tests for system-model pricing and cost.
 
-These pin the fixes for the metering-breakaway bug: every shipped system:lemma
-model must be priced (so none escapes metering), cached input is billed at the
-discounted rate, the corrected kimi-k2.6 rate, and the fail-safe path that
-records usage at a fallback price instead of raising and dropping the record.
+These pin the fixes for the metering-breakaway bug: cached input is billed at
+the discounted rate and the fail-safe path records usage at a fallback price
+instead of raising and dropping the record. Provider-specific pricing (e.g.
+Fireworks) is registered at startup by cloud modules; the tests below use a
+local fixture to simulate that.
 """
 
 from __future__ import annotations
@@ -13,13 +14,10 @@ from uuid import uuid4
 import pytest
 
 from app.modules.agent.domain.value_objects import AgentRunUsage
-from app.modules.agent.services.runtime_profile_service import (
-    _openai_compat_provider_model_name,
-    system_lemma_openai_catalog_model_names,
-)
 from app.modules.test_support.fakes import FakeUnitOfWork
 from app.modules.usage.services.usage_context import UsageExecutionContext
 from app.modules.usage.services.usage_service import (
+    ModelPricing,
     UsageService,
     assert_system_pricing_covers_catalog,
 )
@@ -27,6 +25,29 @@ from app.modules.usage.services.usage_service import (
 pytestmark = pytest.mark.unit
 
 SYSTEM = "SYSTEM"
+
+# Pricing fixture — mirrors the Fireworks rates registered in lemma-cloud.
+# Kept here so the cost-calculation tests remain hermetic without depending on
+# the cloud module. Full coverage (catalog × pricing) is tested in lemma-cloud.
+_TEST_PRICING: dict[str, ModelPricing] = {
+    "glm-5.2": ModelPricing(1.40, 4.40, cached_input_per_million_usd=0.26),
+    "accounts/fireworks/models/glm-5p2": ModelPricing(
+        1.40, 4.40, cached_input_per_million_usd=0.26
+    ),
+    "kimi-k2.6": ModelPricing(0.95, 4.00, cached_input_per_million_usd=0.16),
+    "accounts/fireworks/models/kimi-k2p6": ModelPricing(
+        0.95, 4.00, cached_input_per_million_usd=0.16
+    ),
+}
+
+
+@pytest.fixture(autouse=True)
+def _pricing_setup():
+    """Register test pricing and clean up after each test."""
+    UsageService.register_model_pricing(_TEST_PRICING)
+    yield
+    for key in _TEST_PRICING:
+        UsageService._SYSTEM_MODEL_PRICING.pop(key, None)
 
 
 class _RecordingUsageRepository:
@@ -81,60 +102,26 @@ def _ctx() -> UsageExecutionContext:
     )
 
 
-def _default_openai_catalog() -> list[tuple[str, str | None]]:
-    """The Fireworks system:lemma catalog the pricing table must cover.
-
-    Pinned explicitly rather than read from the config field defaults: in the
-    public OSS repo those defaults are provider-agnostic (OpenAI), so the
-    metering coverage gate targets the models we actually price (Fireworks),
-    deterministically across environments."""
-    names = [
-        "minimax-m3",
-        "glm-5.2",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-    ]
-    return [(name, _openai_compat_provider_model_name(name)) for name in names]
+def test_coverage_invariant_reports_unpriced_models():
+    uncovered = assert_system_pricing_covers_catalog(
+        [("brand-new-model", "accounts/example/models/brand-new")]
+    )
+    assert uncovered == ["brand-new-model"]
 
 
-def test_pricing_table_covers_default_system_catalog():
-    # Regression gate: every shipped system model must be priced. This would have
-    # failed for glm-5.2 before the fix (it was in the catalog, not the table).
-    assert assert_system_pricing_covers_catalog(_default_openai_catalog()) == []
-
-
-def test_glm_5_2_is_priced_by_both_names():
-    # The exact breakaway model, by public name and provider id.
+def test_coverage_invariant_passes_when_pricing_registered():
+    # When pricing is registered (fixture does this), the invariant passes.
     uncovered = assert_system_pricing_covers_catalog(
         [("glm-5.2", "accounts/fireworks/models/glm-5p2")]
     )
     assert uncovered == []
 
 
-def test_coverage_invariant_reports_unpriced_models():
-    uncovered = assert_system_pricing_covers_catalog(
-        [("brand-new-model", "accounts/fireworks/models/brand-new")]
-    )
-    assert uncovered == ["brand-new-model"]
-
-
-def test_live_catalog_helper_includes_glm_and_is_priced(monkeypatch):
-    from app.core.config import settings
-
-    # Pin the Fireworks catalog (shipped OSS defaults are provider-agnostic now).
-    monkeypatch.setattr(
-        settings,
-        "lemma_openai_model_names",
-        "minimax-m3,glm-5.2,kimi-k2.7-code,kimi-k2.6,deepseek-v4-pro,deepseek-v4-flash",
-    )
-    monkeypatch.setattr(settings, "lemma_openai_default_model", "minimax-m3")
-    monkeypatch.delenv("LEMMA_OPENAI_MODEL_NAMES", raising=False)
-    monkeypatch.delenv("LEMMA_OPENAI_DEFAULT_MODEL", raising=False)
-    catalog = system_lemma_openai_catalog_model_names()
-    assert ("glm-5.2", "accounts/fireworks/models/glm-5p2") in catalog
-    assert assert_system_pricing_covers_catalog(catalog) == []
+def test_register_model_pricing_hook_works():
+    extra = {"test-model": ModelPricing(1.0, 2.0)}
+    UsageService.register_model_pricing(extra)
+    assert "test-model" in UsageService._SYSTEM_MODEL_PRICING
+    UsageService._SYSTEM_MODEL_PRICING.pop("test-model")
 
 
 def test_glm_cost_uses_glm_pricing():

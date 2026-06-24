@@ -2,9 +2,11 @@
 (hybrid) search results by cross-encoder relevance.
 
 Three env-selected backends (``RERANKER_MODE``):
-- ``off``       → :class:`NoopReranker` (first-stage order kept; zero cost)
-- ``local``     → :class:`LocalCrossEncoderReranker` (CPU cross-encoder)
-- ``fireworks`` → :class:`FireworksReranker` (Fireworks ``/rerank`` endpoint)
+- ``off``          → :class:`NoopReranker` (first-stage order kept; zero cost)
+- ``local``        → :class:`LocalCrossEncoderReranker` (CPU cross-encoder)
+- ``openai_compat``→ :class:`OpenAICompatReranker` (``/rerank`` on any
+                      OpenAI-compatible endpoint; requires LEMMA_OPENAI_BASE_URL
+                      + LEMMA_OPENAI_API_KEY)
 
 Reranking is best-effort: any backend failure (missing optional dep, network
 error) falls back to the first-stage order so search never breaks.
@@ -73,12 +75,16 @@ class LocalCrossEncoderReranker:
             return list(results)[:top_n]
 
 
-class FireworksReranker:
-    """Fireworks hosted reranker (default ``qwen3-reranker-8b``) over the
-    OpenAI-compatible base URL + key already used for embeddings."""
+class OpenAICompatReranker:
+    """OpenAI-compatible hosted reranker over the ``/rerank`` endpoint.
+
+    Uses LEMMA_OPENAI_BASE_URL + LEMMA_OPENAI_API_KEY — the same credentials
+    already used for the LLM system profile. Point LEMMA_OPENAI_BASE_URL at
+    any provider that exposes a ``/rerank`` endpoint (e.g. Fireworks).
+    """
 
     def __init__(self, model: str | None = None):
-        self.model = model or settings.fireworks_reranker_model
+        self.model = model or settings.openai_compat_reranker_model
 
     async def rerank(
         self,
@@ -92,7 +98,7 @@ class FireworksReranker:
         api_key = settings.lemma_openai_api_key
         if not api_key:
             logger.warning(
-                "Fireworks reranking requires LEMMA_OPENAI_API_KEY; "
+                "openai_compat reranking requires LEMMA_OPENAI_API_KEY; "
                 "keeping first-stage order."
             )
             return list(results)[:top_n]
@@ -114,7 +120,7 @@ class FireworksReranker:
                 payload = response.json()
         except Exception as exc:
             logger.warning(
-                "Fireworks reranker failed; keeping first-stage order: %s", exc
+                "openai_compat reranker failed; keeping first-stage order: %s", exc
             )
             return list(results)[:top_n]
 
@@ -132,6 +138,6 @@ def create_reranker():
     mode = settings.reranker_mode
     if mode == "local":
         return LocalCrossEncoderReranker()
-    if mode == "fireworks":
-        return FireworksReranker()
+    if mode == "openai_compat":
+        return OpenAICompatReranker()
     return NoopReranker()

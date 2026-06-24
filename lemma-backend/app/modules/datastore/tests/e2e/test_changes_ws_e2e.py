@@ -198,3 +198,62 @@ async def test_changes_ws_rejects_unauthenticated(
     await communicator.send_input({"type": "websocket.connect"})
     closed = await communicator.receive_output(timeout=5)
     assert closed["type"] == "websocket.close"
+
+
+async def test_changes_ws_disconnect_immediately_after_connect(
+    notes_pod: DatastoreApi,
+    fixed_test_user,
+    test_app,
+):
+    """Client that disconnects immediately after the handshake must not crash the server.
+
+    Regression guard for the uvicorn accept-race: in production, a client that
+    closes the TCP connection between the HTTP upgrade and the server's
+    websocket.accept() causes uvicorn to raise RuntimeError.  The ASGI layer
+    should always complete cleanly regardless of when the client goes away.
+    """
+    communicator = _ws_communicator(
+        test_app, notes_pod.pod_id, fixed_test_user["token"]
+    )
+    # Connect, then immediately signal disconnect before consuming any output.
+    await communicator.send_input({"type": "websocket.connect"})
+    await communicator.send_input({"type": "websocket.disconnect", "code": 1001})
+
+    # Drain whatever the server sent (accept + ready frame) before it noticed
+    # the disconnect.  We don't assert on the exact sequence — both "accepted
+    # then closed" and "rejected with close" are valid outcomes.  What matters
+    # is that the application task finishes without raising.
+    for _ in range(5):
+        try:
+            msg = await communicator.receive_output(timeout=2)
+            if msg["type"] == "websocket.close":
+                break
+        except Exception:
+            break
+
+    # The ASGI app task must have exited cleanly (no unhandled exception).
+    await communicator.wait(timeout=3)
+
+
+async def test_changes_ws_disconnect_during_streaming(
+    notes_pod: DatastoreApi,
+    fixed_test_user,
+    test_app,
+):
+    """Client that disconnects mid-stream must not leave a runaway server task.
+
+    Once the server has accepted and started streaming, a sudden client
+    disconnect should be detected by _wait_for_disconnect and cause both the
+    forwarder task and the disconnect-watcher to be cancelled and awaited.
+    """
+    communicator = _ws_communicator(
+        test_app, notes_pod.pod_id, fixed_test_user["token"]
+    )
+    await communicator.send_input({"type": "websocket.connect"})
+    await _expect_accept_and_ready(communicator)
+
+    # Disconnect mid-stream without sending a change event.
+    await communicator.send_input({"type": "websocket.disconnect", "code": 1001})
+
+    # Server should finish within a short window.
+    await communicator.wait(timeout=3)

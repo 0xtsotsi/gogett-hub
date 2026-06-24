@@ -538,7 +538,6 @@ _GRANT_TYPE_ALIASES = {
     "file": "folder",
     "app": "connector",
     "connector": "connector",
-    "connector": "connector",
     "function": "function",
     "agent": "agent",
 }

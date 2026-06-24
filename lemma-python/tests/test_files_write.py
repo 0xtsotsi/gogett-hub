@@ -3,8 +3,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
-import pytest
-
 from lemma_sdk.errors import LemmaNotFoundError
 from lemma_sdk.resources import files as files_mod
 from lemma_sdk.resources.files import PodFiles

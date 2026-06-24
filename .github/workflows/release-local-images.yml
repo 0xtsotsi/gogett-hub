@@ -244,4 +244,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           files: lemma-local.json
-          generate_release_notes: true
+          # Only generate release notes on a real tag push; workflow_dispatch
+          # re-runs are used to repair an existing release (backfill the
+          # lemma-local.json asset) and must not overwrite the release body.
+          generate_release_notes: ${{ github.event_name == 'push' }}

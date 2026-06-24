@@ -132,9 +132,6 @@ class LemmaOperationGateway(AppOperationGatewayPort):
         )
         try:
             client = create_lemma_execution_client(connector_id, third_party_credentials)
-            operations = list(await client.list_operations() or [])
-            if operation_name not in {d.name for d in operations}:
-                raise OperationNotFoundError(operation_name)
             operation = await client.get_operation(operation_name)
             prepared_payload = self._prepare_payload(
                 operation, operation_name, payload, third_party_credentials

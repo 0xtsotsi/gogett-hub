@@ -7,7 +7,7 @@ from typing import Any
 
 from app.modules.connectors.domain.account import OAuthCredentials
 from app.modules.connectors.domain.connector import ConnectorEntity
-from app.modules.connectors.domain.errors import ConnectorValidationError
+from app.modules.connectors.domain.errors import ConnectorValidationError, OperationNotFoundError
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +38,12 @@ class AsyncLemmaExecutionClientAdapter:
         return self._client.list_operations()
 
     async def get_operation(self, operation_name: str) -> Any:
-        return self._client.get_operation(operation_name)
+        try:
+            return self._client.get_operation(operation_name)
+        except Exception as exc:
+            if type(exc).__name__ == "OperationNotFoundError":
+                raise OperationNotFoundError(operation_name) from exc
+            raise
 
     async def execute_operation(self, operation_name: str, payload: dict[str, Any]) -> Any:
         return await self._client.execute_operation(operation_name, payload)

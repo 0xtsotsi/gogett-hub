@@ -24,7 +24,9 @@ def test_jira_client_uses_base_url_from_credentials():
         )
     )
 
-    assert str(client._generated_client.get_httpx_client().base_url).rstrip("/") == (
+    generated_client = client._ensure_generated_client()
+
+    assert str(generated_client.get_httpx_client().base_url).rstrip("/") == (
         "https://api.atlassian.com/ex/jira/cloud-123"
     )
 

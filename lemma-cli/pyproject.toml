@@ -55,6 +55,13 @@ dev = [
   "pytest-asyncio",
   "textual-dev",
   "ruff",
+  # e2e test infra: the e2e suite spins up the real backend (subprocess uvicorn
+  # + docker postgres/redis/supertokens) and drives the CLI against it over TCP.
+  # httpx provisions test users/orgs/pods over HTTP; psycopg truncates the
+  # postgres app tables between tests for isolation. Both are test-only — never
+  # shipped in the published wheel.
+  "httpx>=0.27",
+  "psycopg[binary]>=3.1",
 ]
 
 [project.scripts]
@@ -94,6 +101,21 @@ lemma_cli = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Discover tests under tests/. Unit tests live at the top level; e2e tests live
+# under tests/e2e/ and are auto-marked `e2e` by the e2e conftest's
+# pytest_collection_modifyitems hook. Run them separately:
+#   uv run pytest -m "not e2e"   # fast unit suite
+#   uv run pytest -m e2e         # docker-backed end-to-end suite
+testpaths = ["tests"]
+markers = [
+  "unit: Fast in-process unit tests with fake SDK clients (no network, no docker).",
+  "e2e: End-to-end tests that spin up the real backend + docker infra and drive the CLI over TCP.",
+]
+# --import-mode=importlib avoids module-name collisions between the top-level
+#   test_* modules and the tests/e2e package (which uses relative imports).
+# --strict-markers: every marker must be declared above, catching typos early.
+# Keep captured output clean; surface logs only on failures (-s to debug).
+addopts = "-ra --import-mode=importlib --strict-markers"
 
 [tool.uv.sources]
 # Resolve lemma-sdk from the sibling checkout without requiring it to be

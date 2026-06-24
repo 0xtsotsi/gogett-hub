@@ -22,8 +22,8 @@ lemma --version
 
 ```bash
 lemma auth login            # authenticate against the default cloud server
-lemma orgs select           # pick your organization
-lemma pods select           # pick the pod to work in
+lemma orgs select --save-default   # pick your organization
+lemma pods select --save-default   # pick the pod to work in
 lemma describe              # inventory the selected pod
 ```
 
@@ -76,7 +76,7 @@ you're working in. Then restart your coding agent and ask it to build a pod.
 - **`lemma-sdk`** — the Python client used by functions and automation.
 - **`lemma-terminal`** (this package) — the human- and agent-facing CLI and TUI; pod-scoped
   workflows are first-class.
-- **`lemma-admin`** — installs and manages the local Lemma stack (separate tool).
+- **`lemma-stack`** — installs and manages the local Lemma stack (separate tool).
 
 ## License
 

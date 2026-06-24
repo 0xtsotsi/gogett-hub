@@ -79,68 +79,92 @@ export type DocsGroup = {
 const baseDocsPages: DocsPage[] = [
   {
     slug: 'getting-started',
-    title: 'Getting Started',
+    title: 'Quickstart',
     eyebrow: 'Start here',
     group: 'Start',
     icon: PlayCircle,
     description:
-      'Install the Lemma CLI and SDK, log in, pick a pod, and scaffold your first app in under five minutes.',
+      'Create an account, run Lemma locally or in the cloud, install the CLI, and create your first pod.',
     blocks: [
       {
         type: 'paragraph',
-        title: 'What you need',
+        title: 'Choose your path',
         body:
-          'The Lemma CLI (lemma-terminal) is the fastest way to build and operate pods. The TypeScript SDK (lemma-sdk) powers app frontends, and the Python SDK (lemma-sdk) powers pod function code. This guide installs all three and gets a working app running.',
+          'Use Lemma Cloud when you want a hosted workspace, Lemma Stack when you want the full product on your machine, or the source checkout when you are contributing to the platform.',
       },
       {
-        type: 'steps',
-        title: 'Install the CLI',
-        body:
-          'The CLI is distributed on PyPI as lemma-terminal. Install it with uv or pipx.',
-        items: [
-          'Install uv if you do not have it: macOS/Linux — curl -LsSf https://astral.sh/uv/install.sh | sh',
-          'Install the CLI: uv tool install lemma-terminal',
-          'Verify: lemma --version',
+        type: 'table',
+        title: 'Which setup should you use?',
+        columns: ['Path', 'Use it when', 'You get'],
+        rows: [
+          ['Lemma Cloud', 'You want to start without hosting anything.', 'An account at lemma.work and hosted pods.'],
+          ['Local stack', 'You want the product running on your own machine.', 'Frontend, API, database, auth, Redis, and document processing in containers.'],
+          ['Source checkout', 'You want to change Lemma itself.', 'Hot-reload backend, frontend, and agentbox from this repo.'],
         ],
       },
       {
         type: 'code',
-        title: 'Install the SDKs',
+        title: 'Cloud quickstart',
         body:
-          'Use the TypeScript SDK in your app frontend and the Python SDK in pod function code.',
+          'Create an account at lemma.work, then install the CLI and log in. Browser login will finish account setup if needed.',
         language: 'bash',
-        code: `# TypeScript SDK for app frontends (React / Vite)
+        code: `uv tool install lemma-terminal
+lemma servers cloud --use
+lemma auth login`,
+      },
+      {
+        type: 'code',
+        title: 'Local stack quickstart',
+        body:
+          'Run the released stack on your machine, open the app at http://localhost:3711, create an account, then point the CLI at the local server.',
+        language: 'bash',
+        code: `curl -fsSL https://raw.githubusercontent.com/lemma-work/lemma-platform/main/install.sh | bash
+uv tool install lemma-terminal
+lemma servers select local
+lemma auth login`,
+      },
+      {
+        type: 'code',
+        title: 'Developer checkout',
+        body:
+          'Use this path only when you are changing the platform source. The dev stack uses 3710/8710 so it can coexist with the installed local stack.',
+        language: 'bash',
+        code: `git clone https://github.com/lemma-work/lemma-platform.git
+cd lemma-platform
+make dev
+
+uv tool install --force --editable lemma-cli
+lemma servers add local-dev --base-url http://localhost:8710 --auth-url http://localhost:3710/auth
+lemma servers select local-dev
+lemma auth login`,
+      },
+      {
+        type: 'code',
+        title: 'Create a starter pod',
+        body:
+          'A pod is the workspace boundary: tables, files, agents, workflows, permissions, apps, and surfaces for one team or process.',
+        language: 'bash',
+        code: `lemma pod create my-team --with-starter
+lemma pods select my-team --save-default
+lemma pod describe`,
+      },
+      {
+        type: 'code',
+        title: 'Install SDKs for app and function code',
+        body:
+          'Use the TypeScript SDK in frontend apps and the Python SDK in pod function code.',
+        language: 'bash',
+        code: `# TypeScript SDK for app frontends
 npm install lemma-sdk
 
 # Python SDK for pod function code
 uv pip install lemma-sdk`,
       },
       {
-        type: 'steps',
-        title: 'Log in and select a pod',
-        items: [
-          'Log in to your Lemma account: lemma auth login',
-          'Select your organization: lemma orgs select',
-          'Select a pod to work in: lemma pods select',
-          'Inspect the pod you are in: lemma describe',
-        ],
-      },
-      {
         type: 'code',
-        title: 'Scaffold your first app',
+        title: 'Use the TypeScript SDK',
         body:
-          'The CLI generates a ready-to-run Vite + React app wired to your pod.',
-        language: 'bash',
-        code: `lemma apps init my-lemma-app --title "My Lemma App"
-cd my-lemma-app
-npm install
-npm run dev`,
-      },
-      {
-        type: 'code',
-        title: 'Use the SDK in your app',
-        body:
-          'Point the client at your pod and start reading tables, running workflows, and chatting with agents.',
+          'Point the client at a selected pod and start reading tables, running workflows, and chatting with agents.',
         language: 'ts',
         code: `import { LemmaClient } from "lemma-sdk";
 
@@ -166,14 +190,14 @@ rows = pod.records.list("tickets", limit=10).to_dict()["items"]`,
         tone: 'success',
         title: 'You are ready',
         body:
-          'You now have the CLI installed, a pod selected, an app running locally, and SDK access from both TypeScript and Python. Next, walk through the build sequence to model your first pod end to end.',
+          'You now have an account, a server selected, the CLI installed, a starter pod, and SDK access from TypeScript and Python.',
       },
       {
         type: 'list',
         title: 'Next steps',
         items: [
           'Read the Overview to understand pods, resources, and the mental model.',
-          'Follow the Build Sequence to model tables, functions, agents, and workflows.',
+          'Follow First Pod to model tables, functions, agents, and workflows.',
           'Browse the CLI section for the full command reference.',
           'Check the SDK section for React hooks, auth, conversations, and data access.',
         ],
@@ -204,7 +228,7 @@ rows = pod.records.list("tickets", limit=10).to_dict()["items"]`,
           'Functions perform deterministic typed backend actions.',
           'Agents handle judgment-heavy work such as drafting, classification, extraction, research, and summarization.',
           'Workflows orchestrate multi-step processes, waits, branching, schedules, and app-triggered runs.',
-          'Apps provide full operator connectors for repeatable human workflows.',
+          'Apps provide full operator interfaces for repeatable human workflows.',
           'Conversations provide user-facing or agent-scoped interaction with instructions, metadata, tools, and streaming output.',
         ],
       },
@@ -232,20 +256,20 @@ rows = pod.records.list("tickets", limit=10).to_dict()["items"]`,
   },
   {
     slug: 'quickstart',
-    title: 'Build Sequence',
+    title: 'First Pod',
     eyebrow: 'Build loop',
     group: 'Start',
     icon: PlayCircle,
     description:
-      'The recommended order for building a pod from scratch: scope, tables, functions, agents, workflows, and finally the app.',
+      'The recommended order for turning a blank workspace into a useful pod.',
     blocks: [
       {
         type: 'steps',
         title: 'Recommended sequence',
         items: [
-          'Define the operating job: one team, one core domain, one primary unit of work.',
-          'Create the pod and inspect the empty state.',
-          'Create collaborative tables for shared business records.',
+          'Define the operating job: one team or process, one domain, one primary unit of work.',
+          'Create the pod and inspect what the starter gave you.',
+          'Create or refine collaborative tables for shared business records.',
           'Add one function only if a write needs validation, coordinated records, or an external operation.',
           'Add an agent for one judgment-heavy step, with explicit input and output schemas.',
           'Create a workflow only when there is real orchestration: branching, waits, schedules, or handoffs.',
@@ -256,8 +280,10 @@ rows = pod.records.list("tickets", limit=10).to_dict()["items"]`,
         type: 'code',
         title: 'CLI rhythm',
         language: 'bash',
-        code: `lemma ls
-lemma pod create --payload '{"name":"support-triage","description":"Triage and route inbound support work"}'
+        code: `lemma pod create support-triage --with-starter --description "Triage and route inbound support work"
+lemma pods select support-triage --save-default
+lemma pod describe
+
 lemma table create --pod-id <pod-id> --payload-file ./payloads/tickets-table.json
 lemma function create --pod-id <pod-id> --payload-file ./payloads/escalate-ticket-function.json
 lemma agent create --pod-id <pod-id> --payload-file ./payloads/ticket-triage-agent.json
@@ -269,30 +295,30 @@ lemma pod describe <pod-id>`,
         tone: 'warning',
         title: 'Do not skip verification',
         body:
-          'Before wiring a app or workflow node, run the underlying function, inspect agent output, and verify table records with realistic sample data.',
+          'Before wiring an app or workflow node, run the underlying function, inspect agent output, and verify table records with realistic sample data.',
       },
     ],
   },
   {
-    slug: 'platform/missions-and-pods',
-    title: 'Missions and Pods',
+    slug: 'platform/pods-and-scope',
+    title: 'Pods and Scope',
     eyebrow: 'Platform',
     group: 'Platform',
     icon: Boxes,
     description:
-      'How to scope a Lemma operating system so it stays useful, bounded, and easy to evolve.',
+      'How to scope a pod so it stays useful, bounded, and easy to evolve.',
     blocks: [
-      {
-        type: 'paragraph',
-        title: 'Mission',
-        body:
-          'A Mission is the outcome the system exists to move. It is the product-facing concept: reach qualified prospects, reduce issue rate, launch a product, onboard a teammate, protect commitments, or run a repeatable back-office loop.',
-      },
       {
         type: 'paragraph',
         title: 'Pod',
         body:
-          'A pod is the technical and operational boundary. It contains resources for one business use case. Multiple apps, workflows, agents, and assistants can live inside one pod when they serve the same operating job.',
+          'A pod is the technical and operational boundary for one team or process. It contains the tables, files, agents, workflows, functions, permissions, apps, and surfaces that make that work one system.',
+      },
+      {
+        type: 'paragraph',
+        title: 'Operating job',
+        body:
+          'Scope the pod around the work it moves: triage support, qualify leads, review expenses, onboard teammates, track launch items, or run a back-office loop. Multiple apps, workflows, agents, and assistants can live inside one pod when they serve the same operating job.',
       },
       {
         type: 'list',
@@ -310,7 +336,7 @@ lemma pod describe <pod-id>`,
         items: [
           'Mixing unrelated domains such as hiring, support, finance, and sales in one pod.',
           'Creating mirror membership tables instead of using organization and pod membership APIs.',
-          'Starting with a app layout before deciding what work object the operator acts on.',
+          'Starting with an app layout before deciding what work object the operator acts on.',
         ],
       },
     ],
@@ -973,7 +999,7 @@ lemma workflow run-resume expense-review <run-id> --pod-id <pod-id> --payload-fi
         type: 'list',
         title: 'App rules',
         items: [
-          'A app is a workbench, not a landing page.',
+          'An app is a workbench, not a landing page.',
           'The first visible screen should start with work.',
           'One active work object should usually anchor the interface.',
           'Actions should sit close to the object they affect.',
@@ -994,7 +1020,7 @@ lemma app deploy support-triage --pod-id <pod-id> --source-dir .`,
       },
       {
         type: 'code',
-        title: 'Scaffold a Vite app app',
+        title: 'Scaffold a Vite app',
         language: 'bash',
         code: `lemma apps init support-triage \
   --pod <pod-id> \
@@ -1126,7 +1152,7 @@ export const docsGroups: DocsGroup[] = [
   conceptDocsGroup,
   {
     title: 'Platform',
-    pages: ['platform/missions-and-pods', 'platform/resources', 'platform/data-modeling'],
+    pages: ['platform/pods-and-scope', 'platform/resources', 'platform/data-modeling'],
   },
   {
     title: 'SDK',

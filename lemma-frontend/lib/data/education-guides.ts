@@ -123,7 +123,7 @@ export const educationGuidePages: DocsPage[] = [
         tone: 'note',
         title: 'Surfaces vs connectors',
         body:
-          'Connecting Slack as a surface lets work reach the pod. Connecting Slack as an connector lets agents and flows act on Slack — post to channels, read history — as a tool. Many pods use both.',
+          'Connecting Slack as a surface lets work reach the pod. Connecting Slack as a connector lets agents and flows act on Slack — post to channels, read history — as a tool. Many pods use both.',
       },
     ],
   },

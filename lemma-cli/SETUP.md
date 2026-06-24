@@ -1,7 +1,7 @@
 # Lemma CLI Setup Guide
 
-`lemma-cli` is the command-line and terminal UI app for Lemma. It talks to either
-Lemma Cloud or a local Lemma stack through named servers.
+`lemma-terminal` is the command-line and terminal UI app for Lemma. It talks to
+either Lemma Cloud or a local Lemma stack through named servers.
 
 ## Install
 
@@ -10,7 +10,7 @@ Keep a **single global install** so `lemma` always resolves to one version. Use
 that is what puts `lemma` on your PATH once:
 
 ```bash
-uv tool install lemma-cli
+uv tool install lemma-terminal
 ```
 
 For local development from this repository (editable, picks up source changes):
@@ -56,9 +56,9 @@ lemma orgs list
 Select defaults for commands that work inside a pod:
 
 ```bash
-lemma orgs
+lemma orgs select --save-default
 lemma pods list
-lemma pods
+lemma pods select --save-default
 ```
 
 Most pod workflows then use the selected org and pod automatically:
@@ -127,13 +127,13 @@ server/org/pod from the resource views or with chat slash commands:
 ## Local Stack Setup
 
 Installing and managing a local Lemma stack is handled by the separate
-`lemma-admin` tool, not the CLI. Install and start it with:
+`lemma-stack` tool, not the CLI. Install and start it with:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lemma-work/lemma-platform/main/install.sh | bash
 ```
 
-`lemma-admin install` registers the stack as the CLI server named `local`
+`lemma-stack install` registers the stack as the CLI server named `local`
 (API `http://localhost:8711`, auth `http://localhost:3711/auth`), so afterwards:
 
 ```bash
@@ -141,8 +141,8 @@ lemma servers select local
 lemma auth login
 ```
 
-Manage the stack with `lemma-admin start|stop|status|logs|config|uninstall`.
-See `lemma-admin --help` and the `lemma-admin/` package for details.
+Manage the stack with `lemma-stack start|stop|status|logs|config|uninstall`.
+See `lemma-stack --help` and the `lemma-stack/` package for details.
 
 ## Common Workflow
 
@@ -151,16 +151,17 @@ Cloud:
 ```bash
 lemma servers cloud --use
 lemma auth login
-lemma orgs
-lemma pods
+lemma orgs select --save-default
+lemma pods select --save-default
 lemma tui
 ```
 
-Local (after `lemma-admin install`):
+Local (after `lemma-stack install`):
 
 ```bash
 lemma servers select local
 lemma auth login
-lemma orgs
+lemma orgs select --save-default
+lemma pods select --save-default
 lemma tui
 ```

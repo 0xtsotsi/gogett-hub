@@ -78,8 +78,7 @@ uv tool install lemma-terminal
 Point the CLI at your local stack:
 
 ```bash
-lemma servers add local-dev --base-url http://localhost:8711 --auth-url http://localhost:3711/auth
-lemma servers select local-dev
+lemma servers select local
 lemma auth login
 ```
 

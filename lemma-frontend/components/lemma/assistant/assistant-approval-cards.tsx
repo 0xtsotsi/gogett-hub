@@ -455,7 +455,7 @@ function AskUserQuestionsForm({
                   "flex w-full items-start gap-2 rounded-md border text-left transition-all",
                   optionPad,
                   isSelected
-                    ? "border-[var(--accent)] bg-[color:color-mix(in_srgb,var(--accent)_8%,transparent)] shadow-[0_0_0_1px_var(--accent)]"
+                    ? "border-[var(--accent)] bg-[color:color-mix(in_srgb,var(--accent)_8%,transparent)] ring-1 ring-[var(--action-primary)]"
                     : "border-[color:color-mix(in_srgb,var(--row-border)_86%,transparent)] hover:border-[color:color-mix(in_srgb,var(--accent)_40%,var(--row-border))] hover:bg-[var(--surface-2)]",
                 )}
                 data-selected={isSelected}
@@ -467,7 +467,7 @@ function AskUserQuestionsForm({
                   )}>
                     {option.label}
                     {option.recommended ? (
-                      <Badge variant="outline" className="h-4 px-1 text-[10px] uppercase tracking-wide">Recommended</Badge>
+                      <Badge variant="outline" className="h-4 px-1 text-xs uppercase tracking-wide">Recommended</Badge>
                     ) : null}
                   </span>
                   {option.description ? (
@@ -478,7 +478,7 @@ function AskUserQuestionsForm({
                   className={cn(
                     "mt-0.5 flex size-4 flex-shrink-0 items-center justify-center rounded-full border transition-colors",
                     isSelected
-                      ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-foreground,#fff)]"
+                      ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--text-on-brand)]"
                       : "border-[color:color-mix(in_srgb,var(--row-border)_70%,transparent)]",
                   )}
                   aria-hidden="true"

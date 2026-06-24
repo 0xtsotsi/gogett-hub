@@ -165,6 +165,7 @@ def _wait_for_function_run(pod, function_name: str, run_id: str):
     return run
 
 
+@pytest.mark.integration
 @pytest.mark.connector
 def test_customer_support_pod_real_user_workflow(scenario_summary: ScenarioSummary) -> None:
     base_url, token, verify_ssl = _connector_settings()

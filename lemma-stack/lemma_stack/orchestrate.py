@@ -11,7 +11,6 @@ from lemma_stack.config import render, store
 from lemma_stack.context import AdminContext
 from lemma_stack.paths import LocalPaths
 from lemma_stack.register import register_local_server
-from lemma_stack.release import github as github_release
 from lemma_stack.release import manifest as release_manifest
 from lemma_stack.release.manifest import ReleaseManifest
 from lemma_stack.runtime import detect
@@ -33,14 +32,13 @@ def resolve_manifest(
     *,
     manifest_path=None,
     channel: Optional[str] = None,
-    github_auth: Optional[bool] = None,
     prefer_pinned: bool = False,
 ) -> ReleaseManifest:
     if manifest_path is not None:
         return release_manifest.load_file(manifest_path)
     if prefer_pinned and paths.release_file.exists():
         return release_manifest.load_pinned(paths)
-    return release_manifest.fetch(channel or store.channel(config), github_auth=github_auth)
+    return release_manifest.fetch(channel or store.channel(config))
 
 
 def bring_up(
@@ -59,12 +57,6 @@ def bring_up(
     """
     progress("runtime", f"preparing {provider}")
     runtime = detect.ensure_ready(provider)
-
-    # ghcr images need a login while the repo is private
-    if any(ref.startswith("ghcr.io/") for ref in manifest.all_pull_refs(kreuzberg=True)):
-        token = github_release.github_token()
-        if token:
-            github_release.login_ghcr(runtime, token)
 
     progress("pull", f"fetching Lemma {manifest.version}")
     images.pull_release(runtime, manifest, kreuzberg=store.feature(config, "kreuzberg"))

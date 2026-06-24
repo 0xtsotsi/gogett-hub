@@ -120,14 +120,6 @@ def install(
         "--use-cli/--no-cli",
         help="Install the lemma CLI and register this stack as its active 'local' server.",
     ),
-    github_auth: Optional[bool] = typer.Option(
-        None,
-        "--github-auth/--no-github-auth",
-        help=(
-            "Use the system GitHub auth (gh CLI or GITHUB_TOKEN) for the release manifest "
-            "and ghcr.io image pulls. Default: auto-fallback when the repo is private."
-        ),
-    ),
     assume_yes: bool = typer.Option(False, "-y", "--yes", help="Answer yes to prompts."),
 ) -> None:
     """Install the Lemma stack: pick a runtime, pull a release, start everything."""
@@ -161,7 +153,7 @@ def install(
 
     # 5. release manifest
     manifest = orchestrate.resolve_manifest(
-        config, paths, manifest_path=manifest_path, channel=channel, github_auth=github_auth
+        config, paths, manifest_path=manifest_path, channel=channel
     )
     info(f"installing Lemma {manifest.version} via {provider}")
 

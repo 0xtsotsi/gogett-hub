@@ -18,7 +18,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from lemma_stack import __version__
-from lemma_stack.output import AdminError, info
+from lemma_stack.output import AdminError
 from lemma_stack.paths import LocalPaths
 
 SCHEMA_VERSION = 1
@@ -131,32 +131,13 @@ def release_url(channel: str) -> str:
     return f"{base}/download/v{channel.lstrip('v')}/{MANIFEST_ASSET}"
 
 
-def fetch(channel: str, *, github_auth: bool | None = None) -> ReleaseManifest:
-    """Fetch a manifest; github_auth True forces the authenticated API path,
-    None auto-falls-back to it when the public URL fails (private repo)."""
-    from lemma_stack.release import github
-
-    if github_auth:
-        token = github.github_token()
-        if not token:
-            raise AdminError(
-                "--github-auth requested but no token found; "
-                "run `gh auth login` or set GITHUB_TOKEN"
-            )
-        return parse(github.fetch_manifest_via_api(DEFAULT_REPO, channel, MANIFEST_ASSET, token))
-
+def fetch(channel: str) -> ReleaseManifest:
+    """Download the public release manifest for a channel (stable) or version."""
     url = release_url(channel)
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
             data = json.loads(response.read().decode("utf-8"))
     except OSError as exc:
-        if github_auth is None and "github.com" in url:
-            token = github.github_token()
-            if token:
-                info("public manifest fetch failed; retrying via the GitHub API (private repo?)")
-                return parse(
-                    github.fetch_manifest_via_api(DEFAULT_REPO, channel, MANIFEST_ASSET, token)
-                )
         if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
             where = "the stable channel" if channel == "stable" else f"version {channel}"
             raise AdminError(
@@ -164,8 +145,7 @@ def fetch(channel: str, *, github_auth: bool | None = None) -> ReleaseManifest:
                 f"({MANIFEST_ASSET} not found at {url}).\n"
                 "A release may not be cut yet (or is still building). Options:\n"
                 "  • install a specific version:  lemma-stack install --channel <X.Y.Z>\n"
-                "  • install from a local file:   lemma-stack install --manifest <path>\n"
-                "  • if the repo is private:      lemma-stack install --github-auth"
+                "  • install from a local file:   lemma-stack install --manifest <path>"
             ) from exc
         raise AdminError(f"could not fetch release manifest from {url}: {exc}") from exc
     return parse(data)

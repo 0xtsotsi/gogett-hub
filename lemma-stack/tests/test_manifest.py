@@ -70,31 +70,6 @@ def test_pin_archives_previous_release(paths):
     assert archived["version"] == "1.0.0"
 
 
-def test_fetch_falls_back_to_github_api_for_private_repo(monkeypatch):
-    from lemma_stack.release import github
-
-    def boom(*args, **kwargs):
-        raise OSError("HTTP Error 404: Not Found")
-
-    monkeypatch.setattr("urllib.request.urlopen", boom)
-    monkeypatch.setattr(github, "github_token", lambda: "gho_test")
-    monkeypatch.setattr(
-        github,
-        "fetch_manifest_via_api",
-        lambda repo, channel, asset, token: sample(),
-    )
-    manifest = m.fetch("stable")
-    assert manifest.version == "1.4.0"
-
-
-def test_fetch_github_auth_requires_token(monkeypatch):
-    from lemma_stack.release import github
-
-    monkeypatch.setattr(github, "github_token", lambda: None)
-    with pytest.raises(AdminError, match="gh auth login"):
-        m.fetch("stable", github_auth=True)
-
-
 def test_release_url_resolution(monkeypatch):
     monkeypatch.delenv("LEMMA_STACK_RELEASE_URL", raising=False)
     monkeypatch.delenv("LEMMA_STACK_RELEASE_BASE_URL", raising=False)

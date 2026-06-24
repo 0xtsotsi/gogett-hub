@@ -288,6 +288,14 @@ async def worker(e2e_settings):
     log_path = f"/tmp/gappy_e2e_worker_{uuid4().hex}.log"
     backend_root = Path(__file__).resolve().parents[3]
     with open(log_path, "w+") as log_file:
+        # Forward LEMMA_OPENAI_* (and other LEMMA_*) vars from the backend
+        # .env file so that the worker subprocess can call the system:lemma
+        # LLM provider even when those vars aren't set in the shell env.
+        # os.environ takes precedence over .env (allows CI override).
+        from app.modules.agent.tests.e2e.system_lemma_helpers import (
+            system_lemma_env_overlay,
+        )
+
         proc = subprocess.Popen(
             [
                 str(backend_root / ".venv/bin/streaq"),
@@ -297,6 +305,7 @@ async def worker(e2e_settings):
             cwd=str(backend_root),
             env={
                 **os.environ,
+                **system_lemma_env_overlay(),  # LEMMA_OPENAI_* from .env
                 "PYTHONPATH": ".",
                 "DATABASE_URL": e2e_settings.database_url,
                 "DATASTORE_DATABASE_URL": e2e_settings.datastore_database_url,

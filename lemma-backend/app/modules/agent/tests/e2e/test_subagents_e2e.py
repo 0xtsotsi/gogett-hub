@@ -20,6 +20,10 @@ import os
 
 import pytest
 
+from app.modules.agent.tests.e2e.system_lemma_helpers import (
+    SYSTEM_LEMMA_SKIP_REASON,
+    system_lemma_available,
+)
 from app.modules.agent.tests.e2e.test_agent_e2e import (
     DEFAULT_AGENT_RUNTIME,
     _assert_completed_without_error,
@@ -33,6 +37,7 @@ pytestmark = [
         os.getenv("LEMMA_RUN_PROVIDER_E2E") != "1",
         reason="Set LEMMA_RUN_PROVIDER_E2E=1 to run real provider-backed e2e tests.",
     ),
+    pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON),
 ]
 
 

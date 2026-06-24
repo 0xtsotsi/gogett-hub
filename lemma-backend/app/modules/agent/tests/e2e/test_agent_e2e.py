@@ -43,6 +43,12 @@ from app.modules.agent.infrastructure.models import AgentRuntimeProfileModel
 from app.modules.agent.infrastructure.repositories import ConversationRepository
 from app.modules.agent.services.agent_runner_service import AgentRunnerService
 from app.modules.agent.services.conversation_service import ConversationService
+from app.modules.agent.tests.e2e.system_lemma_helpers import (
+    SYSTEM_LEMMA_SKIP_REASON,
+    system_lemma_available,
+    system_lemma_default_model,
+    system_lemma_model_names,
+)
 from app.modules.test_support.e2e_authz import (
     create_role_visibility_context,
     item_names,
@@ -491,6 +497,7 @@ async def _wait_for_daemon_harness(
 
 
 class TestPodAgentLifecycle:
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_file_creation_tool_call_streams_tool_json_tokens(
         self,
         authenticated_client,
@@ -964,6 +971,7 @@ class TestPodAgentLifecycle:
         )
         assert approvals_done.json()["items"] == []
 
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_stopping_streaming_agent_run_does_not_wedge_worker(
         self,
         authenticated_client,
@@ -1033,6 +1041,7 @@ class TestPodAgentLifecycle:
         )
         _assert_completed_without_error(followup_events)
 
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_task_conversation_waits_then_completes_with_real_worker_model(
         self,
         authenticated_client,
@@ -1125,6 +1134,7 @@ class TestPodAgentLifecycle:
         assert completed_payload["status"] == ConversationStatus.COMPLETED.value
         assert "secret_code received" in str(completed_payload["output"])
 
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_pod_agent_http_lifecycle_with_real_worker_model(
         self,
         authenticated_client,
@@ -1508,6 +1518,7 @@ class TestAgentRoleVisibility:
 
 
 class TestPodAssistantLifecycle:
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_pod_assistant_http_lifecycle_with_real_worker_model(
         self,
         authenticated_client,
@@ -1827,15 +1838,8 @@ class TestAgentRuntimeConfigApis:
         assert system_profile["kind"] == "MODEL_PROVIDER"
         assert system_profile["protocol"] == "OPENAI_COMPATIBLE"
         assert system_profile["name"] == "Lemma"
-        assert system_profile["default_model_name"] == "minimax-m3"
-        assert [item["name"] for item in system_profile["model_catalog"]] == [
-            "minimax-m3",
-            "glm-5.2",
-            "kimi-k2.7-code",
-            "kimi-k2.6",
-            "deepseek-v4-pro",
-            "deepseek-v4-flash",
-        ]
+        assert system_profile["default_model_name"] == system_lemma_default_model()
+        assert [item["name"] for item in system_profile["model_catalog"]] == system_lemma_model_names()
         assert system_profile["derived_harness_kind"] == "LEMMA"
 
         pod_id = await _create_test_pod(authenticated_client, fixed_test_org)
@@ -2586,6 +2590,7 @@ class TestAgentRuntimeConfigApis:
         await communicator.wait(timeout=5)
 
     @pytest.mark.skipif(shutil.which("codex") is None, reason="codex CLI is not installed")
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_cli_daemon_process_discovers_models_and_runs_real_harnesses(
         self,
         authenticated_client,
@@ -3057,6 +3062,7 @@ async def _wait_for_conversation_title(
 
 
 class TestConversationTitleGeneration:
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_first_run_generates_title_with_real_worker_model(
         self,
         authenticated_client,

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { ArrowLeft, ArrowRight, BookOpen, Check, Github, Menu } from 'lucide-react';
 import { DocsMobileNav, DocsSearch, DocsSidebarNav } from '@/components/docs/docs-nav';
+import { Logo } from '@/components/brand/logo';
 import {
   docsPages,
   getAdjacentDocsPages,
@@ -26,9 +27,8 @@ export function DocsShell({ activeSlug, children }: DocsShellProps) {
       <header className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[color:color-mix(in_srgb,var(--bg-canvas)_90%,transparent)] backdrop-blur-xl">
         <div className="docs-header-inner mx-auto flex h-14 max-w-[1440px] items-center justify-between gap-4 px-4 md:px-6">
           <div className="docs-header-brand flex items-center gap-3">
-            <Link href="/" className="inline-flex items-center gap-2 rounded-md text-base font-semibold text-[var(--text-primary)]">
-              <span className="text-[var(--delight)]">*</span>
-              lemma
+            <Link href="/" className="inline-flex items-center gap-2 rounded-md text-[var(--text-primary)]">
+              <Logo size="xs" variant="mark-wordmark" />
             </Link>
             <span className="hidden h-5 w-px bg-[var(--border-subtle)] md:block" />
             <Link href="/docs" className="lemma-shell-link hidden md:inline-flex">

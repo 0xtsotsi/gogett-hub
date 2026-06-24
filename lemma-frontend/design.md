@@ -4,16 +4,17 @@ This digest documents the current product UI in this repository. It is based on 
 
 ## 1. Visual Theme & Atmosphere
 
-Lemma currently reads as a warm operational workspace: calm, dense where work is dense, and intentionally low-drama. The app canvas is parchment-tinted rather than white (`--bg-canvas: #fdfdf8`), while primary work surfaces stay white (`--bg-surface` / `--surface-1: #ffffff`). The core visual language is "border-first": most surfaces are separated by warm grey-green borders and small ring shadows instead of heavy elevation.
+Lemma currently reads as a warm operational workspace: calm, dense where work is dense, and intentionally low-drama. The app canvas is warm parchment (`--bg-canvas: #f5f4f0`), while primary work surfaces stay white (`--bg-surface` / `--surface-1: #ffffff`). The core visual language is "border-first": most surfaces are separated by warm grey borders and small ring shadows instead of heavy elevation.
 
- Brand primary is near-olive ink (`#23251d` in light mode), the CTA is near-black (`#1e1f23`), and the active accent is orange (`#f54e00`). Warm yellow (`#f7a501`) appears mostly as CTA hover warmth and atmospheric glow.
+Brand primary is indigo (`#6366f1` in light mode), the CTA matches (`#6366f1`), and the active accent is gold (`#d99a32`). Coral (`#df6a45`) appears as the attention/semantic signal.
 
 
 **Key Characteristics**
 
-- Warm parchment app canvas: `#fdfdf8`, not stark white.
-- Olive/ink primary identity: `#23251d` light mode, `#e5e7e0` dark mode.
-- Orange accent: `#f54e00` for brand highlight, hover emphasis, and error-adjacent attention.
+- Warm parchment app canvas: `#f5f4f0`, not stark white.
+- Indigo primary identity: `#6366f1` light mode, `#818cf8` dark mode.
+- Gold accent: `#d99a32` for delight, progress, and active rails.
+- Coral attention: `#df6a45` for human review and needs-response signals.
 - Border-first containment with subtle ring shadows.
 - Operational density in records/tables: sticky table headers, inline editable cells, side sheets, compact metadata.
 - Compact radius in primitives: `2px`, `4px`, `6px`, `10px`, `12px`, `9999px`.
@@ -26,63 +27,64 @@ Lemma currently reads as a warm operational workspace: calm, dense where work is
 
 | Role | Token | Value | Use |
 | --- | --- | --- | --- |
-| Canvas | `--bg-canvas` | `#fdfdf8` | App background, page base |
+| Canvas | `--bg-canvas` | `#f5f4f0` | App background, page base |
 | Surface | `--bg-surface`, `--surface-1` | `#ffffff` | Cards, sheets, tables, popovers |
-| Subtle Surface | `--bg-subtle`, `--surface-2` | `#eeefe9` | Table hovers, inputs, secondary panels |
-| Muted Surface | `--bg-muted`, `--surface-3` | `#e5e7e0` | Secondary buttons, selected rails |
-| Brand Primary | `--brand-primary` | `#23251d` | Logo bars, selected states, strong identity |
-| Brand Secondary | `--brand-secondary` | `#4d4f46` | Supporting brand text and chart color |
-| Brand Accent | `--brand-accent` | `#f54e00` | Hover emphasis, assistant accents, highlights |
-| Brand Warm | `--brand-warm` | `#f7a501` | Primary CTA hover text, atmospheric glow |
-| Brand Tan | `--brand-tan` | `#d4c9b8` | Accent button and brand badge fill |
-| Focus Blue | `--focus-blue` | `#3b82f6` | Accessible focus rings |
-| CTA Background | `--cta-bg` | `#1e1f23` | Primary buttons |
+| Subtle Surface | `--bg-subtle`, `--surface-2` | `#f0efec` | Table hovers, inputs, secondary panels |
+| Muted Surface | `--bg-muted`, `--surface-3` | `#e8e6e2` | Secondary buttons, selected rails |
+| Brand Primary | `--brand-primary` | `#6366f1` | Logo bars, selected states, strong identity |
+| Brand Secondary | `--brand-secondary` | `#6b6a66` | Supporting brand text and chart color |
+| Brand Accent | `--brand-accent` | `#d99a32` | Delight, progress, active rails, highlights |
+| Brand Warm | `--brand-warm` | `#d99a32` | Atmospheric warmth (aliases accent) |
+| Brand Coral | `--brand-coral` | `#df6a45` | Attention, human-review emphasis |
+| Brand Tan | `--brand-tan` | `#e7dbc9` | Accent button and brand badge fill |
+| Focus Blue | `--focus-blue` | `#6366f1` | Accessible focus rings |
+| CTA Background | `--cta-bg` | `#6366f1` | Primary buttons |
 | CTA Foreground | `--cta-fg` | `#ffffff` | Primary button text |
 
 ### Text Scale
 
 | Role | Token | Value | Use |
 | --- | --- | --- | --- |
-| Primary | `--text-primary` | `#23251d` | Headings, active nav, important cells |
-| Secondary | `--text-secondary` | `#4d4f46` | Body text, table content, nav labels |
-| Tertiary | `--text-tertiary` | `#65675e` | Metadata, labels, helper copy |
-| Soft | `--text-soft` | `#9ea096` | Placeholders, muted unavailable values |
-| Inverse | `--text-inverse` | `#fdfdf8` | Text on dark fills |
+| Primary | `--text-primary` | `#141414` | Headings, active nav, important cells |
+| Secondary | `--text-secondary` | `#6b6b6b` | Body text, table content, nav labels |
+| Tertiary | `--text-tertiary` | `#9a9a9a` | Metadata, labels, helper copy |
+| Soft | `--text-soft` | `#b0b0b0` | Placeholders, muted unavailable values |
+| Inverse | `--text-inverse` | `#ffffff` | Text on dark fills |
 | On Brand | `--text-on-brand` | `#ffffff` | Text on brand/CTA fills |
 
 ### Borders
 
 | Role | Token | Value | Use |
 | --- | --- | --- | --- |
-| Subtle | `--border-subtle` | `#d3d6cc` | Default separators and quiet card borders |
-| Default | `--border-default` | `#c8cbc0` | Inputs, active card boundaries |
-| Strong | `--border-strong` | `#adb0a5` | Hovered controls and emphasized boundaries |
+| Subtle | `--border-subtle` | `#e5e5e5` | Default separators and quiet card borders |
+| Default | `--border-default` | `#d4d4d4` | Inputs, active card boundaries |
+| Strong | `--border-strong` | `#c0c0c0` | Hovered controls and emphasized boundaries |
 
 ### States
 
 | Role | Token | Value | Use |
 | --- | --- | --- | --- |
-| Success | `--state-success` | `#5c7a53` | Ready state, positive badges, booleans |
-| Warning | `--state-warning` | `#b17816` | Unsaved, pending, date/time type badges |
-| Error | `--state-error` | `#f54e00` | Destructive actions, errors, delete affordances |
-| Info | `--state-info` | `#3b82f6` | Info badges, focus support, flow/data marks |
+| Success | `--state-success` | `#16a34a` | Ready state, positive badges, booleans |
+| Warning | `--state-warning` | `#d97706` | Unsaved, pending, date/time type badges |
+| Error | `--state-error` | `#dc2626` | Destructive actions, errors, delete affordances |
+| Info | `--state-info` | `#0891b2` | Info badges, focus support, flow/data marks |
 
 ### Dark Mode Core
 
-Dark mode preserves the same structure with deep olive surfaces:
+Dark mode preserves the same structure with deep neutral surfaces:
 
-- `--bg-canvas: #151614`
-- `--bg-surface: #1c1d1a`
-- `--bg-subtle: #252621`
-- `--bg-muted: #2e2f2a`
-- `--text-primary: #e5e7e0`
-- `--text-secondary: #c7cbbf`
-- `--text-tertiary: #9ea096`
-- `--border-subtle: #32332e`
-- `--border-default: #3d3f38`
-- `--border-strong: #4d4f46`
-- `--cta-bg: #fdfdf8`
-- `--cta-fg: #23251d`
+- `--bg-canvas: #11120f`
+- `--bg-surface: #1a1a1a`
+- `--bg-subtle: #222222`
+- `--bg-muted: #2a2a2a`
+- `--text-primary: #ececec`
+- `--text-secondary: #9e9e9e`
+- `--text-tertiary: #6e6e6e`
+- `--border-subtle: #2a2a2a`
+- `--border-default: #3a3a3a`
+- `--border-strong: #555555`
+- `--cta-bg: #818cf8`
+- `--cta-fg: #ffffff`
 
 ## 3. Typography Rules
 

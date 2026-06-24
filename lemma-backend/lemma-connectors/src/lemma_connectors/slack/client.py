@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lemma_connectors.core.auth import CredentialTypes
 from lemma_connectors.core.client import BaseInfoClient, BaseIntegrationClient
-from lemma_connectors.slack.resources import build_resources
+from lemma_connectors.slack import resources as _resources
 
 BASE_URL = "https://slack.com/api"
 CLIENT_MODULE_PATH = "lemma_connectors.slack.generated.client.client"
@@ -20,7 +20,7 @@ class SlackInfoClient(BaseInfoClient):
             base_url=BASE_URL,
             client_module_path=CLIENT_MODULE_PATH,
         )
-        self.register_resources(build_resources(self))
+        self.register_resource_registry(_resources)
 
 
 class SlackClient(BaseIntegrationClient):
@@ -31,4 +31,4 @@ class SlackClient(BaseIntegrationClient):
             client_module_path=CLIENT_MODULE_PATH,
             credentials=credentials,
         )
-        self.register_resources(build_resources(self))
+        self.register_resource_registry(_resources)

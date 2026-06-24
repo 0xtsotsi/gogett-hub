@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lemma_connectors.core.auth import CredentialTypes
 from lemma_connectors.core.client import BaseInfoClient, BaseIntegrationClient
-from lemma_connectors.google_calendar.resources import build_resources
+from lemma_connectors.google_calendar import resources as _resources
 
 BASE_URL = "https://www.googleapis.com/calendar/v3"
 CLIENT_MODULE_PATH = "lemma_connectors.google_calendar.generated.client.client"
@@ -20,7 +20,7 @@ class GoogleCalendarInfoClient(BaseInfoClient):
             base_url=BASE_URL,
             client_module_path=CLIENT_MODULE_PATH,
         )
-        self.register_resources(build_resources(self))
+        self.register_resource_registry(_resources)
 
 
 class GoogleCalendarClient(BaseIntegrationClient):
@@ -31,4 +31,4 @@ class GoogleCalendarClient(BaseIntegrationClient):
             client_module_path=CLIENT_MODULE_PATH,
             credentials=credentials,
         )
-        self.register_resources(build_resources(self))
+        self.register_resource_registry(_resources)

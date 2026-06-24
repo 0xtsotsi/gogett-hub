@@ -443,22 +443,58 @@ def build_generated_client(
     raise TypeError(f"Unsupported credentials type: {type(credentials)!r}")
 
 
+class LazyToolMap:
+    """Builds ``GeneratedTool`` instances on first access instead of up front.
+
+    Constructing a ``GeneratedTool`` imports its generated API module and the
+    large pydantic model module. For a connector with hundreds of tools (jira),
+    building all of them eagerly at client-construction time is the dominant
+    import cost. This map defers that work to ``get_tool``/``list_tools``.
+    """
+
+    def __init__(self, *, metadata_path: Path, generated_client: Any):
+        self._metadata = load_tool_metadata(metadata_path)
+        self._registry = load_pydantic_model_registry(
+            metadata_path.parent / "pydantic_model_registry.json"
+        )
+        self._generated_client = generated_client
+        self._by_name = {item.name: item for item in self._metadata}
+        self._cache: dict[str, GeneratedTool] = {}
+
+    def _build(self, item: ToolMetadata) -> GeneratedTool:
+        tool = GeneratedTool(
+            metadata=item,
+            generated_client=self._generated_client,
+            model_registry=self._registry,
+        )
+        self._cache[item.name] = tool
+        return tool
+
+    def get_tool(self, name: str) -> GeneratedTool:
+        tool = self._cache.get(name)
+        if tool is not None:
+            return tool
+        item = self._by_name.get(name)
+        if item is None:
+            raise ToolNotFoundError(name)
+        return self._build(item)
+
+    def list_tools(self) -> list[GeneratedTool]:
+        tools: list[GeneratedTool] = []
+        for item in self._metadata:
+            tool = self._cache.get(item.name)
+            if tool is None:
+                tool = self._build(item)
+            tools.append(tool)
+        return tools
+
+
 def build_tool_map(
     *,
     metadata_path: Path,
     generated_client: Any,
-) -> dict[str, GeneratedTool]:
-    model_registry = load_pydantic_model_registry(
-        metadata_path.parent / "pydantic_model_registry.json"
-    )
-    return {
-        item.name: GeneratedTool(
-            metadata=item,
-            generated_client=generated_client,
-            model_registry=model_registry,
-        )
-        for item in load_tool_metadata(metadata_path)
-    }
+) -> LazyToolMap:
+    return LazyToolMap(metadata_path=metadata_path, generated_client=generated_client)
 
 
 def list_tool_descriptors(tools: Iterable[GeneratedTool]) -> list[ToolDescriptor]:

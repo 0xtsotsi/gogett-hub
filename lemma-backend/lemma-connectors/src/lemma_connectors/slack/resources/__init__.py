@@ -1,119 +1,195 @@
 from __future__ import annotations
 
-from lemma_connectors.slack.resources.api import SlackApiResource
-from lemma_connectors.slack.resources.apps import SlackAppsResource
-from lemma_connectors.slack.resources.apps_event_authorizations import SlackAppsEventAuthorizationsResource
-from lemma_connectors.slack.resources.apps_permissions import SlackAppsPermissionsResource
-from lemma_connectors.slack.resources.apps_permissions_resources import SlackAppsPermissionsResourcesResource
-from lemma_connectors.slack.resources.apps_permissions_scopes import SlackAppsPermissionsScopesResource
-from lemma_connectors.slack.resources.apps_permissions_users import SlackAppsPermissionsUsersResource
-from lemma_connectors.slack.resources.auth import SlackAuthResource
-from lemma_connectors.slack.resources.bots import SlackBotsResource
-from lemma_connectors.slack.resources.calls import SlackCallsResource
-from lemma_connectors.slack.resources.calls_participants import SlackCallsParticipantsResource
-from lemma_connectors.slack.resources.chat import SlackChatResource
-from lemma_connectors.slack.resources.chat_delete_scheduled import SlackChatDeleteScheduledResource
-from lemma_connectors.slack.resources.chat_get import SlackChatGetResource
-from lemma_connectors.slack.resources.chat_me import SlackChatMeResource
-from lemma_connectors.slack.resources.chat_post import SlackChatPostResource
-from lemma_connectors.slack.resources.chat_schedule import SlackChatScheduleResource
-from lemma_connectors.slack.resources.chat_scheduled_messages import SlackChatScheduledMessagesResource
-from lemma_connectors.slack.resources.conversations import SlackConversationsResource
-from lemma_connectors.slack.resources.conversations_set import SlackConversationsSetResource
-from lemma_connectors.slack.resources.dialog import SlackDialogResource
-from lemma_connectors.slack.resources.dnd import SlackDndResource
-from lemma_connectors.slack.resources.dnd_end import SlackDndEndResource
-from lemma_connectors.slack.resources.dnd_set import SlackDndSetResource
-from lemma_connectors.slack.resources.dnd_team import SlackDndTeamResource
-from lemma_connectors.slack.resources.emoji import SlackEmojiResource
-from lemma_connectors.slack.resources.files import SlackFilesResource
-from lemma_connectors.slack.resources.files_comments import SlackFilesCommentsResource
-from lemma_connectors.slack.resources.files_remote import SlackFilesRemoteResource
-from lemma_connectors.slack.resources.files_revoke_public import SlackFilesRevokePublicResource
-from lemma_connectors.slack.resources.files_shared_public import SlackFilesSharedPublicResource
-from lemma_connectors.slack.resources.messages import SlackMessagesResource
-from lemma_connectors.slack.resources.migration import SlackMigrationResource
-from lemma_connectors.slack.resources.oauth import SlackOauthResource
-from lemma_connectors.slack.resources.oauth_v2 import SlackOauthV2Resource
-from lemma_connectors.slack.resources.pins import SlackPinsResource
-from lemma_connectors.slack.resources.reactions import SlackReactionsResource
-from lemma_connectors.slack.resources.reminders import SlackRemindersResource
-from lemma_connectors.slack.resources.rtm import SlackRtmResource
-from lemma_connectors.slack.resources.stars import SlackStarsResource
-from lemma_connectors.slack.resources.team import SlackTeamResource
-from lemma_connectors.slack.resources.team_access import SlackTeamAccessResource
-from lemma_connectors.slack.resources.team_billable import SlackTeamBillableResource
-from lemma_connectors.slack.resources.team_integration import SlackTeamIntegrationResource
-from lemma_connectors.slack.resources.team_profile import SlackTeamProfileResource
-from lemma_connectors.slack.resources.usergroups import SlackUsergroupsResource
-from lemma_connectors.slack.resources.usergroups_users import SlackUsergroupsUsersResource
-from lemma_connectors.slack.resources.users import SlackUsersResource
-from lemma_connectors.slack.resources.users_delete import SlackUsersDeleteResource
-from lemma_connectors.slack.resources.users_get import SlackUsersGetResource
-from lemma_connectors.slack.resources.users_lookup_by import SlackUsersLookupByResource
-from lemma_connectors.slack.resources.users_profile import SlackUsersProfileResource
-from lemma_connectors.slack.resources.users_set import SlackUsersSetResource
-from lemma_connectors.slack.resources.views import SlackViewsResource
-from lemma_connectors.slack.resources.workflows_step import SlackWorkflowsStepResource
-from lemma_connectors.slack.resources.workflows_update import SlackWorkflowsUpdateResource
+import importlib
+
+OPERATION_TO_RESOURCE: dict[str, str] = {
+    'api_test': 'api',
+    'apps_event_authorizations_list': 'apps_event_authorizations',
+    'apps_permissions_info': 'apps_permissions',
+    'apps_permissions_request': 'apps_permissions',
+    'apps_permissions_resources_list': 'apps_permissions_resources',
+    'apps_permissions_scopes_list': 'apps_permissions_scopes',
+    'apps_permissions_users_list': 'apps_permissions_users',
+    'apps_permissions_users_request': 'apps_permissions_users',
+    'apps_uninstall': 'apps',
+    'auth_revoke': 'auth',
+    'auth_test': 'auth',
+    'bots_info': 'bots',
+    'calls_add': 'calls',
+    'calls_end': 'calls',
+    'calls_info': 'calls',
+    'calls_participants_add': 'calls_participants',
+    'calls_participants_remove': 'calls_participants',
+    'calls_update': 'calls',
+    'chat_delete': 'chat',
+    'chat_delete_scheduled_message': 'chat_delete_scheduled',
+    'chat_get_permalink': 'chat_get',
+    'chat_me_message': 'chat_me',
+    'chat_post_ephemeral': 'chat_post',
+    'chat_post_message': 'chat_post',
+    'chat_schedule_message': 'chat_schedule',
+    'chat_scheduled_messages_list': 'chat_scheduled_messages',
+    'chat_unfurl': 'chat',
+    'chat_update': 'chat',
+    'conversations_archive': 'conversations',
+    'conversations_close': 'conversations',
+    'conversations_create': 'conversations',
+    'conversations_history': 'conversations',
+    'conversations_info': 'conversations',
+    'conversations_invite': 'conversations',
+    'conversations_join': 'conversations',
+    'conversations_kick': 'conversations',
+    'conversations_leave': 'conversations',
+    'conversations_list': 'conversations',
+    'conversations_mark': 'conversations',
+    'conversations_members': 'conversations',
+    'conversations_open': 'conversations',
+    'conversations_rename': 'conversations',
+    'conversations_replies': 'conversations',
+    'conversations_set_purpose': 'conversations_set',
+    'conversations_set_topic': 'conversations_set',
+    'conversations_unarchive': 'conversations',
+    'dialog_open': 'dialog',
+    'dnd_end_dnd': 'dnd_end',
+    'dnd_end_snooze': 'dnd_end',
+    'dnd_info': 'dnd',
+    'dnd_set_snooze': 'dnd_set',
+    'dnd_team_info': 'dnd_team',
+    'emoji_list': 'emoji',
+    'files_comments_delete': 'files_comments',
+    'files_delete': 'files',
+    'files_info': 'files',
+    'files_list': 'files',
+    'files_remote_add': 'files_remote',
+    'files_remote_info': 'files_remote',
+    'files_remote_list': 'files_remote',
+    'files_remote_remove': 'files_remote',
+    'files_remote_share': 'files_remote',
+    'files_remote_update': 'files_remote',
+    'files_revoke_public_url': 'files_revoke_public',
+    'files_shared_public_url': 'files_shared_public',
+    'files_upload': 'files',
+    'migration_exchange': 'migration',
+    'oauth_access': 'oauth',
+    'oauth_token': 'oauth',
+    'oauth_v2_access': 'oauth_v2',
+    'pins_add': 'pins',
+    'pins_list': 'pins',
+    'pins_remove': 'pins',
+    'reactions_add': 'reactions',
+    'reactions_get': 'reactions',
+    'reactions_list': 'reactions',
+    'reactions_remove': 'reactions',
+    'reminders_add': 'reminders',
+    'reminders_complete': 'reminders',
+    'reminders_delete': 'reminders',
+    'reminders_info': 'reminders',
+    'reminders_list': 'reminders',
+    'rtm_connect': 'rtm',
+    'search_messages': 'messages',
+    'stars_add': 'stars',
+    'stars_list': 'stars',
+    'stars_remove': 'stars',
+    'team_access_logs': 'team_access',
+    'team_billable_info': 'team_billable',
+    'team_info': 'team',
+    'team_integration_logs': 'team_integration',
+    'team_profile_get': 'team_profile',
+    'usergroups_create': 'usergroups',
+    'usergroups_disable': 'usergroups',
+    'usergroups_enable': 'usergroups',
+    'usergroups_list': 'usergroups',
+    'usergroups_update': 'usergroups',
+    'usergroups_users_list': 'usergroups_users',
+    'usergroups_users_update': 'usergroups_users',
+    'users_conversations': 'users',
+    'users_delete_photo': 'users_delete',
+    'users_get_presence': 'users_get',
+    'users_identity': 'users',
+    'users_info': 'users',
+    'users_list': 'users',
+    'users_lookup_by_email': 'users_lookup_by',
+    'users_profile_get': 'users_profile',
+    'users_profile_set': 'users_profile',
+    'users_set_active': 'users_set',
+    'users_set_photo': 'users_set',
+    'users_set_presence': 'users_set',
+    'views_open': 'views',
+    'views_publish': 'views',
+    'views_push': 'views',
+    'views_update': 'views',
+    'workflows_step_completed': 'workflows_step',
+    'workflows_step_failed': 'workflows_step',
+    'workflows_update_step': 'workflows_update',
+}
+
+RESOURCE_REGISTRY: dict[str, tuple[str, str]] = {
+    'api': ('lemma_connectors.slack.resources.api', 'SlackApiResource'),
+    'apps': ('lemma_connectors.slack.resources.apps', 'SlackAppsResource'),
+    'apps_event_authorizations': ('lemma_connectors.slack.resources.apps_event_authorizations', 'SlackAppsEventAuthorizationsResource'),
+    'apps_permissions': ('lemma_connectors.slack.resources.apps_permissions', 'SlackAppsPermissionsResource'),
+    'apps_permissions_resources': ('lemma_connectors.slack.resources.apps_permissions_resources', 'SlackAppsPermissionsResourcesResource'),
+    'apps_permissions_scopes': ('lemma_connectors.slack.resources.apps_permissions_scopes', 'SlackAppsPermissionsScopesResource'),
+    'apps_permissions_users': ('lemma_connectors.slack.resources.apps_permissions_users', 'SlackAppsPermissionsUsersResource'),
+    'auth': ('lemma_connectors.slack.resources.auth', 'SlackAuthResource'),
+    'bots': ('lemma_connectors.slack.resources.bots', 'SlackBotsResource'),
+    'calls': ('lemma_connectors.slack.resources.calls', 'SlackCallsResource'),
+    'calls_participants': ('lemma_connectors.slack.resources.calls_participants', 'SlackCallsParticipantsResource'),
+    'chat': ('lemma_connectors.slack.resources.chat', 'SlackChatResource'),
+    'chat_delete_scheduled': ('lemma_connectors.slack.resources.chat_delete_scheduled', 'SlackChatDeleteScheduledResource'),
+    'chat_get': ('lemma_connectors.slack.resources.chat_get', 'SlackChatGetResource'),
+    'chat_me': ('lemma_connectors.slack.resources.chat_me', 'SlackChatMeResource'),
+    'chat_post': ('lemma_connectors.slack.resources.chat_post', 'SlackChatPostResource'),
+    'chat_schedule': ('lemma_connectors.slack.resources.chat_schedule', 'SlackChatScheduleResource'),
+    'chat_scheduled_messages': ('lemma_connectors.slack.resources.chat_scheduled_messages', 'SlackChatScheduledMessagesResource'),
+    'conversations': ('lemma_connectors.slack.resources.conversations', 'SlackConversationsResource'),
+    'conversations_set': ('lemma_connectors.slack.resources.conversations_set', 'SlackConversationsSetResource'),
+    'dialog': ('lemma_connectors.slack.resources.dialog', 'SlackDialogResource'),
+    'dnd': ('lemma_connectors.slack.resources.dnd', 'SlackDndResource'),
+    'dnd_end': ('lemma_connectors.slack.resources.dnd_end', 'SlackDndEndResource'),
+    'dnd_set': ('lemma_connectors.slack.resources.dnd_set', 'SlackDndSetResource'),
+    'dnd_team': ('lemma_connectors.slack.resources.dnd_team', 'SlackDndTeamResource'),
+    'emoji': ('lemma_connectors.slack.resources.emoji', 'SlackEmojiResource'),
+    'files': ('lemma_connectors.slack.resources.files', 'SlackFilesResource'),
+    'files_comments': ('lemma_connectors.slack.resources.files_comments', 'SlackFilesCommentsResource'),
+    'files_remote': ('lemma_connectors.slack.resources.files_remote', 'SlackFilesRemoteResource'),
+    'files_revoke_public': ('lemma_connectors.slack.resources.files_revoke_public', 'SlackFilesRevokePublicResource'),
+    'files_shared_public': ('lemma_connectors.slack.resources.files_shared_public', 'SlackFilesSharedPublicResource'),
+    'messages': ('lemma_connectors.slack.resources.messages', 'SlackMessagesResource'),
+    'migration': ('lemma_connectors.slack.resources.migration', 'SlackMigrationResource'),
+    'oauth': ('lemma_connectors.slack.resources.oauth', 'SlackOauthResource'),
+    'oauth_v2': ('lemma_connectors.slack.resources.oauth_v2', 'SlackOauthV2Resource'),
+    'pins': ('lemma_connectors.slack.resources.pins', 'SlackPinsResource'),
+    'reactions': ('lemma_connectors.slack.resources.reactions', 'SlackReactionsResource'),
+    'reminders': ('lemma_connectors.slack.resources.reminders', 'SlackRemindersResource'),
+    'rtm': ('lemma_connectors.slack.resources.rtm', 'SlackRtmResource'),
+    'stars': ('lemma_connectors.slack.resources.stars', 'SlackStarsResource'),
+    'team': ('lemma_connectors.slack.resources.team', 'SlackTeamResource'),
+    'team_access': ('lemma_connectors.slack.resources.team_access', 'SlackTeamAccessResource'),
+    'team_billable': ('lemma_connectors.slack.resources.team_billable', 'SlackTeamBillableResource'),
+    'team_integration': ('lemma_connectors.slack.resources.team_integration', 'SlackTeamIntegrationResource'),
+    'team_profile': ('lemma_connectors.slack.resources.team_profile', 'SlackTeamProfileResource'),
+    'usergroups': ('lemma_connectors.slack.resources.usergroups', 'SlackUsergroupsResource'),
+    'usergroups_users': ('lemma_connectors.slack.resources.usergroups_users', 'SlackUsergroupsUsersResource'),
+    'users': ('lemma_connectors.slack.resources.users', 'SlackUsersResource'),
+    'users_delete': ('lemma_connectors.slack.resources.users_delete', 'SlackUsersDeleteResource'),
+    'users_get': ('lemma_connectors.slack.resources.users_get', 'SlackUsersGetResource'),
+    'users_lookup_by': ('lemma_connectors.slack.resources.users_lookup_by', 'SlackUsersLookupByResource'),
+    'users_profile': ('lemma_connectors.slack.resources.users_profile', 'SlackUsersProfileResource'),
+    'users_set': ('lemma_connectors.slack.resources.users_set', 'SlackUsersSetResource'),
+    'views': ('lemma_connectors.slack.resources.views', 'SlackViewsResource'),
+    'workflows_step': ('lemma_connectors.slack.resources.workflows_step', 'SlackWorkflowsStepResource'),
+    'workflows_update': ('lemma_connectors.slack.resources.workflows_update', 'SlackWorkflowsUpdateResource'),
+}
+
+
+def build_resource(client, resource_slug: str):
+    """Lazily import and build a single resource client by slug."""
+    module_path, class_name = RESOURCE_REGISTRY[resource_slug]
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)(client)
 
 
 def build_resources(client):
-    return {
-        'api': SlackApiResource(client),
-        'apps': SlackAppsResource(client),
-        'apps_event_authorizations': SlackAppsEventAuthorizationsResource(client),
-        'apps_permissions': SlackAppsPermissionsResource(client),
-        'apps_permissions_resources': SlackAppsPermissionsResourcesResource(client),
-        'apps_permissions_scopes': SlackAppsPermissionsScopesResource(client),
-        'apps_permissions_users': SlackAppsPermissionsUsersResource(client),
-        'auth': SlackAuthResource(client),
-        'bots': SlackBotsResource(client),
-        'calls': SlackCallsResource(client),
-        'calls_participants': SlackCallsParticipantsResource(client),
-        'chat': SlackChatResource(client),
-        'chat_delete_scheduled': SlackChatDeleteScheduledResource(client),
-        'chat_get': SlackChatGetResource(client),
-        'chat_me': SlackChatMeResource(client),
-        'chat_post': SlackChatPostResource(client),
-        'chat_schedule': SlackChatScheduleResource(client),
-        'chat_scheduled_messages': SlackChatScheduledMessagesResource(client),
-        'conversations': SlackConversationsResource(client),
-        'conversations_set': SlackConversationsSetResource(client),
-        'dialog': SlackDialogResource(client),
-        'dnd': SlackDndResource(client),
-        'dnd_end': SlackDndEndResource(client),
-        'dnd_set': SlackDndSetResource(client),
-        'dnd_team': SlackDndTeamResource(client),
-        'emoji': SlackEmojiResource(client),
-        'files': SlackFilesResource(client),
-        'files_comments': SlackFilesCommentsResource(client),
-        'files_remote': SlackFilesRemoteResource(client),
-        'files_revoke_public': SlackFilesRevokePublicResource(client),
-        'files_shared_public': SlackFilesSharedPublicResource(client),
-        'messages': SlackMessagesResource(client),
-        'migration': SlackMigrationResource(client),
-        'oauth': SlackOauthResource(client),
-        'oauth_v2': SlackOauthV2Resource(client),
-        'pins': SlackPinsResource(client),
-        'reactions': SlackReactionsResource(client),
-        'reminders': SlackRemindersResource(client),
-        'rtm': SlackRtmResource(client),
-        'stars': SlackStarsResource(client),
-        'team': SlackTeamResource(client),
-        'team_access': SlackTeamAccessResource(client),
-        'team_billable': SlackTeamBillableResource(client),
-        'team_integration': SlackTeamIntegrationResource(client),
-        'team_profile': SlackTeamProfileResource(client),
-        'usergroups': SlackUsergroupsResource(client),
-        'usergroups_users': SlackUsergroupsUsersResource(client),
-        'users': SlackUsersResource(client),
-        'users_delete': SlackUsersDeleteResource(client),
-        'users_get': SlackUsersGetResource(client),
-        'users_lookup_by': SlackUsersLookupByResource(client),
-        'users_profile': SlackUsersProfileResource(client),
-        'users_set': SlackUsersSetResource(client),
-        'views': SlackViewsResource(client),
-        'workflows_step': SlackWorkflowsStepResource(client),
-        'workflows_update': SlackWorkflowsUpdateResource(client),
-    }
+    """Eagerly build all resource clients (backward-compatible)."""
+    return {slug: build_resource(client, slug) for slug in RESOURCE_REGISTRY}

@@ -1,0 +1,8 @@
+target/
+gen/
+binaries/
+vendor/podman/**
+!vendor/
+!vendor/podman/
+!vendor/podman/macos-arm64/
+!vendor/podman/macos-arm64/README.md

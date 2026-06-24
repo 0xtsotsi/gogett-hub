@@ -182,6 +182,7 @@ Python and TypeScript SDKs (with 25+ React hooks) live in [`lemma-python/`](lemm
 | `agentbox/` | Sandboxed agent workspace manager and runtime image | Apache-2.0 |
 | `agentbox-client/` | Python client for the AgentBox workspace API | Apache-2.0 |
 | `lemma-stack/` | `lemma-stack` — installer and manager for a self-contained local stack | Apache-2.0 |
+| `desktop/` | Tauri macOS desktop app (thin shell around the `lemma-stack` supervisor) | AGPLv3 |
 | `lemma-cli/` | `lemma-terminal` — the `lemma` CLI and terminal UI | Apache-2.0 |
 | `lemma-python/` | `lemma-sdk` — Python SDK | Apache-2.0 |
 | `lemma-typescript/` | `lemma-sdk` — TypeScript/JavaScript SDK for Node, browser, and React | Apache-2.0 |

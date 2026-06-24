@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/lemma-supervisor"],
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    }
+  }
+}

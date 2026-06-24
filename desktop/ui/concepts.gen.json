@@ -1,0 +1,64 @@
+{
+  "tour": [
+    {
+      "id": "pod",
+      "term": "Pod",
+      "oneLiner": "A self-contained workspace for one team or process — its agents, data, flows, and permissions live together.",
+      "explainer": [
+        "Think of a pod as one operating unit of your business: support, hiring, ads reporting. Everything the work needs — AI workers, business data, automations, and access rules — is scoped inside it.",
+        "Keeping each process in its own pod means agents only see the data they should, and you can share one pod without exposing another."
+      ],
+      "example": "A \"Customer support\" pod holds the triage agent, the Tickets table, the escalation flow, and the connected support inbox."
+    },
+    {
+      "id": "agent",
+      "term": "Agent",
+      "oneLiner": "An AI worker with a role, instructions, and scoped access to your tables, files, and apps.",
+      "explainer": [
+        "An agent is hired like a teammate: you write its instructions (the job description), pick its runtime, and grant it access to exactly the data and apps it needs.",
+        "Agents can be asked things in chat, put on a schedule, given steps in a flow, or wired to a surface so they handle inbound work on their own."
+      ],
+      "example": "A triage agent reads each new support email, labels the issue, and files a row in the Tickets table."
+    },
+    {
+      "id": "flow",
+      "term": "Workflow",
+      "oneLiner": "A repeatable process: steps of agents, functions, decisions, and human approvals that run in order.",
+      "explainer": [
+        "When work has more than one step, put it in a workflow instead of one big agent prompt. Each step does one job, and you can mix AI steps with deterministic functions and human approval gates.",
+        "Workflows start from a schedule, a webhook, chat, or by hand — and every run is inspectable step by step."
+      ],
+      "example": "New lead arrives → agent enriches it → function scores it → if score is high, a human approves → agent drafts the outreach email."
+    },
+    {
+      "id": "table",
+      "term": "Table",
+      "oneLiner": "Typed business data the pod reads and writes — leads, tickets, tasks — with per-row security.",
+      "explainer": [
+        "Tables are where the pod keeps structured state. Columns are typed fields; rows are records that agents, flows, and people all read and update.",
+        "Because access is controlled per row and per agent, an agent can work the Tickets table without ever seeing Payroll."
+      ],
+      "example": "A Leads table with name, company, source, and status — agents append rows, your team works them from a app."
+    },
+    {
+      "id": "surface",
+      "term": "Surface",
+      "oneLiner": "A channel where work reaches the pod: Slack, Gmail, WhatsApp, Telegram, Teams, Outlook.",
+      "explainer": [
+        "Without a surface, work only enters Lemma when someone types here. Connect Slack or Gmail and the pod’s agents can pick up messages, triage them, and reply — in the place your team already works.",
+        "Each surface is wired to a specific agent, so you control exactly what handles inbound work."
+      ],
+      "example": "Connect the support Gmail inbox; the triage agent labels each email and files a row in the Tickets table."
+    },
+    {
+      "id": "kit",
+      "term": "Kit",
+      "oneLiner": "A whole pod setup compressed into something shareable — install it like a plugin and it builds out apps, agents, tables, workflows, and schedules.",
+      "explainer": [
+        "Think of a kit as a pod’s working parts packaged so they drop into any other pod. Installing one can add apps, agents, tables, schedules, and workflows at once — whatever that kit bundles — already wired to work together.",
+        "Everything it installs is yours to edit: rename the agents, rework the app, change the schedule, delete what you don’t need."
+      ],
+      "example": "The hiring kit installs a candidate table, a sourcing agent, a review app, and a weekly follow-up schedule in one click."
+    }
+  ]
+}

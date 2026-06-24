@@ -1,15 +1,18 @@
 <div align="center">
 
+<img src="lemma-frontend/public/lemma-icon-fullbleed.svg" width="112" alt="Lemma" />
+
 # Lemma
 
 **The open-source workspace where humans and AI agents work as one team.**
 
-Agents hold roles, own tasks, and follow your permissions — right alongside your teammates.
-Their output lands as rows in your tables, not paragraphs in a chat scrollback.
+Agents hold roles, own tasks, and follow your permissions — right alongside your teammates. Their output lands as rows in your tables, not paragraphs in a chat scrollback.
 
-Runs on your machine — or on [lemma.work](https://lemma.work) when you'd rather not host · powered by the **Claude or ChatGPT subscription you already pay for**, your own keys, or any compatible endpoint · AGPLv3 core, Apache-2.0 SDKs
+Runs on your machine — or on **[lemma.work](https://lemma.work)** when you'd rather not host. Powered by the Claude or ChatGPT subscription you already pay for, your own keys, or any compatible endpoint. AGPLv3 core, Apache-2.0 SDKs.
 
 [Quickstart](#quickstart) · [Templates](#start-from-a-pod-not-a-blank-page) · [Why Lemma](#chat-is-not-where-work-lives) · [Surfaces](#use-it-from-anywhere) · [Coding agents](#the-back-layer-for-your-coding-agents) · [Docs](https://lemma.work/docs)
+
+**Website → [lemma.work](https://lemma.work)**
 
 </div>
 

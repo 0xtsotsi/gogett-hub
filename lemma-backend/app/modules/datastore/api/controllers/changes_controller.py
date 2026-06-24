@@ -249,7 +249,11 @@ async def datastore_changes_ws(
         )
         return
 
-    await websocket.accept()
+    try:
+        await websocket.accept()
+    except RuntimeError:
+        # Client disconnected before we could accept (race on connect).
+        return
 
     forwarder = asyncio.create_task(
         _forward_changes(

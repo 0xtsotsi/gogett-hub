@@ -192,7 +192,8 @@ def build_method(tool: dict[str, Any], operation_name: str, action: str) -> str:
     if tool.get("request_body") is not None:
         parameter_names.append("body")
     parameter_hint = ", ".join(parameter_names) if parameter_names else "No explicit inputs."
-    description = normalize_sentence(tool.get("description") or "").replace('"""', '\\"\\"\\"')
+    description = normalize_sentence(tool.get("description") or "")
+    docstring = _format_method_docstring(description, parameter_hint)
     return "\n".join(
         [
             "    @operation(",
@@ -204,7 +205,7 @@ def build_method(tool: dict[str, Any], operation_name: str, action: str) -> str:
             f"        tags=tuple({tool.get('tags', [])!r}),",
             "    )",
             f"    async def {method_name}(self, data: {input_name}) -> {output_name}:",
-            f'        """{description}\n\nImportant inputs: {parameter_hint}"""',
+            f"        {docstring}",
             f"        tool = self._client.get_tool({tool['name']!r})",
             "        result = await tool.execute(data.model_dump(exclude_none=True, exclude_unset=True, by_alias=False))",
             "        return output_name.model_validate(coerce_tool_result(result))".replace(

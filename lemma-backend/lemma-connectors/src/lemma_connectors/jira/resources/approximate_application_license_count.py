@@ -23,7 +23,7 @@ class JiraApproximateApplicationLicenseCountResource(BaseResourceClient):
         tags=tuple(['License metrics']),
     )
     async def get(self, data: GetApproximateApplicationLicenseCountInput) -> GetApproximateApplicationLicenseCountOutput:
-        """Returns the total approximate user account for a specific `jira licence application key`. Please note this information is cached with a 7-day lifecycle and could be stale at the time of call. #### Application Key #### An application key represents a specific version of Jira. See \{@link ApplicationKey\} for details **[Permissions](#permissions) required:** *Administer Jira* [global permission](https://confluence.atlassian.com/x/x4dKLg).
+        r"""Returns the total approximate user account for a specific `jira licence application key`. Please note this information is cached with a 7-day lifecycle and could be stale at the time of call. #### Application Key #### An application key represents a specific version of Jira. See \{@link ApplicationKey\} for details **[Permissions](#permissions) required:** *Administer Jira* [global permission](https://confluence.atlassian.com/x/x4dKLg).
 
 Important inputs: application_key"""
         tool = self._client.get_tool('get_approximate_application_license_count')

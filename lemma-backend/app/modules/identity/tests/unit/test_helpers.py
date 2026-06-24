@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
         ("abc_def", "Abc Def"),
         ("my-cool-pod", "My Cool Pod"),
         ("sales_2024", "Sales 2024"),
-        ("LEDflex Support AI", "LEDflex Support AI"),  # already human -> untouched
+        ("Acme Support AI", "Acme Support AI"),  # already human -> untouched
         ("Acme Inc", "Acme Inc"),
         ("iOS", "iOS"),  # mixed case preserved
         ("", ""),

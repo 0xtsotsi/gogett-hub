@@ -4,9 +4,6 @@ SHELL := /bin/bash
 
 TEAMS_MANIFEST_DIR ?= manifests/teams
 OUTPUT ?= $(TEAMS_MANIFEST_DIR)/lemma-teams.zip
-LEDFLEX_OUTPUT ?= $(TEAMS_MANIFEST_DIR)/ledflex-teams.zip
-LEDFLEX_ICON ?= /Users/anukul/Projects/lemma-pods/pods/ledflex/desks/ledflex-support/public/apple-touch-icon.png
-
 # Parallelism for the fast e2e suite (pytest-xdist). Each worker spins up its
 # OWN isolated testcontainers (Postgres/Redis/SuperTokens) on ephemeral ports
 # and per-worker /tmp roots, so workers never share state. Default 2 is the
@@ -19,7 +16,7 @@ LEDFLEX_ICON ?= /Users/anukul/Projects/lemma-pods/pods/ledflex/desks/ledflex-sup
 E2E_WORKERS ?= 2
 E2E_PARALLEL := -n $(E2E_WORKERS) --dist loadscope
 
-.PHONY: help test test-unit test-e2e test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip teams-manifest-ledflex-zip
+.PHONY: help test test-unit test-e2e test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip
 
 help:
 	@echo "Lemma backend:"
@@ -38,8 +35,6 @@ help:
 	@echo "  (full dev workflow: use 'make dev STACK=cloud|oss' from the repo root)"
 	@echo "  make teams-manifest-zip OUTPUT=path"
 	@echo "                         # package Teams manifest zip"
-	@echo "  make teams-manifest-ledflex-zip LEDFLEX_OUTPUT=path"
-	@echo "                         # package LEDFlex Teams manifest zip"
 	@echo "  make docker-build      # build backend image from monorepo root"
 	@echo "  make agentbox-build # build local AgentBox runtime images"
 	@echo ""
@@ -113,11 +108,3 @@ teams-manifest-zip:
 		--manifest-dir "$(TEAMS_MANIFEST_DIR)" \
 		--output "$(OUTPUT)"
 
-teams-manifest-ledflex-zip:
-	python3 scripts/package_teams_manifest.py \
-		--manifest-dir "$(TEAMS_MANIFEST_DIR)" \
-		--output "$(LEDFLEX_OUTPUT)" \
-		--app-short-name "Product Support" \
-		--app-full-name "Product Support" \
-		--color-icon "$(LEDFLEX_ICON)" \
-		--outline-icon "$(LEDFLEX_ICON)"

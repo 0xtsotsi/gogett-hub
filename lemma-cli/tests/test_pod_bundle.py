@@ -731,8 +731,8 @@ def test_import_pod_files_only_creates_missing_folders(tmp_path: Path):
 
 def test_import_pod_files_updates_existing_folder_metadata_on_conflict(tmp_path: Path):
     files_root = tmp_path / "files"
-    (files_root / "LEDFLEX_SKILLS").mkdir(parents=True)
-    (files_root / "LEDFLEX_SKILLS" / ".folder.json").write_text(
+    (files_root / "DEMO_SKILLS").mkdir(parents=True)
+    (files_root / "DEMO_SKILLS" / ".folder.json").write_text(
         json.dumps({"description": "Shared skills", "visibility": "POD"}),
         encoding="utf-8",
     )
@@ -744,13 +744,13 @@ def test_import_pod_files_updates_existing_folder_metadata_on_conflict(tmp_path:
 
     def get_file(pod_id: str, path: str) -> dict[str, object]:
         assert pod_id == "pod_123"
-        assert path == "/LEDFLEX_SKILLS"
+        assert path == "/DEMO_SKILLS"
         return {
             "id": "folder_existing",
-            "name": "LEDFLEX_SKILLS",
+            "name": "DEMO_SKILLS",
             "kind": "FOLDER",
             "visibility": "PRIVATE",
-            "path": "/LEDFLEX_SKILLS",
+            "path": "/DEMO_SKILLS",
             "description": "Old private folder",
         }
 
@@ -766,7 +766,7 @@ def test_import_pod_files_updates_existing_folder_metadata_on_conflict(tmp_path:
         )
         return {
             "id": "folder_existing",
-            "name": "LEDFLEX_SKILLS",
+            "name": "DEMO_SKILLS",
             "kind": "FOLDER",
             "visibility": payload.get("visibility") or "PRIVATE",
             "path": path,
@@ -790,11 +790,11 @@ def test_import_pod_files_updates_existing_folder_metadata_on_conflict(tmp_path:
     finally:
         pod_bundle._list_pod_visible_items = original_list
 
-    assert summary == ["updated-folder:LEDFLEX_SKILLS"]
+    assert summary == ["updated-folder:DEMO_SKILLS"]
     assert update_calls == [
         {
             "pod_id": "pod_123",
-            "path": "/LEDFLEX_SKILLS",
+            "path": "/DEMO_SKILLS",
             "description": "Shared skills",
             "visibility": "POD",
         }
@@ -806,12 +806,12 @@ def test_import_pod_bundle_function_update_strips_config(tmp_path: Path):
         json.dumps({"name": "demo", "format_version": 1}),
         encoding="utf-8",
     )
-    function_dir = tmp_path / "functions" / "sync_ledflex_products"
+    function_dir = tmp_path / "functions" / "sync_demo_products"
     function_dir.mkdir(parents=True)
     (function_dir / "code.py").write_text(
         "#input_type_name: SyncInput\n"
         "#output_type_name: SyncOutput\n"
-        "#function_name: sync_ledflex_products\n\n"
+        "#function_name: sync_demo_products\n\n"
         "from pydantic import BaseModel\n\n"
         "class SyncInput(BaseModel):\n"
         "    pass\n\n"
@@ -819,10 +819,10 @@ def test_import_pod_bundle_function_update_strips_config(tmp_path: Path):
         "    ok: bool = True\n",
         encoding="utf-8",
     )
-    (function_dir / "sync_ledflex_products.json").write_text(
+    (function_dir / "sync_demo_products.json").write_text(
         json.dumps(
             {
-                "name": "sync_ledflex_products",
+                "name": "sync_demo_products",
                 "description": "Sync test",
                 "type": "JOB",
                 "config": {"api_key": "should-not-be-sent"},
@@ -853,7 +853,7 @@ def test_import_pod_bundle_function_update_strips_config(tmp_path: Path):
             list=lambda pod_id, limit=1000: {"items": [{"name": "products_table"}]}
         ),
         functions=SimpleNamespace(
-            list=lambda pod_id, limit=1000: {"items": [{"name": "sync_ledflex_products"}]},
+            list=lambda pod_id, limit=1000: {"items": [{"name": "sync_demo_products"}]},
             # _FlatPodProxy routes `.update(name, request)` to `update_graph(pod_id, name, **request.to_dict())`
             update_graph=lambda pod_id, function_name, **payload: update_payloads.append((pod_id, function_name, payload)) or {"name": function_name},
             replace_permissions=lambda pod_id, function_name, payload: permission_payloads.append((pod_id, function_name, _plain(payload)))
@@ -879,7 +879,7 @@ def test_import_pod_bundle_function_update_strips_config(tmp_path: Path):
         "code": (
             "#input_type_name: SyncInput\n"
             "#output_type_name: SyncOutput\n"
-            "#function_name: sync_ledflex_products\n\n"
+            "#function_name: sync_demo_products\n\n"
             "from pydantic import BaseModel\n\n"
             "class SyncInput(BaseModel):\n"
             "    pass\n\n"
@@ -890,7 +890,7 @@ def test_import_pod_bundle_function_update_strips_config(tmp_path: Path):
     assert permission_payloads == [
         (
             "pod_123",
-            "sync_ledflex_products",
+            "sync_demo_products",
             {
                 "grants": [
                     {

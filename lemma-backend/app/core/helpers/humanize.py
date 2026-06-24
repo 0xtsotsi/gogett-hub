@@ -12,7 +12,7 @@ def humanize_name(value: str | None) -> str:
 
     Only slug-like names (no whitespace) are transformed. A value that already
     contains a space is treated as a human-entered display name and returned
-    unchanged, so intentional capitalization like ``"LEDflex Support AI"`` is
+    unchanged, so intentional capitalization like ``"Acme Support AI"`` is
     preserved. Tokens that are already mixed case (``iOS``, ``OpenAI``) are also
     left intact.
     """

@@ -19,11 +19,11 @@ async def test_pod_invitation_email_uses_pod_layout(monkeypatch):
 
     result = await adapter.send_invitation_email(
         to_email="pc@example.com",
-        organization_name="LEDflex",
+        organization_name="Acme",
         inviter_email="lemma@lemma.work",
         role=OrganizationRole.ORG_MEMBER,
         accept_url="https://lemma.work/invitations/test/accept",
-        pod_name="LEDflex Support AI",
+        pod_name="Acme Support AI",
         pod_description=(
             "Ask product questions, find datasheets and certificates, and track "
             "support tickets from one place."
@@ -32,11 +32,11 @@ async def test_pod_invitation_email_uses_pod_layout(monkeypatch):
 
     html = sent["html_content"]
     assert result is True
-    assert sent["subject"] == "Invitation to join pod LEDflex Support AI"
+    assert sent["subject"] == "Invitation to join pod Acme Support AI"
     assert "Pod invitation" in html
-    assert "Use LEDflex Support AI." in html
+    assert "Use Acme Support AI." in html
     assert "<strong" in html and "Lemma" in html
-    assert "Open LEDflex Support AI" in html
+    assert "Open Acme Support AI" in html
     assert "Ask product questions" in html
     assert "This invite was sent to" in html
     assert "pc@example.com" in html

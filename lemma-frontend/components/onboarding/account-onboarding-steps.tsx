@@ -451,7 +451,7 @@ export function ConnectStep({
                           setSelectedModel(models[0] ?? null);
                         }}
                         className={cn(
-                          "flex w-full items-center gap-2 rounded-md border px-3 py-2.5 text-left transition",
+                          "agent-runtime-harness-button flex w-full items-center gap-2 rounded-md border px-3 py-2.5 text-left transition",
                           isSelected
                             ? "border-[var(--action-primary)] bg-[var(--action-primary-soft)]"
                             : "border-[var(--border-subtle)] hover:bg-[var(--surface-1)]",
@@ -488,7 +488,7 @@ export function ConnectStep({
                               type="button"
                               onClick={() => setSelectedModel(model)}
                               className={cn(
-                                "rounded-full border px-2.5 py-1 text-xs transition",
+                                "chip rounded-full border px-2.5 py-1 text-xs transition",
                                 selectedModel === model
                                   ? "border-[var(--action-primary)] bg-[var(--action-primary-soft)] text-[var(--action-primary)]"
                                   : "border-[var(--border-subtle)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]",
@@ -591,7 +591,7 @@ export function ConnectStep({
                         setBaseUrl(preset.baseUrl);
                       }}
                       className={cn(
-                        "rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                        "chip rounded-full border px-3 py-1.5 text-xs font-medium transition",
                         isActive
                           ? "border-[var(--action-primary)] bg-[var(--action-primary-soft)] text-[var(--action-primary)]"
                           : "border-[var(--border-subtle)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]",
@@ -612,7 +612,7 @@ export function ConnectStep({
                     setProviderKind(option.kind);
                   }}
                   className={cn(
-                    "flex-1 rounded-md border px-3 py-2 text-sm font-medium transition",
+                    "agent-runtime-scope-button flex-1 rounded-md border px-3 py-2 text-sm font-medium transition",
                     providerKind === option.kind
                       ? "border-[var(--action-primary)] bg-[var(--action-primary-soft)] text-[var(--action-primary)]"
                       : "border-[var(--border-subtle)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]",
@@ -701,7 +701,7 @@ export function ConnectStep({
           <button
             type="button"
             onClick={() => onContinue({ kind: "lemma" })}
-            className="mx-auto mt-1 block text-xs text-[var(--text-tertiary)] underline-offset-4 transition hover:text-[var(--text-secondary)] hover:underline"
+            className="setup-defer-button mx-auto mt-1 block text-xs text-[var(--text-tertiary)] underline-offset-4 transition hover:text-[var(--text-secondary)] hover:underline"
           >
             Skip for now
           </button>
@@ -866,7 +866,7 @@ export function StartStep({
           type="button"
           onClick={onSkip}
           disabled={isCreating}
-          className="mx-auto mt-3 block text-xs text-[var(--text-tertiary)] underline-offset-4 transition hover:text-[var(--text-secondary)] hover:underline disabled:opacity-50"
+          className="setup-defer-button mx-auto mt-3 block text-xs text-[var(--text-tertiary)] underline-offset-4 transition hover:text-[var(--text-secondary)] hover:underline disabled:opacity-50"
         >
           I&apos;ll set this up later
         </button>

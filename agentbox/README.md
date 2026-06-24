@@ -116,7 +116,7 @@ curl -X POST http://127.0.0.1:8711/sandboxes/user-123/sessions/task-a \
     "cwd": "/workspace",
     "env": {
       "LEMMA_TOKEN": "...",
-      "LEMMA_BASE_URL": "https://api.asur.work"
+      "LEMMA_BASE_URL": "https://api.lemma.work"
     }
   }'
 ```

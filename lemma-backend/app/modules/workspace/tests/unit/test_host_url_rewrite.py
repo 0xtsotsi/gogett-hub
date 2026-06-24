@@ -35,7 +35,7 @@ def test_loopback_hosts_rewritten_for_docker(url, expected):
 @pytest.mark.parametrize(
     "url",
     [
-        "https://api.asur.work",
+        "https://api.lemma.work",
         "https://api.lemma.example.com:8710",
         # A non-loopback sslip.io host must NOT be rewritten.
         "http://10-0-0-5.sslip.io:8710",

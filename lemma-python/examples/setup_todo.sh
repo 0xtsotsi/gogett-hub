@@ -4,10 +4,10 @@
 #
 # Usage:
 #   LEMMA_TOKEN=<token> bash setup_todo.sh
-#   LEMMA_TOKEN=<token> LEMMA_BASE_URL=https://api.asur.work bash setup_todo.sh
+#   LEMMA_TOKEN=<token> LEMMA_BASE_URL=https://api.lemma.work bash setup_todo.sh
 #
 # Or authenticate via the CLI first:
-#   lemma config set --base-url https://api.asur.work --token <token>
+#   lemma config set --base-url https://api.lemma.work --token <token>
 #   bash setup_todo.sh
 #
 # For local dev with self-signed certs:
@@ -15,7 +15,7 @@
 # =============================================================================
 set -euo pipefail
 
-BASE_URL="${LEMMA_BASE_URL:-https://api.asur.work}"
+BASE_URL="${LEMMA_BASE_URL:-https://api.lemma.work}"
 TOKEN="${LEMMA_TOKEN:-}"
 SSL_FLAG=""
 if [[ "${LEMMA_SSL_NO_VERIFY:-0}" == "1" ]]; then

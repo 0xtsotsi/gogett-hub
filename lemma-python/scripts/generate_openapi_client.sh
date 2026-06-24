@@ -5,7 +5,7 @@ set -euo pipefail
 #   bash scripts/generate_openapi_client.sh
 #
 # Defaults:
-#   OPENAPI_URL=https://api.asur.work/openapi.json
+#   OPENAPI_URL=https://api.lemma.work/openapi.json
 #
 # Local override examples:
 #   LEMMA_API_URL=http://127.0.0.1:8000 bash scripts/generate_openapi_client.sh
@@ -49,13 +49,13 @@ format_generated_python() {
 }
 
 # Derive the OpenAPI URL from LEMMA_API_URL if set (recommended pattern):
-#   LEMMA_API_URL=https://api.asur.work bash generate_openapi_client.sh
+#   LEMMA_API_URL=https://api.lemma.work bash generate_openapi_client.sh
 # Or explicitly:
-#   OPENAPI_URL=https://api.asur.work/openapi.json bash generate_openapi_client.sh
+#   OPENAPI_URL=https://api.lemma.work/openapi.json bash generate_openapi_client.sh
 if [[ -n "${LEMMA_API_URL:-}" ]]; then
   OPENAPI_URL="${OPENAPI_URL:-${LEMMA_API_URL%/}/openapi.json}"
 fi
-OPENAPI_URL="${OPENAPI_URL:-https://api.asur.work/openapi.json}"
+OPENAPI_URL="${OPENAPI_URL:-https://api.lemma.work/openapi.json}"
 
 CURL_ARGS=()
 if [[ "${OPENAPI_INSECURE:-0}" == "1" || "${LEMMA_SSL_NO_VERIFY:-0}" == "1" ]]; then

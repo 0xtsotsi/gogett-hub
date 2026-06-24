@@ -77,16 +77,20 @@ class Settings(BaseSettings):
         description="API key for the server-provided OpenAI-compatible Lemma model profile.",
     )
     lemma_openai_base_url: str = Field(
-        default="https://api.fireworks.ai/inference/v1",
-        description="Base URL for the server-provided OpenAI-compatible Lemma model profile.",
+        default="https://api.openai.com/v1",
+        description=(
+            "Base URL for the OpenAI-compatible system model profile. Defaults to "
+            "OpenAI; point it at any OpenAI-compatible endpoint (Fireworks, a local "
+            "server, a gateway) via LEMMA_OPENAI_BASE_URL."
+        ),
     )
     lemma_openai_default_model: str = Field(
-        default="minimax-m3",
-        description="Default public model name for the server-provided OpenAI-compatible Lemma profile.",
+        default="gpt-4o",
+        description="Default model name for the OpenAI-compatible system model profile.",
     )
     lemma_openai_model_names: str = Field(
-        default="minimax-m3,glm-5.2,kimi-k2.7-code,kimi-k2.6,deepseek-v4-pro,deepseek-v4-flash",
-        description="Comma-separated public model names for the server-provided OpenAI-compatible Lemma profile.",
+        default="gpt-4o,gpt-4o-mini",
+        description="Comma-separated model names for the OpenAI-compatible system model profile.",
     )
     lemma_anthropic_api_key: Optional[str] = Field(
         default=None,
@@ -360,7 +364,7 @@ class Settings(BaseSettings):
     # Locally this is a sslip.io wildcard (e.g. 127-0-0-1.sslip.io:8711) that
     # resolves to loopback; in cloud it is the real apps domain behind nginx.
     app_base_domain: str = Field(
-        default="apps.asur.work",
+        default="apps.lemma.work",
         description="Base domain for public app subdomains",
     )
     browser_sdk_path: Optional[str] = Field(

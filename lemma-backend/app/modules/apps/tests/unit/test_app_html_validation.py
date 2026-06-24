@@ -60,7 +60,7 @@ def test_does_not_flag_correct_double_constructor():
 def test_flags_hardcoded_absolute_sdk_host():
     # An app's own subdomain does not serve /public/sdk — build from cfg.apiUrl.
     html = (
-        '<script src="https://crm-app.apps.asur.work/public/sdk/lemma-client.js">'
+        '<script src="https://crm-app.apps.lemma.work/public/sdk/lemma-client.js">'
         "</script>"
     )
     issues = lint_app_html(html)

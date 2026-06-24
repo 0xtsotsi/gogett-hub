@@ -74,14 +74,20 @@ def _print_next_steps(config) -> None:
     step = 1
     if not has_llm:
         console.print(
-            f"  {step}. LLM model key  [red](required — agents won't run without it)[/red]"
+            f"  {step}. Model provider  [red](required — agents won't run without one; "
+            "set the type + key together)[/red]"
         )
+        console.print("       [dim]# Anthropic (Claude):[/dim]")
+        console.print("       lemma-stack config set LEMMA_DEFAULT_MODEL_TYPE anthropic_compat")
         console.print("       lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...")
         console.print(
-            "       [dim]# or an OpenAI-compatible key "
-            "(base URL defaults to Fireworks; override with LEMMA_OPENAI_BASE_URL):[/dim]"
+            "       [dim]# or any OpenAI-compatible provider (OpenAI, Fireworks, local, …):[/dim]"
         )
+        console.print("       lemma-stack config set LEMMA_DEFAULT_MODEL_TYPE openai_compat")
         console.print("       lemma-stack config set LEMMA_OPENAI_API_KEY <key>")
+        console.print("       lemma-stack config set LEMMA_OPENAI_BASE_URL https://api.openai.com/v1")
+        console.print("       lemma-stack config set LEMMA_OPENAI_DEFAULT_MODEL gpt-4o")
+        console.print("       lemma-stack config set LEMMA_OPENAI_MODEL_NAMES gpt-4o,gpt-4o-mini")
         step += 1
     if not has_composio:
         console.print(

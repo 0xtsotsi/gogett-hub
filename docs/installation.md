@@ -48,20 +48,48 @@ Infrastructure (Postgres, Redis, SuperTokens, Kreuzberg) stays on a private cont
 ### Configure
 
 Configuration lives in `~/.lemma/local/config.toml`. Bare UPPER_SNAKE keys route
-straight to the backend environment. The ones you usually need to set:
+straight to the backend environment.
+
+#### 1. A model provider — required (agents won't run without one)
+
+The system model profile is **provider-agnostic**: choose `anthropic_compat` or
+`openai_compat`, set the matching API key, and — for OpenAI-compatible — the base
+URL and the models to expose. Set them **together** so the profile resolves.
+
+**Anthropic (Claude):**
+
+```bash
+lemma-stack config set LEMMA_DEFAULT_MODEL_TYPE anthropic_compat
+lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...
+# optional — these default to claude-sonnet-4-5 / claude-haiku-4-5:
+lemma-stack config set LEMMA_ANTHROPIC_DEFAULT_MODEL claude-sonnet-4-5
+lemma-stack config set LEMMA_ANTHROPIC_MODEL_NAMES claude-sonnet-4-5,claude-haiku-4-5
+```
+
+**OpenAI-compatible (OpenAI, Fireworks, Together, a gateway, a local server):**
+
+```bash
+lemma-stack config set LEMMA_DEFAULT_MODEL_TYPE openai_compat
+lemma-stack config set LEMMA_OPENAI_API_KEY <key>
+lemma-stack config set LEMMA_OPENAI_BASE_URL https://api.openai.com/v1   # your provider's endpoint
+lemma-stack config set LEMMA_OPENAI_DEFAULT_MODEL gpt-4o                 # a model your key can use
+lemma-stack config set LEMMA_OPENAI_MODEL_NAMES gpt-4o,gpt-4o-mini       # models to expose in the picker
+```
+
+> Defaults are OpenAI/Anthropic, not any specific gateway — point `*_BASE_URL` and
+> `*_MODEL*` at whatever provider your key is for.
+
+#### 2. Other settings
 
 | Variable | What it's for |
 |----------|---------------|
-| `LEMMA_ANTHROPIC_API_KEY` | **Required** (this or the OpenAI key). Anthropic-compatible key (or any Anthropic-compatible endpoint) so pod agents can run. |
-| `LEMMA_OPENAI_API_KEY` | **Required** (this or the Anthropic key). OpenAI-compatible key; base URL defaults to Fireworks (override with `LEMMA_OPENAI_BASE_URL`). Also backs Fireworks embeddings/reranking when enabled. |
 | `COMPOSIO_API_KEY` | **Recommended.** Powers the app connectors / integrations (Gmail, Slack, Notion, …). Pair with `COMPOSIO_WEBHOOK_SECRET` if you wire up triggers. |
 | `SECRET_ENCRYPTION_KEY` | Fernet key for secrets at rest (connector creds, webhook secrets). In local/testing a dev seed is used; **set this for any real data**. Generate one: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Falls back to the legacy `CONNECTOR_ENCRYPTION_KEY`. |
 
 ```bash
-lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...   # or LEMMA_OPENAI_API_KEY (required)
-lemma-stack config set COMPOSIO_API_KEY <key>               # recommended
+lemma-stack config set COMPOSIO_API_KEY <key>
 lemma-stack config set SECRET_ENCRYPTION_KEY <fernet-key>
-lemma-stack restart
+lemma-stack restart   # apply everything
 ```
 
 List what's set with `lemma-stack config list`, or edit the file directly with

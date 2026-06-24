@@ -27,9 +27,10 @@ if ! command -v uv >/dev/null 2>&1; then
   command -v uv >/dev/null 2>&1 || fail "uv installed but not on PATH; open a new shell and re-run"
 fi
 
-# LEMMA_STACK_SOURCE lets developers bootstrap from a checkout instead of PyPI:
+# LEMMA_STACK_SOURCE lets developers bootstrap from a local checkout:
 #   LEMMA_STACK_SOURCE=$PWD/lemma-stack ./install.sh -y
-LEMMA_STACK_SPEC="${LEMMA_STACK_SOURCE:-lemma-stack}"
+# When unset, install from the git repo (the package is not on PyPI yet).
+LEMMA_STACK_SPEC="${LEMMA_STACK_SOURCE:-git+https://github.com/lemma-work/lemma-platform.git#subdirectory=lemma-stack}"
 
 say "Installing lemma-stack…"
 uv tool install --force "$LEMMA_STACK_SPEC" >/dev/null

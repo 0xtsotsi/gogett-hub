@@ -192,7 +192,7 @@ function PodJoinPolicyPanel({
                                 className={cn(
                                     'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-gentle',
                                     selected
-                                        ? 'border-[var(--state-success)] bg-[var(--state-success)] text-white'
+                                        ? 'border-[var(--state-success)] bg-[var(--state-success)] text-[var(--text-on-brand)]'
                                         : 'border-[var(--field-border)] text-transparent',
                                 )}
                             >

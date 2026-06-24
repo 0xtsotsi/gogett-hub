@@ -15,7 +15,7 @@ import { MobileSidebarDrawer } from "@/components/pod/mobile-sidebar-drawer";
 import { PodLayoutProvider, usePodLayout } from "@/components/pod/pod-layout-context";
 import { WorkspaceSidebar } from "@/components/pod/workspace-sidebar";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Home, MessageSquare, PanelLeftOpen, Settings, X } from "lucide-react";
+import { ArrowLeft, Home, PanelLeftOpen, Settings, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getLemmaClient } from "@/lib/sdk/lemma-client";
 import { usePod } from "@/lib/hooks/use-pods";
@@ -463,28 +463,6 @@ function PodShell({
         router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
     }, [closeAssistant, pathname, router, searchParams]);
 
-    // On a focus route the assistant can't dock, so its launcher opens it and
-    // returns to that section's companion list, where it docks beside the
-    // overview instead of crowding the editor.
-    const openAssistantFromFocus = useCallback(() => {
-        openAssistant();
-        const section = pathname.replace(`/pod/${pod.id}`, "").split("/").filter(Boolean)[0];
-        router.push(section ? `/pod/${pod.id}/${section}` : `/pod/${pod.id}/conversations`);
-    }, [openAssistant, pathname, pod.id, router]);
-
-    const focusLauncher = isFocusRoute ? (
-        <button
-            type="button"
-            onClick={openAssistantFromFocus}
-            className="pod-assistant-launcher custom-focus-ring fixed bottom-5 right-5 z-40 inline-flex h-11 items-center gap-2 rounded-full border border-[var(--border-subtle)] bg-[var(--pod-main-bg)] px-4 text-sm font-medium text-[var(--text-secondary)] shadow-[var(--shadow-lg)] transition-colors hover:text-[var(--text-primary)]"
-            aria-label="Open Lemma Assist"
-            title="Open Lemma Assist"
-        >
-            <MessageSquare className="h-4 w-4" strokeWidth={1.8} />
-            <span className="hidden sm:inline">Assistant</span>
-        </button>
-    ) : null;
-
     if (podAccess.isLoading) {
         return <PageLoader />;
     }
@@ -522,7 +500,6 @@ function PodShell({
                         {children}
                     </main>
                 </PodTopbarProvider>
-                {focusLauncher}
             </div>
         );
     }
@@ -719,7 +696,6 @@ function PodShell({
                     </div>
                 </PodTopbarProvider>
             </main>
-            {focusLauncher}
         </div>
     );
 }

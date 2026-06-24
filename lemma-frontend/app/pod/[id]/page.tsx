@@ -616,7 +616,7 @@ function PodAppsHomePanel({ podId }: { podId: string }) {
                                         {title}
                                     </Link>
                                     {page.url ? (
-                                        <p className="mt-0.5 truncate font-mono text-[11px] text-[var(--text-tertiary)]">
+                                        <p className="mt-0.5 truncate font-mono text-xs text-[var(--text-tertiary)]">
                                             {formatAppUrl(page.url)}
                                         </p>
                                     ) : null}
@@ -628,7 +628,7 @@ function PodAppsHomePanel({ podId }: { podId: string }) {
                                         rel="noreferrer"
                                         aria-label="Open live app"
                                         title="Open live app"
-                                        className="custom-focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--text-tertiary)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
+                                        className="lemma-quiet-icon-button custom-focus-ring text-[var(--text-tertiary)]"
                                     >
                                         <ExternalLink className="h-3.5 w-3.5" />
                                     </a>
@@ -655,7 +655,7 @@ const SURFACE_STATUS_TONE: Record<'success' | 'warning' | 'danger' | 'muted', { 
     success: { text: 'text-[var(--state-success)]', dot: 'bg-[var(--state-success)]' },
     warning: { text: 'text-[var(--state-warning)]', dot: 'bg-[var(--state-warning)]' },
     danger: { text: 'text-[var(--state-error)]', dot: 'bg-[var(--state-error)]' },
-    muted: { text: 'text-[var(--text-tertiary)]', dot: 'bg-[var(--border-default)]' },
+    muted: { text: 'text-[var(--text-tertiary)]', dot: 'bg-[var(--text-tertiary)]' },
 };
 
 function surfaceStatusView(status?: string | null): { label: string; tone: 'success' | 'warning' | 'danger' | 'muted' } {
@@ -686,8 +686,8 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
         return (
             <section className="w-full">
                 <h2 className="text-base font-medium text-[var(--text-primary)]">Reachable at</h2>
-                <div className="mt-3 flex items-start gap-4 rounded-xl border border-dashed border-[var(--border-subtle)] bg-[var(--surface-1)] px-5 py-5">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[color:color-mix(in_srgb,var(--delight)_14%,var(--surface-2))] text-[var(--delight)]">
+                <div className="mt-3 flex items-start gap-4 surface-panel-dashed px-5 py-5">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--delight-soft)] text-[var(--delight)]">
                         <MessageCircle className="h-5 w-5" strokeWidth={1.8} />
                     </span>
                     <div className="min-w-0 flex-1">
@@ -723,7 +723,7 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
                     <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover/all:translate-x-0.5" />
                 </Link>
             </div>
-            <div className="mt-3 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)]">
+            <div className="mt-3 overflow-hidden surface-panel surface-panel-quiet">
                 {sorted.map((surface) => {
                     const platform = String(surface.platform || '').toUpperCase();
                     const meta = SURFACE_META[platform] || { label: formatDisplayName(platform), logo: '' };

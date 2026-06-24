@@ -113,7 +113,7 @@ export function FirstWinChecklist({ podId, agentCount, workflowCount, conversati
                 <DropdownMenu.Trigger asChild>
                     <button
                         type="button"
-                        className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-1)] py-1 pl-1 pr-3 text-xs font-medium text-[var(--text-secondary)] shadow-[var(--shadow-xs)] transition-colors hover:border-[var(--border-default)] hover:text-[var(--text-primary)] focus-ring"
+                        className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-1)] py-1 pl-1 pr-3 text-xs font-medium text-[var(--text-secondary)] shadow-[var(--shadow-xs)] transition-colors hover:border-[var(--field-border)] hover:text-[var(--text-primary)] focus-ring"
                         aria-label={`Pod setup, ${doneCount} of ${items.length} done`}
                     >
                         <ProgressRing done={doneCount} total={items.length} />

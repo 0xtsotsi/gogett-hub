@@ -158,6 +158,8 @@ Python and TypeScript SDKs (with 25+ React hooks) live in [`lemma-python/`](lemm
 |------|---------|---------|
 | `lemma-backend/` | FastAPI backend, migrations, and infra Docker Compose | AGPLv3 |
 | `lemma-frontend/` | Next.js frontend | AGPLv3 |
+| `agentbox/` | Sandboxed agent workspace manager and runtime image | Apache-2.0 |
+| `agentbox-client/` | Python client for the AgentBox workspace API | Apache-2.0 |
 | `lemma-stack/` | `lemma-stack` — installer and manager for a self-contained local stack | Apache-2.0 |
 | `lemma-cli/` | `lemma-terminal` — the `lemma` CLI and terminal UI | Apache-2.0 |
 | `lemma-python/` | `lemma-sdk` — Python SDK | Apache-2.0 |
@@ -213,6 +215,8 @@ must release your modified source under the same terms.
 
 **Apache-2.0** (client-side developer tools):
 
+- `agentbox/` — sandboxed agent workspace manager and runtime image
+- `agentbox-client/` — Python client for the AgentBox workspace API
 - `lemma-stack/` — local stack installer and manager
 - `lemma-cli/` — the `lemma` CLI and terminal UI
 - `lemma-python/` — the Python SDK

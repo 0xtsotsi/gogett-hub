@@ -1,0 +1,25 @@
+[project]
+name = "agentbox-client"
+version = "0.1.0"
+description = "Async Python client for AgentBox manager and private app APIs"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.0",
+    "pydantic>=2.11.0",
+]
+
+[dependency-groups]
+dev = [
+    "fastapi[standard]>=0.128.0",
+    "kubernetes>=34.1.0",
+    "pydantic-settings>=2.11.0",
+    "pytest>=8.4.0",
+    "uvicorn[standard]>=0.42.0",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agentbox_client*"]

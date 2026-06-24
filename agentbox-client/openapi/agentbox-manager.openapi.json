@@ -1,0 +1,2210 @@
+{
+  "components": {
+    "schemas": {
+      "AppAccessRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "ttl_seconds": {
+            "default": 1800,
+            "maximum": 3600.0,
+            "minimum": 60.0,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "AppAccessRequest",
+        "type": "object"
+      },
+      "AppAccessResponse": {
+        "properties": {
+          "app": {
+            "title": "App",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "app",
+          "url",
+          "expires_at"
+        ],
+        "title": "AppAccessResponse",
+        "type": "object"
+      },
+      "DeleteResponse": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "deleted"
+        ],
+        "title": "DeleteResponse",
+        "type": "object"
+      },
+      "ExecCommandRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cmd": {
+            "title": "Cmd",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "maximum": 3600.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 300,
+            "title": "Timeout"
+          },
+          "tty": {
+            "default": false,
+            "title": "Tty",
+            "type": "boolean"
+          },
+          "workdir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workdir"
+          },
+          "yield_time_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yield Time Ms"
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "title": "ExecCommandRequest",
+        "type": "object"
+      },
+      "ExecCommandResponse": {
+        "properties": {
+          "completed": {
+            "default": true,
+            "title": "Completed",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "process_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process Id"
+          },
+          "stderr": {
+            "default": "",
+            "title": "Stderr",
+            "type": "string"
+          },
+          "stdout": {
+            "default": "",
+            "title": "Stdout",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "ExecCommandResponse",
+        "type": "object"
+      },
+      "ExecutePythonRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 60,
+            "maximum": 600.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "ExecutePythonRequest",
+        "type": "object"
+      },
+      "ExecutePythonResponse": {
+        "properties": {
+          "error_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Name"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "stderr": {
+            "title": "Stderr",
+            "type": "string"
+          },
+          "stdout": {
+            "title": "Stdout",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "session_id",
+          "stdout",
+          "stderr",
+          "status"
+        ],
+        "title": "ExecutePythonResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ListProcessesResponse": {
+        "properties": {
+          "processes": {
+            "items": {
+              "$ref": "#/components/schemas/RuntimeProcessInfo"
+            },
+            "title": "Processes",
+            "type": "array"
+          }
+        },
+        "title": "ListProcessesResponse",
+        "type": "object"
+      },
+      "RuntimeProcessInfo": {
+        "properties": {
+          "cmd": {
+            "title": "Cmd",
+            "type": "string"
+          },
+          "completed": {
+            "default": false,
+            "title": "Completed",
+            "type": "boolean"
+          },
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "process_id": {
+            "title": "Process Id",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "number"
+          },
+          "tty": {
+            "default": false,
+            "title": "Tty",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "process_id",
+          "cmd",
+          "cwd",
+          "started_at"
+        ],
+        "title": "RuntimeProcessInfo",
+        "type": "object"
+      },
+      "RuntimeSessionHeartbeatResponse": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "session_id",
+          "active"
+        ],
+        "title": "RuntimeSessionHeartbeatResponse",
+        "type": "object"
+      },
+      "RuntimeSessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "default": "/workspace",
+            "title": "Cwd",
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Env",
+            "type": "object"
+          }
+        },
+        "title": "RuntimeSessionRequest",
+        "type": "object"
+      },
+      "RuntimeSessionResponse": {
+        "properties": {
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "env_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Env Keys",
+            "type": "array"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "session_id",
+          "cwd"
+        ],
+        "title": "RuntimeSessionResponse",
+        "type": "object"
+      },
+      "SandboxEnsureRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Env",
+            "type": "object"
+          }
+        },
+        "title": "SandboxEnsureRequest",
+        "type": "object"
+      },
+      "SandboxResponse": {
+        "properties": {
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxSummary"
+          }
+        },
+        "required": [
+          "sandbox"
+        ],
+        "title": "SandboxResponse",
+        "type": "object"
+      },
+      "SandboxSummary": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "CREATING",
+              "RUNNING",
+              "STOPPED",
+              "ERROR"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ready",
+          "status"
+        ],
+        "title": "SandboxSummary",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WriteStdinRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "chars": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chars"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "process_id": {
+            "title": "Process Id",
+            "type": "string"
+          },
+          "yield_time_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yield Time Ms"
+          }
+        },
+        "required": [
+          "process_id"
+        ],
+        "title": "WriteStdinRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "AgentBox Manager",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/sandboxes/{sandbox_id}": {
+      "delete": {
+        "operationId": "delete_sandboxes_sandbox_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Sandbox"
+      },
+      "get": {
+        "operationId": "get_sandboxes_sandbox_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Sandbox"
+      },
+      "put": {
+        "operationId": "put_sandboxes_sandbox_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SandboxEnsureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ensure Sandbox"
+      }
+    },
+    "/sandboxes/{sandbox_id}/apps/{app_name}/access": {
+      "post": {
+        "operationId": "post_sandboxes_sandbox_id_apps_app_name_access",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppAccessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Sandbox App Access Url"
+      }
+    },
+    "/sandboxes/{sandbox_id}/apps/{app_name}/{path}": {
+      "delete": {
+        "operationId": "delete_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      },
+      "get": {
+        "operationId": "get_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      },
+      "head": {
+        "operationId": "head_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      },
+      "options": {
+        "operationId": "options_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      },
+      "patch": {
+        "operationId": "patch_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      },
+      "post": {
+        "operationId": "post_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      },
+      "put": {
+        "operationId": "put_sandboxes_sandbox_id_apps_app_name_path",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "app_name",
+            "required": true,
+            "schema": {
+              "title": "App Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Proxy Sandbox App Internal"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}": {
+      "delete": {
+        "operationId": "delete_sandboxes_sandbox_id_sessions_session_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "title": "Response Delete Runtime Session Sandboxes  Sandbox Id  Sessions  Session Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Runtime Session"
+      },
+      "put": {
+        "operationId": "put_sandboxes_sandbox_id_sessions_session_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Runtime Session"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}/exec-command": {
+      "post": {
+        "operationId": "post_sandboxes_sandbox_id_sessions_session_id_exec_command",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Exec Runtime Process Command"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}/heartbeat": {
+      "post": {
+        "operationId": "post_sandboxes_sandbox_id_sessions_session_id_heartbeat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeSessionHeartbeatResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Heartbeat Runtime Session"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}/processes": {
+      "get": {
+        "operationId": "get_sandboxes_sandbox_id_sessions_session_id_processes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListProcessesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runtime Processes"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}/processes/{process_id}": {
+      "delete": {
+        "operationId": "delete_sandboxes_sandbox_id_sessions_session_id_processes_process_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "process_id",
+            "required": true,
+            "schema": {
+              "title": "Process Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Terminate Runtime Process"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}/python": {
+      "post": {
+        "operationId": "post_sandboxes_sandbox_id_sessions_session_id_python",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutePythonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutePythonResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Python"
+      }
+    },
+    "/sandboxes/{sandbox_id}/sessions/{session_id}/stdin": {
+      "post": {
+        "operationId": "post_sandboxes_sandbox_id_sessions_session_id_stdin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sandbox_id",
+            "required": true,
+            "schema": {
+              "title": "Sandbox Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WriteStdinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Runtime Process Stdin"
+      }
+    }
+  }
+}

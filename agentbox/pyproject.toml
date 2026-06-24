@@ -1,0 +1,22 @@
+[project]
+name = "agentbox"
+version = "0.1.0"
+description = "AgentBox sandbox manager and Python client"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.128.0",
+    "kubernetes>=34.1.0",
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.11.0",
+    "uvicorn[standard]>=0.42.0",
+]
+
+[dependency-groups]
+dev = [
+    "agentbox-client",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.2.0",
+]
+
+[tool.uv.sources]
+agentbox-client = { path = "../agentbox-client", editable = true }

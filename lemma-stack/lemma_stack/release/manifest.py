@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,6 +157,16 @@ def fetch(channel: str, *, github_auth: bool | None = None) -> ReleaseManifest:
                 return parse(
                     github.fetch_manifest_via_api(DEFAULT_REPO, channel, MANIFEST_ASSET, token)
                 )
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+            where = "the stable channel" if channel == "stable" else f"version {channel}"
+            raise AdminError(
+                f"no release manifest published for {where} yet "
+                f"({MANIFEST_ASSET} not found at {url}).\n"
+                "A release may not be cut yet (or is still building). Options:\n"
+                "  • install a specific version:  lemma-stack install --channel <X.Y.Z>\n"
+                "  • install from a local file:   lemma-stack install --manifest <path>\n"
+                "  • if the repo is private:      lemma-stack install --github-auth"
+            ) from exc
         raise AdminError(f"could not fetch release manifest from {url}: {exc}") from exc
     return parse(data)
 

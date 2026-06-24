@@ -83,11 +83,13 @@ lemma servers select local
 lemma auth login
 ```
 
-Set model keys and backend env in `~/.lemma/local/config.toml`:
+Set model keys and backend env (stored under `[backend.env]` in `~/.lemma/local/config.toml`), then restart:
 
 ```bash
-lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...
-lemma-stack config set LEMMA_OPENAI_API_KEY fw-...
+# Required — a model key, or agents won't run (Anthropic- or OpenAI-compatible):
+lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...   # or LEMMA_OPENAI_API_KEY
+# Recommended — enables the app connectors / integrations:
+lemma-stack config set COMPOSIO_API_KEY <key>
 lemma-stack restart
 ```
 

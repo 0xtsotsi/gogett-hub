@@ -50,13 +50,14 @@ straight to the backend environment. The ones you usually need to set:
 
 | Variable | What it's for |
 |----------|---------------|
-| `LEMMA_ANTHROPIC_API_KEY` | Anthropic-compatible key (or any Anthropic-compatible endpoint) so pod agents can run. |
-| `LEMMA_OPENAI_API_KEY` | OpenAI-compatible key. Also backs Fireworks embeddings/reranking when those are enabled. |
+| `LEMMA_ANTHROPIC_API_KEY` | **Required** (this or the OpenAI key). Anthropic-compatible key (or any Anthropic-compatible endpoint) so pod agents can run. |
+| `LEMMA_OPENAI_API_KEY` | **Required** (this or the Anthropic key). OpenAI-compatible key; base URL defaults to Fireworks (override with `LEMMA_OPENAI_BASE_URL`). Also backs Fireworks embeddings/reranking when enabled. |
+| `COMPOSIO_API_KEY` | **Recommended.** Powers the app connectors / integrations (Gmail, Slack, Notion, …). Pair with `COMPOSIO_WEBHOOK_SECRET` if you wire up triggers. |
 | `SECRET_ENCRYPTION_KEY` | Fernet key for secrets at rest (connector creds, webhook secrets). In local/testing a dev seed is used; **set this for any real data**. Generate one: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Falls back to the legacy `CONNECTOR_ENCRYPTION_KEY`. |
 
 ```bash
-lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...
-lemma-stack config set LEMMA_OPENAI_API_KEY fw-...
+lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...   # or LEMMA_OPENAI_API_KEY (required)
+lemma-stack config set COMPOSIO_API_KEY <key>               # recommended
 lemma-stack config set SECRET_ENCRYPTION_KEY <fernet-key>
 lemma-stack restart
 ```

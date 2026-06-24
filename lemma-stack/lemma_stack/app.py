@@ -56,6 +56,47 @@ def _port_in_use(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _print_next_steps(config) -> None:
+    """Post-install setup guidance: configure the backend env, then restart.
+
+    The LLM model key is required — agents won't run without one. The Composio
+    key is strongly recommended: it powers the app connectors / integrations.
+    Both are UPPER_SNAKE env vars that route to [backend.env] in config.toml.
+    """
+    overrides = store.env_overrides(config, "backend")
+    has_llm = bool(
+        overrides.get("LEMMA_ANTHROPIC_API_KEY") or overrides.get("LEMMA_OPENAI_API_KEY")
+    )
+    has_composio = bool(overrides.get("COMPOSIO_API_KEY"))
+    if has_llm and has_composio:
+        return
+    console.print("\n[bold]Finish setup — configure the backend env, then restart:[/bold]\n")
+    step = 1
+    if not has_llm:
+        console.print(
+            f"  {step}. LLM model key  [red](required — agents won't run without it)[/red]"
+        )
+        console.print("       lemma-stack config set LEMMA_ANTHROPIC_API_KEY sk-ant-...")
+        console.print(
+            "       [dim]# or an OpenAI-compatible key "
+            "(base URL defaults to Fireworks; override with LEMMA_OPENAI_BASE_URL):[/dim]"
+        )
+        console.print("       lemma-stack config set LEMMA_OPENAI_API_KEY <key>")
+        step += 1
+    if not has_composio:
+        console.print(
+            f"  {step}. Composio key   "
+            "[yellow](recommended — enables app connectors / integrations)[/yellow]"
+        )
+        console.print("       lemma-stack config set COMPOSIO_API_KEY <key>")
+        step += 1
+    console.print(f"  {step}. Apply changes: [bold]lemma-stack restart[/bold]")
+    console.print(
+        "\n  [dim]Stored under \\[backend.env] in ~/.lemma/local/config.toml "
+        "(edit directly with `lemma-stack config edit`).[/dim]"
+    )
+
+
 # --------------------------------------------------------------------------
 # install
 # --------------------------------------------------------------------------
@@ -107,14 +148,6 @@ def install(
         key, _, value = pair.partition("=")
         store.set_value(config, key.strip(), value)
 
-    # 3. LLM key sanity (skippable; doctor re-checks)
-    overrides = store.env_overrides(config, "backend")
-    if not (overrides.get("LEMMA_OPENAI_API_KEY") or overrides.get("LEMMA_ANTHROPIC_API_KEY")):
-        warn(
-            "no LLM API key configured; agents will not work until you run\n"
-            "  lemma-stack config set LEMMA_OPENAI_API_KEY <key>   (or LEMMA_ANTHROPIC_API_KEY)"
-        )
-
     store.save(paths, config)
 
     # 4. port availability (only host-published ports can collide)
@@ -157,6 +190,8 @@ def install(
         info(f"  app:      {render.frontend_origin(config)}")
         info(f"  api:      {render.backend_origin(config)}")
         info(f"  api docs: {render.backend_origin(config)}/scalar")
+
+    _print_next_steps(config)
 
 
 # --------------------------------------------------------------------------

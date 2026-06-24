@@ -33,7 +33,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: lemma
     volumes:
-      - ./load_tests/postgres-init.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
       interval: 5s
@@ -79,6 +79,10 @@ services:
       REDIS_URL: redis://redis:6379
       SUPERTOKENS_CORE_URL: http://supertokens:3567
       ENVIRONMENT: local
+      # Writable paths for the non-root appuser (defaults resolve to /.local
+      # inside the container, which is not writable).
+      LOCAL_OBJECT_STORAGE_ROOT: /home/appuser/.local/object-storage
+      LOCAL_FILE_STORAGE_ROOT: /home/appuser/.local/files
       # Tighten Redis polling for lower latency during the load test.
       # Default is 500 ms; 200 ms keeps p95 event latency under 500 ms idle.
       REDIS_STREAM_POLLING_INTERVAL_MS: 200
@@ -92,7 +96,7 @@ services:
       redis:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12

@@ -135,7 +135,7 @@ load-test-build:
 load-test-up:
 	docker compose -f $(LOAD_TEST_COMPOSE) up -d
 	@echo "Waiting for app health check…"
-	@until docker compose -f $(LOAD_TEST_COMPOSE) exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; do \
+	@until docker compose -f $(LOAD_TEST_COMPOSE) exec -T app python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" > /dev/null 2>&1; do \
 		printf '.'; sleep 3; \
 	done
 	@echo " App is ready."

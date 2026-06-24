@@ -1,0 +1,5 @@
+CREATE DATABASE supertokens;
+CREATE DATABASE lemma_datastore;
+CREATE EXTENSION IF NOT EXISTS vector;
+\c lemma_datastore
+CREATE EXTENSION IF NOT EXISTS vector;

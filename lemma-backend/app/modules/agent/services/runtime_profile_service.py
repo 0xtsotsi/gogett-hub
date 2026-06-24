@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from pydantic import HttpUrl
 
 from app.core.config import settings
+from app.core.domain.errors import DomainError
 from app.modules.agent.domain.runtime_profiles import (
     AnthropicCompatibleRuntimeConfig,
     AgentRuntimeProfile,
@@ -37,45 +38,36 @@ from app.modules.agent.infrastructure.repositories import (
 SYSTEM_LEMMA_PROFILE_ID = "system:lemma"
 DEFAULT_SYSTEM_AGENT_RUNTIME_PROFILE_ID = SYSTEM_LEMMA_PROFILE_ID
 
-@dataclass(frozen=True, slots=True)
-class _OpenAICompatModel:
-    """A known OpenAI-compatible (Fireworks) model: its provider slug plus the
-    capabilities that differ from the TEXT+TOOLS baseline.
 
-    Image/vision support lives here, against the model, so it travels with the
-    model definition instead of a separate env var or allowlist. ``vision`` gates
-    the agent's image-returning tools (e.g. ``view_image``) — a text-only model
-    breaks when image content enters its message history. (Structured output is
-    not tracked: it is universal across models and the harness uses the
-    final_answer/output_type path unconditionally.)
+@dataclass(frozen=True, slots=True)
+class OpenAICompatModelEntry:
+    """An OpenAI-compatible model entry: its provider-side model ID plus
+    the capabilities that differ from the TEXT+TOOLS baseline.
+
+    ``vision`` gates the agent's image-returning tools (e.g. ``view_image``) —
+    a text-only model breaks when image content enters its message history.
+    Register provider-specific models via ``register_openai_compat_models()``.
     """
 
     provider_model_name: str
     vision: bool = False
 
 
-_OPENAI_COMPAT_MODELS: dict[str, _OpenAICompatModel] = {
-    "minimax-m3": _OpenAICompatModel(
-        "accounts/fireworks/models/minimax-m3", vision=True
-    ),
-    "glm-5.2": _OpenAICompatModel("accounts/fireworks/models/glm-5p2"),
-    "kimi-k2.7-code": _OpenAICompatModel(
-        "accounts/fireworks/models/kimi-k2p7-code", vision=True
-    ),
-    "kimi-k2.6": _OpenAICompatModel(
-        "accounts/fireworks/models/kimi-k2p6", vision=True
-    ),
-    "deepseek-v4-pro": _OpenAICompatModel(
-        "accounts/fireworks/models/deepseek-v4-pro"
-    ),
-    "deepseek-v4-flash": _OpenAICompatModel(
-        "accounts/fireworks/models/deepseek-v4-flash"
-    ),
-}
+_openai_compat_model_registry: dict[str, OpenAICompatModelEntry] = {}
+
+
+def register_openai_compat_models(models: dict[str, OpenAICompatModelEntry]) -> None:
+    """Register additional OpenAI-compatible model entries (e.g. from a cloud module).
+
+    Merges into the module-level registry; call at application startup before
+    any agent runs. The registry drives provider-model-name translation and
+    per-model capability inference (vision, etc.) for the system:lemma profile.
+    """
+    _openai_compat_model_registry.update(models)
 
 
 def _openai_compat_provider_model_name(model_name: str) -> str:
-    entry = _OPENAI_COMPAT_MODELS.get(model_name)
+    entry = _openai_compat_model_registry.get(model_name)
     return entry.provider_model_name if entry is not None else model_name
 
 
@@ -107,7 +99,7 @@ def _openai_compat_model_capabilities(
     model_name: str,
 ) -> list[RuntimeModelCapability]:
     capabilities = [RuntimeModelCapability.TEXT, RuntimeModelCapability.TOOLS]
-    entry = _OPENAI_COMPAT_MODELS.get(model_name)
+    entry = _openai_compat_model_registry.get(model_name)
     if entry is not None and entry.vision:
         capabilities.append(RuntimeModelCapability.VISION)
     return capabilities
@@ -384,6 +376,14 @@ class AgentRuntimeProfileService:
             user_id=user_id,
         )
         if profile is None:
+            if profile_id == SYSTEM_LEMMA_PROFILE_ID:
+                raise DomainError(
+                    "No LLM model is configured on this server. "
+                    "Set LEMMA_OPENAI_API_KEY (plus LEMMA_OPENAI_BASE_URL if not OpenAI) "
+                    "or LEMMA_ANTHROPIC_API_KEY with LEMMA_DEFAULT_MODEL_TYPE=anthropic_compat.",
+                    code="model_not_configured",
+                    status_code=503,
+                )
             raise RuntimeError(f"Agent runtime profile {profile_id!r} is not available")
         model = _selected_model(profile, runtime.model_name)
         if model is None:

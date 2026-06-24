@@ -34,6 +34,19 @@ from app.modules.agent.capabilities.instructed_toolset import (
     InstructedToolsetCapability,
 )
 from app.modules.agent.capabilities.prompt_caching import PromptCachingCapability
+
+_caching_capability_cls: type[PromptCachingCapability] = PromptCachingCapability
+
+
+def configure_caching_capability(cls: type[PromptCachingCapability]) -> None:
+    """Override the caching capability class used when prompt caching is enabled.
+
+    Call at application startup (e.g. from a cloud module) to inject a
+    provider-specific subclass (e.g. one that adds an ``x-session-affinity``
+    header for Fireworks session routing).
+    """
+    global _caching_capability_cls
+    _caching_capability_cls = cls
 from app.modules.agent.capabilities.surface_platform import SurfacePlatformCapability
 from app.modules.agent.capabilities.todo import TODO_TOOLSET_ID, TodoCapability
 from app.modules.agent.capabilities.web_search import WebSearchCapability
@@ -169,7 +182,7 @@ async def build_lemma_harness_tooling(
 
     if enable_prompt_caching:
         capabilities.append(
-            PromptCachingCapability(conversation_id=ctx.conversation_id)
+            _caching_capability_cls(conversation_id=ctx.conversation_id)
         )
 
     if extra:

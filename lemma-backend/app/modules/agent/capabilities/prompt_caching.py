@@ -1,10 +1,13 @@
-"""Prompt-caching capability for OpenAI-compatible providers (e.g. Fireworks).
+"""Prompt-caching capability for OpenAI-compatible providers.
 
-Fireworks caches on the request prefix automatically; the lever we control is
-*session affinity* — routing a conversation's turns to the same replica so the
-cached prefix is reused. We key affinity on the conversation id (stable across
-turns), NOT the agent-run id (which changes every turn and would scatter routing,
-defeating cross-turn reuse).
+Caching-aware providers reuse the request prefix automatically; the lever we
+control is *session affinity* — routing a conversation's turns to the same
+replica so the cached prefix is reused. We key affinity on the conversation id
+(stable across turns), NOT the agent-run id (which changes every turn and would
+scatter routing, defeating cross-turn reuse).
+
+Provider-specific extensions (e.g. Fireworks ``x-session-affinity`` header) can
+be layered in subclasses via ``configure_caching_capability()`` in assembler.py.
 """
 
 from __future__ import annotations
@@ -29,10 +32,9 @@ class PromptCachingCapability(AbstractCapability[object]):
     def get_model_settings(self) -> dict[str, object]:
         affinity = self._conversation_id
         return {
-            # OpenAI `user` field — Fireworks uses it (or x-session-affinity) for
-            # sticky replica routing so the cached prefix is hit across turns.
+            # OpenAI `user` field — used by compatible providers for sticky
+            # replica routing so the cached prefix is hit across turns.
             "openai_user": affinity,
-            "extra_headers": {"x-session-affinity": affinity},
             # OpenAI prompt-cache key; honored by OpenAI and compatible providers.
             "openai_prompt_cache_key": affinity,
         }

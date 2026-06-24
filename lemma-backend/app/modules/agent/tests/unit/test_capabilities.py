@@ -72,8 +72,10 @@ def test_prompt_caching_keys_on_conversation_id():
     ).get_model_settings()
     affinity = str(conversation_id)
     assert settings["openai_user"] == affinity
-    assert settings["extra_headers"] == {"x-session-affinity": affinity}
     assert settings["openai_prompt_cache_key"] == affinity
+    # Provider-specific headers (e.g. x-session-affinity for Fireworks) are
+    # added by subclasses registered via configure_caching_capability().
+    assert "extra_headers" not in settings
 
 
 def test_agent_has_toolset_detects_todo():

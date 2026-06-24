@@ -37,36 +37,22 @@ class UsageService:
     DEFAULT_USER_WEEKLY_COST_LIMIT_USD: float | None = 10.0
     DEFAULT_RESERVATION_USD = 0.01
 
-    # Per-model rates (USD per 1M tokens) sourced from the Fireworks model
-    # library (input / output / cached-input). Keyed by both the public model
-    # name and the provider model id so resolution succeeds on either. Keep this
-    # table as the single source of truth for system-model pricing.
-    _SYSTEM_MODEL_PRICING: dict[str, ModelPricing] = {
-        "minimax-m3": ModelPricing(0.30, 1.20, cached_input_per_million_usd=0.06),
-        "accounts/fireworks/models/minimax-m3": ModelPricing(
-            0.30, 1.20, cached_input_per_million_usd=0.06
-        ),
-        "glm-5.2": ModelPricing(1.40, 4.40, cached_input_per_million_usd=0.26),
-        "accounts/fireworks/models/glm-5p2": ModelPricing(
-            1.40, 4.40, cached_input_per_million_usd=0.26
-        ),
-        "kimi-k2.7-code": ModelPricing(0.95, 4.00, cached_input_per_million_usd=0.19),
-        "accounts/fireworks/models/kimi-k2p7-code": ModelPricing(
-            0.95, 4.00, cached_input_per_million_usd=0.19
-        ),
-        "kimi-k2.6": ModelPricing(0.95, 4.00, cached_input_per_million_usd=0.16),
-        "accounts/fireworks/models/kimi-k2p6": ModelPricing(
-            0.95, 4.00, cached_input_per_million_usd=0.16
-        ),
-        "deepseek-v4-pro": ModelPricing(1.74, 3.48, cached_input_per_million_usd=0.15),
-        "accounts/fireworks/models/deepseek-v4-pro": ModelPricing(
-            1.74, 3.48, cached_input_per_million_usd=0.15
-        ),
-        "deepseek-v4-flash": ModelPricing(0.14, 0.28, cached_input_per_million_usd=0.03),
-        "accounts/fireworks/models/deepseek-v4-flash": ModelPricing(
-            0.14, 0.28, cached_input_per_million_usd=0.03
-        ),
-    }
+    # Per-model rates (USD per 1M tokens). Keyed by both the public model name
+    # and the provider model id so resolution succeeds on either. Starts empty;
+    # provider-specific cloud modules register their pricing at startup via
+    # ``register_model_pricing()``. The fallback below prevents unpriced models
+    # from escaping metering entirely.
+    _SYSTEM_MODEL_PRICING: dict[str, ModelPricing] = {}
+
+    @classmethod
+    def register_model_pricing(cls, pricing: dict[str, ModelPricing]) -> None:
+        """Register additional per-model pricing (e.g. from a cloud module).
+
+        Merges into the class-level pricing table; call at application startup
+        before any agent runs. Keying by both the public name and the provider
+        model id ensures ``_resolve_pricing`` resolves on either form.
+        """
+        cls._SYSTEM_MODEL_PRICING.update(pricing)
 
     # Used when a system model has no explicit pricing entry, so that usage is
     # still recorded (and counts toward limits) instead of being silently

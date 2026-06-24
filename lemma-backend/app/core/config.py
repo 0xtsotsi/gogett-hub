@@ -464,12 +464,21 @@ class Settings(BaseSettings):
         default=15000,
         description="Metric export interval for OTEL periodic readers",
     )
-    embedding_provider: Literal["auto", "local", "fireworks"] = Field(
+    lemma_llm_caching_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable conversation-id-based LLM prompt caching (session affinity). "
+            "Set to true when using a provider that supports it (e.g. Fireworks via "
+            "lemma-cloud). Activates PromptCachingCapability for OPENAI_COMPATIBLE profiles."
+        ),
+    )
+    embedding_provider: Literal["auto", "local", "openai_compat"] = Field(
         default="auto",
         description=(
             "Embedding backend. 'auto' uses local offline embeddings in "
-            "local/testing and Fireworks embeddings elsewhere (when "
-            "LEMMA_OPENAI_API_KEY is set)."
+            "local/testing and openai_compat embeddings elsewhere (when "
+            "LEMMA_OPENAI_API_KEY is set). 'openai_compat' uses LEMMA_OPENAI_BASE_URL "
+            "+ LEMMA_OPENAI_API_KEY with the model from OPENAI_COMPAT_EMBEDDING_MODEL."
         ),
     )
     embedding_dimension: int = Field(
@@ -480,28 +489,29 @@ class Settings(BaseSettings):
         default="BAAI/bge-base-en-v1.5",
         description="FastEmbed model used for local CPU embeddings.",
     )
-    fireworks_embedding_model: str = Field(
+    openai_compat_embedding_model: str = Field(
         default="nomic-ai/nomic-embed-text-v1.5",
         description=(
-            "Fireworks embedding model (served via the OpenAI-compatible "
-            "/embeddings endpoint using LEMMA_OPENAI_API_KEY)."
+            "Embedding model used when EMBEDDING_PROVIDER=openai_compat. "
+            "Served via LEMMA_OPENAI_BASE_URL + LEMMA_OPENAI_API_KEY."
         ),
     )
-    reranker_mode: Literal["off", "local", "fireworks"] = Field(
+    reranker_mode: Literal["off", "local", "openai_compat"] = Field(
         default="off",
         description=(
             "Optional second-stage reranker over hybrid retrieval. 'off' is a "
             "no-op (first-stage order kept); 'local' uses a CPU cross-encoder; "
-            "'fireworks' uses the Fireworks /rerank endpoint (LEMMA_OPENAI_API_KEY)."
+            "'openai_compat' uses the LEMMA_OPENAI_BASE_URL /rerank endpoint "
+            "(LEMMA_OPENAI_API_KEY required)."
         ),
     )
     local_reranker_model: str = Field(
         default="BAAI/bge-reranker-v2-m3",
         description="CrossEncoder model used when reranker_mode='local' (Apache-2.0, CPU).",
     )
-    fireworks_reranker_model: str = Field(
-        default="accounts/fireworks/models/qwen3-reranker-8b",
-        description="Fireworks rerank model used when reranker_mode='fireworks'.",
+    openai_compat_reranker_model: str = Field(
+        default="qwen3-reranker-8b",
+        description="Rerank model used when reranker_mode='openai_compat'.",
     )
     reranker_retrieve_n: int = Field(
         default=50,
@@ -539,15 +549,15 @@ class Settings(BaseSettings):
             return "gcp_secret_manager"
         return "static"
 
-    def effective_embedding_provider(self) -> Literal["local", "fireworks"]:
+    def effective_embedding_provider(self) -> Literal["local", "openai_compat"]:
         if self.embedding_provider != "auto":
             return self.embedding_provider
         if self.is_local_mode():
             return "local"
-        # Hosted environments embed through Fireworks when credentialed; fall back
-        # to local offline embeddings when no key is configured.
+        # Hosted environments embed via the openai_compat endpoint when
+        # credentialed; fall back to local offline embeddings when no key is set.
         if self.lemma_openai_api_key:
-            return "fireworks"
+            return "openai_compat"
         return "local"
 
     def is_google_oauth_configured(self) -> bool:

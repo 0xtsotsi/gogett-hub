@@ -496,6 +496,12 @@ async def db_manager(e2e_settings) -> AsyncGenerator[DatabaseManager, None]:
     )
 
     async with manager.engine.begin() as conn:
+        # Serialize with the worker's PostgresSearchService.ensure_schema(), which
+        # also runs CREATE EXTENSION under this advisory key. Two concurrent
+        # CREATE EXTENSION on the shared pg_extension catalog otherwise deadlock
+        # (the worker indexes datastore files in parallel with per-test setup).
+        # Key must match _ENSURE_SCHEMA_LOCK_KEY in postgres_search_service.
+        await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 0x6C656D6D61})
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
     # Idempotent (checkfirst) — creates the schema on the first test, no-ops after.

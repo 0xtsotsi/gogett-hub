@@ -339,31 +339,24 @@ async def cleanup_workspace_containers_function():
 
 
 @pytest_asyncio.fixture(scope="session")
-async def worker(e2e_settings, tmp_path_factory, worker_id):
+async def worker(e2e_settings):
     """Run the real streaq worker process used in production.
 
     Session-scoped: one worker subprocess for the whole run instead of spawning
     (and tearing down) a fresh one per test. The schema is created by the first
     test's db_manager and never dropped mid-run, so the worker's connections stay
     valid for its whole lifetime.
+
+    The worker does NOT need Kreuzberg: e2e disables the worker's auto-index of
+    uploads (e2e_disable_worker_file_autoindex) and indexes in-process instead, so
+    no Kreuzberg URL is wired into the worker subprocess.
     """
     import asyncio
     import redis.asyncio as redis
 
-    from app.core.test_utils import shared_kreuzberg
-
     redis_client = redis.from_url(e2e_settings.redis_url, decode_responses=False)
     await redis_client.flushdb()
     await redis_client.aclose()
-
-    # The worker indexes uploaded datastore files, so it must point at the SAME
-    # shared Kreuzberg as the datastore fixtures (a heavy embedding container run
-    # once across all xdist workers). Entered here — regardless of which module's
-    # test first needs the worker — so the worker subprocess always gets the
-    # right KREUZBERG_URL; otherwise indexing fails with a connection error to
-    # the default URL. Released on teardown (refcounted; last user removes it).
-    _kreuzberg_cm = shared_kreuzberg(tmp_path_factory.getbasetemp().parent, worker_id)
-    kreuzberg_url = _kreuzberg_cm.__enter__()
 
     log_path = f"/tmp/gappy_e2e_worker_{uuid4().hex}.log"
     backend_root = Path(__file__).resolve().parents[3]
@@ -406,7 +399,6 @@ async def worker(e2e_settings, tmp_path_factory, worker_id):
                 "EMBEDDING_PROVIDER": "local",
                 "LOCAL_OBJECT_STORAGE_ROOT": e2e_settings.local_object_storage_root,
                 "LOCAL_FILE_STORAGE_ROOT": e2e_settings.local_file_storage_root,
-                "KREUZBERG_URL": kreuzberg_url,
                 "COMPOSIO_CACHE_DIR": "/tmp/composio",
             },
             stdout=log_file,
@@ -459,7 +451,6 @@ async def worker(e2e_settings, tmp_path_factory, worker_id):
             redis_client = redis.from_url(e2e_settings.redis_url, decode_responses=False)
             await redis_client.flushdb()
             await redis_client.aclose()
-            _kreuzberg_cm.__exit__(None, None, None)
 
 
 @pytest_asyncio.fixture(scope="function")

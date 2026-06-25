@@ -8,8 +8,15 @@ from fastapi import status
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from filelock import FileLock
+
 from app.core.infrastructure.db.uow_factory import SessionUnitOfWorkFactory
-from app.core.test_utils import get_kreuzberg_container, get_kreuzberg_url
+from app.core.test_utils import (
+    get_kreuzberg_container,
+    get_kreuzberg_url,
+    remove_named_container,
+    start_shared_kreuzberg,
+)
 from app.modules.datastore.tests.e2e.harness import (
     DatastoreApi,
     invite_to_pod,
@@ -40,17 +47,58 @@ fixed_test_org = e2e_fixtures.fixed_test_org
 scenario = e2e_fixtures.scenario
 
 
-@pytest.fixture(scope="session")
-def kreuzberg_container():
-    with get_kreuzberg_container() as kb:
-        yield kb
+SHARED_KREUZBERG_NAME = "lemma-e2e-kreuzberg-shared"
 
 
 @pytest.fixture(scope="session")
-def e2e_settings(_shared_e2e_settings, kreuzberg_container):
+def kreuzberg_url(tmp_path_factory, worker_id):
+    """URL of a SINGLE Kreuzberg container shared across all xdist workers.
+
+    Kreuzberg bundles an embedding model and is RAM-heavy; one container per
+    worker OOMs most machines (and the resulting extract failures cascade into
+    unrelated test failures under load). Without xdist (``worker_id == 'master'``)
+    we keep the simple per-session container. Under xdist, the first worker to
+    grab the file lock starts one named container and records its URL; every other
+    worker reuses that URL. A reference count in the shared dir tears the
+    container down when the last worker finishes (label-based prune mops up any
+    straggler from a crash).
+    """
+    if worker_id == "master":
+        with get_kreuzberg_container() as kb:
+            yield get_kreuzberg_url(kb)
+        return
+
+    root = tmp_path_factory.getbasetemp().parent
+    lock = FileLock(str(root / "kreuzberg.lock"))
+    url_file = root / "kreuzberg_url.txt"
+    refs_file = root / "kreuzberg_refs.txt"
+
+    with lock:
+        if url_file.exists():
+            url = url_file.read_text().strip()
+        else:
+            url = start_shared_kreuzberg(SHARED_KREUZBERG_NAME)
+            url_file.write_text(url)
+        refs = int(refs_file.read_text()) if refs_file.exists() else 0
+        refs_file.write_text(str(refs + 1))
+
+    try:
+        yield url
+    finally:
+        with lock:
+            refs = (int(refs_file.read_text()) if refs_file.exists() else 1) - 1
+            refs_file.write_text(str(refs))
+            if refs <= 0:
+                remove_named_container(SHARED_KREUZBERG_NAME)
+                url_file.unlink(missing_ok=True)
+                refs_file.unlink(missing_ok=True)
+
+
+@pytest.fixture(scope="session")
+def e2e_settings(_shared_e2e_settings, kreuzberg_url):
     # kreuzberg_url now lives on datastore_settings; local_object_storage_root
     # stays on core settings.
-    datastore_settings.kreuzberg_url = get_kreuzberg_url(kreuzberg_container)
+    datastore_settings.kreuzberg_url = kreuzberg_url
     # Keep the per-worker namespaced root (set in e2e_settings) so parallel
     # xdist workers stay isolated; just nest the datastore object storage under it.
     _shared_e2e_settings.local_object_storage_root = (
@@ -129,7 +177,7 @@ __all__ = [
     "fixed_test_org",
     "fixed_test_user",
     "index_datastore_file",
-    "kreuzberg_container",
+    "kreuzberg_url",
     "member_users",
     "pod_api",
     "postgres_container",

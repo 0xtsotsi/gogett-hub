@@ -157,6 +157,10 @@ init:
 	@cd $(FRONTEND_DIR) && npm install --silent
 	@echo "  ✓ Dependencies installed"
 	@echo ""
+	@echo "→ Building lemma-sdk (lemma-typescript)…"
+	@cd $(TS_DIR) && npm run build --silent
+	@echo "  ✓ lemma-sdk built — dist/ ready for frontend import"
+	@echo ""
 	@echo "Done. Run 'make dev' to start the stack."
 
 _init-backend-env:
@@ -257,6 +261,7 @@ _ensure-frontend-env-keys:
 
 dev:
 	@echo "→ Starting Lemma dev stack…"
+	@$(MAKE) --no-print-directory stop 2>/dev/null || true
 	@$(MAKE) --no-print-directory _ensure-init
 	@$(MAKE) --no-print-directory _infra-up
 	@$(MAKE) --no-print-directory _wait-infra
@@ -278,6 +283,7 @@ dev:
 _ensure-init:
 	@test -f $(BACKEND_DIR)/.env  || { echo "  ! $(BACKEND_DIR)/.env missing — run 'make init'"; exit 1; }
 	@test -f $(FRONTEND_DIR)/.env.local || { echo "  ! $(FRONTEND_DIR)/.env.local missing — run 'make init'"; exit 1; }
+	@test -f $(TS_DIR)/dist/index.js || { echo "  ! $(TS_DIR)/dist missing — run 'make init' (or cd $(TS_DIR) && npm run build)"; exit 1; }
 	@$(MAKE) --no-print-directory _ensure-backend-env-keys
 	@echo "  Using $(BACKEND_DIR)/.env + $(FRONTEND_DIR)/.env.local"
 

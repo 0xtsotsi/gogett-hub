@@ -1,12 +1,27 @@
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _default_local_root() -> Path:
     return Path(__file__).resolve().parents[3] / ".local"
+
+
+def reveal_secret(value: "SecretStr | str | None") -> str | None:
+    """Return the plaintext of a secret setting for actual use.
+
+    Secret settings (API keys) are typed ``SecretStr`` so they never leak through
+    ``repr()``/logs/tracebacks. Read them through this helper at the point of use.
+    It tolerates a plain ``str`` too, so tests that ``monkeypatch`` a setting with
+    a bare string keep working.
+    """
+    if value is None:
+        return None
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    return value
 
 
 class Settings(BaseSettings):
@@ -92,12 +107,33 @@ class Settings(BaseSettings):
             "task that opens a DB session consumes one pooled connection."
         ),
     )
+    worker_shutdown_grace_period_seconds: int = Field(
+        default=10,
+        description=(
+            "Seconds the streaq worker waits for in-flight tasks to finish on "
+            "SIGTERM/SIGINT before forcing cancellation (streaq grace_period). "
+            "Gives an interrupted agent run time to finalize its status in the "
+            "DB before the engine is disposed, avoiding runs stuck in RUNNING. "
+            "Keep below the orchestrator's termination grace period (e.g. "
+            "Kubernetes terminationGracePeriodSeconds, default 30s)."
+        ),
+    )
     postgres_max_connections: int = Field(
         default=100,
         description=(
             "PostgreSQL max_connections setting. Used at startup to warn if "
             "the per-process pool ceiling could exceed the server limit. "
             "Set to the actual value in your Postgres config."
+        ),
+    )
+    conversation_title_model: str | None = Field(
+        default=None,
+        description=(
+            "Model name (within the system runtime profile's catalog) used to "
+            "LLM-generate conversation titles. When unset (the default), no LLM "
+            "call is made: the title is derived from the user's first message. "
+            "Set this only to a model your provider actually serves — pointing "
+            "it at a non-existent model makes the title call hang."
         ),
     )
     redis_url: str = Field(
@@ -128,7 +164,7 @@ class Settings(BaseSettings):
         default="openai_compat",
         description="Server-provided Lemma system model profile provider type.",
     )
-    lemma_openai_api_key: Optional[str] = Field(
+    lemma_openai_api_key: Optional[SecretStr] = Field(
         default=None,
         description="API key for the server-provided OpenAI-compatible Lemma model profile.",
     )
@@ -148,7 +184,20 @@ class Settings(BaseSettings):
         default="gpt-4o,gpt-4o-mini",
         description="Comma-separated model names for the OpenAI-compatible system model profile.",
     )
-    lemma_anthropic_api_key: Optional[str] = Field(
+    lemma_openai_vision_model_names: str = Field(
+        default="",
+        description=(
+            "Comma-separated subset of LEMMA_OPENAI_MODEL_NAMES whose models accept "
+            "image input. Gates the image-returning tools (view_image): a text-only "
+            "model breaks when image content enters its history, so those tools are "
+            "withheld unless a model is listed here. The standard OpenAI /models "
+            "endpoint does not report modalities, so vision must be declared "
+            "explicitly here; leave empty if no configured model supports vision. "
+            "(Provider-discovered profiles can additionally auto-detect image input "
+            "when the provider advertises it.)"
+        ),
+    )
+    lemma_anthropic_api_key: Optional[SecretStr] = Field(
         default=None,
         description="API key for the server-provided Anthropic-compatible Lemma model profile.",
     )

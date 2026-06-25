@@ -135,6 +135,26 @@ class AppWorkerContext:
             pod_membership_port=SqlAlchemySurfaceRoutingResolutionAdapter(uow),
         )
 
+    def build_surface_event_handler_with_factory(self):
+        """Build an AgentSurfaceIngressService that scopes its own short UoWs.
+
+        Used by the process_surface_message worker task: execute_chat runs long
+        external I/O (platform APIs, file ingest, voice transcription) that must
+        NOT hold a pooled DB connection. The service resolves credentials and
+        writes the inbound message in separate short UoWs from this factory.
+        """
+        from app.modules.agent.api.dependencies import get_conversation_service
+        from app.modules.connectors.api.dependencies import get_connector_service
+        from app.modules.agent_surfaces.services.ingress_service import (
+            AgentSurfaceIngressService,
+        )
+
+        return AgentSurfaceIngressService(
+            uow_factory=self.uow_factory,
+            conversation_service_factory=get_conversation_service,
+            connector_service_factory=get_connector_service,
+        )
+
 
 async def _safe_shutdown_step(
     name: str, fn: Callable[[], Awaitable[None]]
@@ -199,6 +219,12 @@ def create_streaq_worker(*, handle_signals: bool) -> Worker[AppWorkerContext]:
         concurrency=WORKER_CONCURRENCY,
         handle_signals=handle_signals,
         lifespan=worker_lifespan,
+        # On SIGTERM, give in-flight tasks this long to finish before forcing
+        # cancellation. Lets an interrupted agent run finalize its status in the
+        # DB (via the shielded finalization in AgentRunnerService.execute) before
+        # worker_lifespan's finally disposes the engine — otherwise the run can
+        # be left stuck in RUNNING. Backstopped by reconcile_orphaned_agent_runs.
+        grace_period=settings.worker_shutdown_grace_period_seconds,
     )
 
 

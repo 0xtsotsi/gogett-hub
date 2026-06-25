@@ -11,7 +11,6 @@ from faststream.redis import RedisRouter
 from app.modules.datastore.config import datastore_settings
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import (
-    create_uow_from_session_maker,
     SessionUnitOfWorkFactory,
     UnitOfWorkFactory,
 )
@@ -164,21 +163,20 @@ async def process_datastore_file_task(
 
     try:
         async with _get_document_processing_semaphore():
-            try:
-                if worker_ctx is None:
-                    raise RuntimeError("streaq worker context is unavailable")
-                uow_context = worker_ctx.uow()
-            except Exception:
-                uow_context = create_uow_from_session_maker(async_session_maker)
-            # NOTE: The DB session is held during storage downloads, document
-            # extraction, and storage uploads inside process_file_async. This is
-            # mitigated by the semaphore (concurrency=2) and the
-            # idle_in_transaction_session_timeout guard on the engine. A full fix
-            # requires refactoring DatastoreFileProcessingService to use a
-            # uow_factory and scope DB operations around the external I/O.
-            async with uow_context as uow:
-                service = DatastoreFileProcessingService(pod_uuid, uow)
-                await service.process_file_async(file_uuid, metadata or {})
+            # The service uses a uow_factory to open SHORT UoWs around each DB
+            # op, releasing the pooled connection during the slow storage
+            # downloads, document extraction, and uploads inside
+            # process_file_async. The semaphore still caps extraction
+            # CPU/memory and concurrent datastore-pool use during indexing.
+            uow_factory = (
+                worker_ctx.uow_factory
+                if worker_ctx is not None
+                else SessionUnitOfWorkFactory(async_session_maker)
+            )
+            service = DatastoreFileProcessingService(
+                pod_uuid, uow_factory=uow_factory
+            )
+            await service.process_file_async(file_uuid, metadata or {})
         logger.info("FINISHED process_datastore_file_task for %s", file_uuid)
     except Exception as exc:
         logger.error("process_datastore_file_task failed for %s: %s", file_uuid, exc)

@@ -42,15 +42,17 @@ def _build_connect_args() -> dict:
     return connect_args
 
 
-def _log_pool_utilization(pool):
+def _log_pool_utilization(dbapi_conn, connection_record, proxy=None):
     """Log a warning when pool utilization exceeds 80% of max capacity.
 
-    Called on each checkout (connection borrowed from pool). Uses the pool's
-    internal counters to compute checked-out vs. max connections. This gives
-    early visibility into pool exhaustion before it surfaces as a
-    ``TimeoutError`` (pool_timeout) to application code.
+    Called on each checkout (connection borrowed from pool). SQLAlchemy's
+    PoolEvents.checkout passes (dbapi_connection, connection_record, proxy).
+    Uses the pool's internal counters to compute checked-out vs. max
+    connections. This gives early visibility into pool exhaustion before it
+    surfaces as a ``TimeoutError`` (pool_timeout) to application code.
     """
     try:
+        pool = connection_record.pool
         max_conn = pool.size() + pool._max_overflow  # noqa: SLF001
         checked_out = pool.checkedout()
         if max_conn > 0 and checked_out / max_conn >= 0.8:

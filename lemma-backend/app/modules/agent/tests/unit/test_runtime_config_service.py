@@ -292,16 +292,17 @@ def test_system_runtime_profiles_only_include_configured_system_lemma(
     monkeypatch.setattr(settings, "lemma_openai_api_key", "lemma-secret")
     monkeypatch.delenv("LEMMA_DEFAULT_MODEL_TYPE", raising=False)
     monkeypatch.delenv("LEMMA_OPENAI_API_KEY", raising=False)
-    # Pin the Fireworks catalog explicitly: the shipped OSS defaults are now
-    # provider-agnostic (OpenAI), so this exercises the model registry directly.
     monkeypatch.setattr(settings, "lemma_openai_default_model", "minimax-m3")
     monkeypatch.setattr(
         settings,
         "lemma_openai_model_names",
         "minimax-m3,glm-5.2,kimi-k2.7-code,kimi-k2.6,deepseek-v4-pro,deepseek-v4-flash",
     )
-    monkeypatch.delenv("LEMMA_OPENAI_DEFAULT_MODEL", raising=False)
-    monkeypatch.delenv("LEMMA_OPENAI_MODEL_NAMES", raising=False)
+    monkeypatch.setenv("LEMMA_OPENAI_DEFAULT_MODEL", "minimax-m3")
+    monkeypatch.setenv(
+        "LEMMA_OPENAI_MODEL_NAMES",
+        "minimax-m3,glm-5.2,kimi-k2.7-code,kimi-k2.6,deepseek-v4-pro,deepseek-v4-flash",
+    )
 
     profiles = AgentRuntimeProfileService().system_profiles()
 

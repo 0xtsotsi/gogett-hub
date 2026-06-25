@@ -30,11 +30,13 @@ FRONTEND_DIR  := lemma-frontend
 CLI_DIR       := lemma-cli
 PYTHON_DIR    := lemma-python
 TS_DIR        := lemma-typescript
+AGENTBOX_DIR  := agentbox
 
 PID_FILE      := .dev-pids
 BACKEND_PID_FILE  := $(BACKEND_DIR)/.dev-backend.pid
 FRONTEND_PID_FILE := $(FRONTEND_DIR)/.dev-frontend.pid
 INFRA_PID_FILE    := $(BACKEND_DIR)/.dev-infra.pid
+AGENTBOX_PID_FILE := $(AGENTBOX_DIR)/.dev-agentbox.pid
 
 # ── Canonical dev ports + URLs ───────────────────────────────────────────────
 # These are the SINGLE source of truth for the dev stack. Infra (docker
@@ -51,6 +53,7 @@ DEV_POSTGRES_PORT     ?= 5432
 DEV_REDIS_PORT        ?= 6379
 DEV_SUPERTOKENS_PORT  ?= 3567
 DEV_KREUZBERG_PORT    ?= 8002
+DEV_AGENTBOX_PORT     ?= 8721
 
 DEV_BACKEND_URL       := http://localhost:$(DEV_BACKEND_PORT)
 DEV_FRONTEND_URL      := http://localhost:$(DEV_FRONTEND_PORT)
@@ -58,6 +61,8 @@ DEV_AUTH_FRONTEND_URL := http://localhost:$(DEV_AUTH_FRONTEND_PORT)
 DEV_DATABASE_URL      := postgresql+asyncpg://postgres:postgres@localhost:$(DEV_POSTGRES_PORT)/lemma
 DEV_REDIS_URL         := redis://localhost:$(DEV_REDIS_PORT)/0
 DEV_SUPERTOKENS_URL   := http://localhost:$(DEV_SUPERTOKENS_PORT)
+DEV_AGENTBOX_URL      := http://127.0.0.1:$(DEV_AGENTBOX_PORT)
+DEV_AGENTBOX_API_KEY  ?= dev-agentbox-key
 
 COMMON_DEV_ENV := \
 	DEV_POSTGRES_PORT=$(DEV_POSTGRES_PORT) \
@@ -70,6 +75,21 @@ FRONTEND_DEV_ENV := \
 	NEXT_PUBLIC_API_URL=$(DEV_BACKEND_URL) \
 	NEXT_PUBLIC_SITE_URL=$(DEV_FRONTEND_URL) \
 	NEXT_PUBLIC_AUTH_URL=$(DEV_FRONTEND_URL)
+
+# AgentBox manager — the workspace sandbox provider. Runs as its own uvicorn
+# process with the local Docker provider; the backend reaches it over HTTP
+# using AGENTBOX_API_URL + AGENTBOX_API_KEY (written into the backend .env).
+AGENTBOX_DEV_ENV := \
+	AGENTBOX_PROVIDER=docker \
+	AGENTBOX_API_KEY=$(DEV_AGENTBOX_API_KEY) \
+	AGENTBOX_API_URL=$(DEV_AGENTBOX_URL) \
+	AGENTBOX_RUNTIME_IMAGE=asia-south1-docker.pkg.dev/gappy-global/gappy-repo/agentbox-runtime:latest \
+	AGENTBOX_STATE_DB_PATH=/tmp/agentbox-state.db \
+	AGENTBOX_STORAGE_ROOT=/tmp/agentbox-workspaces \
+	AGENTBOX_ENDPOINT_HOST=127.0.0.1 \
+	AGENTBOX_SESSION_IDLE_TIMEOUT_SECONDS=300 \
+	AGENTBOX_SANDBOX_IDLE_TIMEOUT_SECONDS=300 \
+	AGENTBOX_CLEANUP_INTERVAL_SECONDS=30
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 
@@ -132,6 +152,7 @@ init:
 	@cd $(BACKEND_DIR) && uv sync --quiet
 	@cd $(CLI_DIR) && uv sync --quiet
 	@cd $(PYTHON_DIR) && uv sync --quiet
+	@cd $(AGENTBOX_DIR) && uv sync --quiet
 	@cd $(TS_DIR) && npm install --silent
 	@cd $(FRONTEND_DIR) && npm install --silent
 	@echo "  ✓ Dependencies installed"
@@ -153,6 +174,9 @@ _init-backend-env:
 			echo "REDIS_URL=$(DEV_REDIS_URL)"; \
 			printf 'CORS_ORIGINS=["http://localhost:%s","http://127.0.0.1:%s"]\n' "$(DEV_FRONTEND_PORT)" "$(DEV_FRONTEND_PORT)"; \
 			echo 'CORS_ORIGIN_REGEX=https?://(localhost|127\.0\.0\.\d+|127\.\d+\.\d+\.\d+|127-0-0-\d+\.sslip\.io|[\w-]+\.nip\.io)(:\d+)?'; \
+			echo "# AgentBox sandbox manager — started by 'make dev' on $(DEV_AGENTBOX_URL)"; \
+			echo "AGENTBOX_API_URL=$(DEV_AGENTBOX_URL)"; \
+			echo "AGENTBOX_API_KEY=$(DEV_AGENTBOX_API_KEY)"; \
 			echo "# Model provider — set at least one of the keys below."; \
 			echo "LEMMA_DEFAULT_MODEL_TYPE=openai_compat"; \
 			echo "LEMMA_OPENAI_API_KEY="; \
@@ -170,7 +194,7 @@ _init-backend-env:
 
 _ensure-backend-env-keys:
 	@set -e; missing=""; \
-	for k in API_URL FRONTEND_URL AUTH_FRONTEND_URL SUPERTOKENS_CORE_URL DATABASE_URL REDIS_URL CORS_ORIGINS CORS_ORIGIN_REGEX; do \
+	for k in API_URL FRONTEND_URL AUTH_FRONTEND_URL SUPERTOKENS_CORE_URL DATABASE_URL REDIS_URL CORS_ORIGINS CORS_ORIGIN_REGEX AGENTBOX_API_URL AGENTBOX_API_KEY; do \
 		if ! grep -qE "^$$k=" $(BACKEND_DIR)/.env; then missing="$$missing $$k"; fi; \
 	done; \
 	if [ -z "$$missing" ]; then \
@@ -188,6 +212,9 @@ _ensure-backend-env-keys:
 			echo "REDIS_URL=$(DEV_REDIS_URL)"; \
 			printf 'CORS_ORIGINS=["http://localhost:%s","http://127.0.0.1:%s"]\n' "$(DEV_FRONTEND_PORT)" "$(DEV_FRONTEND_PORT)"; \
 			echo 'CORS_ORIGIN_REGEX=https?://(localhost|127\.0\.0\.\d+|127\.\d+\.\d+\.\d+|127-0-0-\d+\.sslip\.io|[\w-]+\.nip\.io)(:\d+)?'; \
+			echo "# Added by make init (AgentBox manager)"; \
+			echo "AGENTBOX_API_URL=$(DEV_AGENTBOX_URL)"; \
+			echo "AGENTBOX_API_KEY=$(DEV_AGENTBOX_API_KEY)"; \
 		} >> $(BACKEND_DIR)/.env; \
 	fi
 
@@ -233,6 +260,8 @@ dev:
 	@$(MAKE) --no-print-directory _ensure-init
 	@$(MAKE) --no-print-directory _infra-up
 	@$(MAKE) --no-print-directory _wait-infra
+	@$(MAKE) --no-print-directory _run-agentbox &
+	@$(MAKE) --no-print-directory _wait-agentbox
 	@$(MAKE) --no-print-directory _run-backend &
 	@$(MAKE) --no-print-directory _run-frontend &
 	@echo ""
@@ -240,6 +269,7 @@ dev:
 	@echo "  Auth UI   →  $(DEV_AUTH_FRONTEND_URL)"
 	@echo "  API       →  $(DEV_BACKEND_URL)"
 	@echo "  API docs  →  $(DEV_BACKEND_URL)/scalar"
+	@echo "  AgentBox  →  $(DEV_AGENTBOX_URL)"
 	@echo ""
 	@echo "  Tail backend logs : make logs"
 	@echo "  Press Ctrl-C or run 'make stop' to stop."
@@ -248,6 +278,7 @@ dev:
 _ensure-init:
 	@test -f $(BACKEND_DIR)/.env  || { echo "  ! $(BACKEND_DIR)/.env missing — run 'make init'"; exit 1; }
 	@test -f $(FRONTEND_DIR)/.env.local || { echo "  ! $(FRONTEND_DIR)/.env.local missing — run 'make init'"; exit 1; }
+	@$(MAKE) --no-print-directory _ensure-backend-env-keys
 	@echo "  Using $(BACKEND_DIR)/.env + $(FRONTEND_DIR)/.env.local"
 
 _infra-up:
@@ -280,9 +311,23 @@ _run-frontend:
 		$(COMMON_DEV_ENV) $(FRONTEND_DEV_ENV) \
 		bash -c "npm run dev -- --port $(DEV_FRONTEND_PORT) & echo \$$! > $(notdir $(FRONTEND_PID_FILE)); wait"
 
+_run-agentbox:
+	@echo "  Starting agentbox manager ($(DEV_AGENTBOX_URL), provider=docker)…"
+	@mkdir -p $(AGENTBOX_DIR)
+	@cd $(AGENTBOX_DIR) && rm -f $(notdir $(AGENTBOX_PID_FILE)) && \
+		$(AGENTBOX_DEV_ENV) \
+		bash -c "uv run uvicorn agentbox.server:app --host 127.0.0.1 --port $(DEV_AGENTBOX_PORT) & echo \$$! > $(notdir $(AGENTBOX_PID_FILE)); wait"
+
+_wait-agentbox:
+	@echo "  Waiting for agentbox manager on $(DEV_AGENTBOX_URL)…"
+	@for i in $$(seq 1 30); do \
+		curl -fsS $(DEV_AGENTBOX_URL)/health >/dev/null 2>&1 && echo "  ✓ AgentBox ready" && break; \
+		sleep 1; \
+	done
+
 stop:
 	@echo "→ Stopping dev processes…"
-	@for p in $(FRONTEND_PID_FILE) $(BACKEND_PID_FILE); do \
+	@for p in $(FRONTEND_PID_FILE) $(BACKEND_PID_FILE) $(AGENTBOX_PID_FILE); do \
 		if [ -f $$p ]; then \
 			pid=$$(cat $$p); \
 			kill $$pid 2>/dev/null && echo "  Stopped $$pid ($$p)" || true; \
@@ -290,7 +335,7 @@ stop:
 		fi; \
 	done
 	@# belt + braces: anything still listening on the dev ports
-	@for port in $(DEV_FRONTEND_PORT) $(DEV_BACKEND_PORT); do \
+	@for port in $(DEV_FRONTEND_PORT) $(DEV_BACKEND_PORT) $(DEV_AGENTBOX_PORT); do \
 		lsof -ti tcp:$$port 2>/dev/null | xargs -r kill 2>/dev/null && echo "  Killed leftovers on port $$port" || true; \
 	done
 

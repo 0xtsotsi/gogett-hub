@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import math
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
 from uuid import UUID
 
 from faststream import Depends, Logger
@@ -11,11 +10,13 @@ from faststream.redis import RedisRouter
 
 from app.modules.datastore.config import datastore_settings
 from app.core.infrastructure.db.session import async_session_maker
-from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
-from app.core.infrastructure.db.uow_factory import create_uow_from_session_maker
+from app.core.infrastructure.db.uow_factory import (
+    create_uow_from_session_maker,
+    SessionUnitOfWorkFactory,
+    UnitOfWorkFactory,
+)
 from app.core.infrastructure.events.stream_subscriber import redis_stream_sub
 from app.modules.datastore.api.dependencies import (
-    build_file_service,
     build_pod_member_sync_service,
 )
 from app.modules.datastore.domain.events import (
@@ -35,8 +36,6 @@ from app.modules.datastore.services.file_processing_service import (
 from app.modules.datastore.services.file_recovery_service import (
     DatastoreFileRecoveryService,
 )
-from app.modules.datastore.services.file_service import DatastoreFileService
-from app.modules.datastore.services.pod_member_sync_service import PodMemberSyncService
 from app.modules.pod.domain.events import (
     PodEvents,
     PodMemberAddedEvent,
@@ -66,15 +65,8 @@ def _get_document_processing_semaphore() -> asyncio.Semaphore:
     return _document_processing_semaphore
 
 
-async def provide_uow() -> AsyncGenerator[SqlAlchemyUnitOfWork, None]:
-    async with create_uow_from_session_maker(async_session_maker) as uow:
-        yield uow
-
-
-def provide_pod_member_sync_service(
-    uow: SqlAlchemyUnitOfWork = Depends(provide_uow),
-) -> PodMemberSyncService:
-    return build_pod_member_sync_service(uow)
+def provide_uow_factory() -> UnitOfWorkFactory:
+    return SessionUnitOfWorkFactory(async_session_maker)
 
 
 def _content_update_defer_until(occurred_at: datetime) -> datetime | None:
@@ -117,19 +109,21 @@ async def _enqueue_file_processing(
 async def handle_pod_member_sync(
     event: dict,
     fs_logger: Logger,
-    sync_service: PodMemberSyncService = Depends(provide_pod_member_sync_service),
+    uow_factory: UnitOfWorkFactory = Depends(provide_uow_factory),
 ):
     event_type = event.get("event_type")
 
     if event_type == PodMemberAddedEvent.get_event_type():
         parsed = PodMemberAddedEvent.model_validate(event)
-        await sync_service.sync_member_added(parsed)
+        async with uow_factory() as uow:
+            await build_pod_member_sync_service(uow).sync_member_added(parsed)
         fs_logger.info("Synced pod.member.added for pod %s", parsed.pod_id)
         return
 
     if event_type == PodMemberRemovedEvent.get_event_type():
         parsed = PodMemberRemovedEvent.model_validate(event)
-        await sync_service.sync_member_removed(parsed)
+        async with uow_factory() as uow:
+            await build_pod_member_sync_service(uow).sync_member_removed(parsed)
         fs_logger.info("Synced pod.member.removed for pod %s", parsed.pod_id)
 
 
@@ -183,12 +177,6 @@ async def process_datastore_file_task(
     except Exception as exc:
         logger.error("process_datastore_file_task failed for %s: %s", file_uuid, exc)
         raise
-
-
-def provide_file_service(
-    uow: SqlAlchemyUnitOfWork = Depends(provide_uow),
-) -> DatastoreFileService:
-    return build_file_service(uow)
 
 
 @streaq_cron("*/15 * * * *", name="recover_stuck_processing_files")

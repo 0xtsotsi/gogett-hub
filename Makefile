@@ -152,6 +152,7 @@ _init-backend-env:
 			echo "DATABASE_URL=$(DEV_DATABASE_URL)"; \
 			echo "REDIS_URL=$(DEV_REDIS_URL)"; \
 			printf 'CORS_ORIGINS=["http://localhost:%s","http://127.0.0.1:%s"]\n' "$(DEV_FRONTEND_PORT)" "$(DEV_FRONTEND_PORT)"; \
+			echo 'CORS_ORIGIN_REGEX=https?://(localhost|127\.0\.0\.\d+|127\.\d+\.\d+\.\d+|127-0-0-\d+\.sslip\.io|[\w-]+\.nip\.io)(:\d+)?'; \
 			echo "# Model provider — set at least one of the keys below."; \
 			echo "LEMMA_DEFAULT_MODEL_TYPE=openai_compat"; \
 			echo "LEMMA_OPENAI_API_KEY="; \
@@ -169,7 +170,7 @@ _init-backend-env:
 
 _ensure-backend-env-keys:
 	@set -e; missing=""; \
-	for k in API_URL FRONTEND_URL AUTH_FRONTEND_URL SUPERTOKENS_CORE_URL DATABASE_URL REDIS_URL CORS_ORIGINS; do \
+	for k in API_URL FRONTEND_URL AUTH_FRONTEND_URL SUPERTOKENS_CORE_URL DATABASE_URL REDIS_URL CORS_ORIGINS CORS_ORIGIN_REGEX; do \
 		if ! grep -qE "^$$k=" $(BACKEND_DIR)/.env; then missing="$$missing $$k"; fi; \
 	done; \
 	if [ -z "$$missing" ]; then \
@@ -186,6 +187,7 @@ _ensure-backend-env-keys:
 			echo "DATABASE_URL=$(DEV_DATABASE_URL)"; \
 			echo "REDIS_URL=$(DEV_REDIS_URL)"; \
 			printf 'CORS_ORIGINS=["http://localhost:%s","http://127.0.0.1:%s"]\n' "$(DEV_FRONTEND_PORT)" "$(DEV_FRONTEND_PORT)"; \
+			echo 'CORS_ORIGIN_REGEX=https?://(localhost|127\.0\.0\.\d+|127\.\d+\.\d+\.\d+|127-0-0-\d+\.sslip\.io|[\w-]+\.nip\.io)(:\d+)?'; \
 		} >> $(BACKEND_DIR)/.env; \
 	fi
 

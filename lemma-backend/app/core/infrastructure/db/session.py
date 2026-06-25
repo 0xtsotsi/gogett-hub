@@ -23,21 +23,23 @@ def json_serial(obj):
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-def _set_idle_in_transaction_timeout(dbapi_conn, connection_record=None):
-    """Set idle_in_transaction_session_timeout on each new raw DB connection.
+def _build_connect_args() -> dict:
+    """Build asyncpg connect_args with server-side session settings.
 
-    This is a server-side guard: Postgres automatically aborts any transaction
-    that sits idle (not executing a query) for longer than the specified time.
-    The aborted transaction's connection is then returned to the pool by
-    SQLAlchemy's rollback-on-checkin. This catches the "session held open
-    during external I/O" anti-pattern at the database level, preventing a
-    single leaked session from monopolizing a pooled connection indefinitely.
-
-    SQLAlchemy's PoolEvents.connect passes (dbapi_connection, connection_record).
+    asyncpg's ``server_settings`` dict is sent as ``SET <key> = <value>`` on
+    each new connection. This is the asyncpg-native way to set
+    ``idle_in_transaction_session_timeout`` — using a SQLAlchemy ``connect``
+    event listener doesn't work because the event fires with a raw
+    ``AsyncAdapt_asyncpg_connection`` that has no sync ``execute()`` method.
     """
+    connect_args: dict = {}
+    server_settings: dict[str, str] = {}
     timeout_ms = int(settings.db_idle_in_transaction_timeout_seconds * 1000)
     if timeout_ms > 0:
-        dbapi_conn.execute(f"SET idle_in_transaction_session_timeout = {timeout_ms}")
+        server_settings["idle_in_transaction_session_timeout"] = str(timeout_ms)
+    if server_settings:
+        connect_args["server_settings"] = server_settings
+    return connect_args
 
 
 def _log_pool_utilization(pool):
@@ -71,6 +73,7 @@ def get_engine():
     global engine
     if engine is None:
         engine_kwargs = {}
+        connect_args = {}
         if settings.environment == "testing":
             engine_kwargs["poolclass"] = NullPool
         else:
@@ -78,14 +81,15 @@ def get_engine():
             engine_kwargs["max_overflow"] = settings.db_max_overflow
             engine_kwargs["pool_timeout"] = settings.db_pool_timeout_seconds
             engine_kwargs["pool_recycle"] = settings.db_pool_recycle_seconds
+            connect_args = _build_connect_args()
         engine = create_async_engine(
             settings.database_url,
             json_serializer=lambda obj: json.dumps(obj, default=json_serial),
             pool_pre_ping=True,
+            connect_args=connect_args,
             **engine_kwargs,
         )
         if settings.environment != "testing":
-            event.listen(engine.sync_engine, "connect", _set_idle_in_transaction_timeout)
             event.listen(engine.sync_engine.pool, "checkout", _log_pool_utilization)
             _log_connection_budget()
     return engine

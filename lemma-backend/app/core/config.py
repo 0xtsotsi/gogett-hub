@@ -386,12 +386,8 @@ class Settings(BaseSettings):
         description="Allowed CORS origins",
     )
     cors_origin_regex: Optional[str] = Field(
-        default=r"https?://(localhost|127\.0\.0\.\d+|127\.\d+\.\d+\.\d+|127-0-0-\d+\.sslip\.io|[\w-]+\.nip\.io)(:\d+)?",
-        description=(
-            "Permissive regex matched against request Origin for dev convenience "
-            "(loopback + sslip.io/nip.io wildcards); override via env var to lock "
-            "down. Combine with explicit cors_origins for production builds."
-        ),
+        default=None,
+        description="Optional regex for allowing dynamic frontend origins in CORS",
     )
     session_cookie_domain: Optional[str] = Field(
         default=None,

@@ -117,3 +117,25 @@ async def test_out_of_range_pages_return_empty():
         entity.pod_id, entity.path, uuid4(), page_start=9, page_end=10
     )
     assert pages == []
+
+
+@pytest.mark.asyncio
+async def test_render_pages_for_entity_does_no_db_resolution():
+    """Regression (DB pool exhaustion): rendering from an already-resolved entity
+    must NOT call the reader's DB-backed ``get_file_by_path``. The download
+    endpoint resolves inside a short UoW and renders after it closes, so a pooled
+    connection is never held during the (slow) render + client transfer."""
+    storage = _FakeStorage(_make_pdf_bytes(1))
+    entity = _pdf_entity()
+
+    reader = SimpleNamespace()
+
+    async def _must_not_resolve(*args, **kwargs):
+        raise AssertionError("DB resolution must not happen during rendering")
+
+    reader.get_file_by_path = _must_not_resolve
+    renderer = FilePageRenderer(storage, reader, KreuzbergDocumentProcessor())
+
+    pages = await renderer.render_pages_for_entity(entity, page_start=1, page_end=1)
+    assert [p.page_number for p in pages] == [1]
+    assert pages[0].jpeg_bytes[:2] == b"\xff\xd8"  # JPEG magic

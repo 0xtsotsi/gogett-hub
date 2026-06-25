@@ -210,3 +210,26 @@ class TestDatastoreFilePaths:
         )
         surviving = await pod_api.get_file("/me/operations/renamed.md")
         assert surviving["name"] == "renamed.md"
+
+
+@pytest.mark.asyncio
+async def test_file_download_round_trips_content_and_sets_disposition(
+    pod_api: DatastoreApi,
+):
+    """Regression (DB pool exhaustion): the streaming download endpoint resolves
+    in a short UoW and streams the bytes only after the pooled connection is
+    released. The round-trip content and the Content-Disposition header must
+    still be intact end-to-end."""
+    uploaded = await pod_api.upload_file(
+        "download-check.md", b"hello download", directory_path="/"
+    )
+
+    response = await pod_api.request(
+        "GET",
+        f"/pods/{pod_api.pod_id}/datastore/files/download",
+        params={"path": uploaded["path"]},
+    )
+
+    assert response.status_code == status.HTTP_200_OK, response.text
+    assert response.content == b"hello download"
+    assert "filename" in response.headers.get("content-disposition", "")

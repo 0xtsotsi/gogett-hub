@@ -36,13 +36,18 @@ def _get_app_storage_factory():
     )
 
 
-def get_app_service(uow: UoWDep) -> AppService:
+def build_app_service(uow) -> AppService:
+    """Construct an AppService from a unit of work (single wiring source)."""
     message_bus = get_message_bus()
     return AppService(
         app_repository=AppRepository(uow, message_bus=message_bus),
         file_manager_factory=_get_app_storage_factory(),
         authorization_service=create_authorization_service(uow),
     )
+
+
+def get_app_service(uow: UoWDep) -> AppService:
+    return build_app_service(uow)
 
 
 AppServiceDep = Annotated[AppService, Depends(get_app_service)]

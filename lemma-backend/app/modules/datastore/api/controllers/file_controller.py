@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     Form,
     Query,
@@ -19,9 +20,10 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 
 from app.core.api.pagination import parse_uuid_page_token
-from app.core.api.dependencies import CurrentUser
+from app.core.api.dependencies import CurrentUser, get_uow_factory
 from app.core.authorization.dependencies import PodContextDep
-from app.modules.datastore.api.dependencies import FileServiceDep
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
+from app.modules.datastore.api.dependencies import FileServiceDep, build_file_service
 from app.modules.datastore.api.schemas.datastore_schemas import (
     CreateFolderRequest,
     DirectoryTreeResponse,
@@ -348,16 +350,18 @@ async def delete_path(
 )
 async def download_file(
     pod_id: UUID,
-    file_service: FileServiceDep,
     user: CurrentUser,
     ctx: PodContextDep,
     path: str = Query(...),
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> StreamingResponse:
-    file_entity, content = await file_service.download_file_content_by_path(
-        pod_id,
-        path,
-        ctx=ctx,
-    )
+    # Resolve + authorize inside a short UoW, then release the pooled DB
+    # connection before reading bytes from storage and streaming to the client —
+    # the transfer (potentially slow/large) must not pin a connection.
+    async with uow_factory() as uow:
+        file_service = build_file_service(uow)
+        file_entity = await file_service.resolve_readable_file(pod_id, path, ctx=ctx)
+    content = await file_service.read_file_content(file_entity)
     response = _to_file_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
 
@@ -483,7 +487,6 @@ async def create_file_signed_url(
 )
 async def download_file_child(
     pod_id: UUID,
-    file_service: FileServiceDep,
     user: CurrentUser,
     ctx: PodContextDep,
     path: str = Query(
@@ -493,16 +496,18 @@ async def download_file_child(
     ),
     page_start: Optional[int] = Query(default=None, ge=1),
     page_end: Optional[int] = Query(default=None, ge=1),
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> StreamingResponse:
-    (
+    # Resolve + authorize inside a short UoW, then release the pooled DB
+    # connection before rendering/reading the artifact and streaming it.
+    async with uow_factory() as uow:
+        file_service = build_file_service(uow)
+        file_entity, artifact_rel = await file_service.resolve_child(
+            pod_id, path, ctx=ctx
+        )
+    artifact_name, content, content_type = await file_service.read_child_content(
         file_entity,
-        artifact_name,
-        content,
-        content_type,
-    ) = await file_service.get_file_child(
-        pod_id,
-        path,
-        ctx=ctx,
+        artifact_rel,
         page_start=page_start,
         page_end=page_end,
     )

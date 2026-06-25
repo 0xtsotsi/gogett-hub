@@ -285,6 +285,24 @@ class DatastoreFileService:
             ctx=ctx,
         )
 
+    async def resolve_readable_file(
+        self,
+        pod_id: UUID,
+        path: str,
+        ctx: Context,
+    ) -> DatastoreFileEntity:
+        """Resolve + authorize a downloadable file (DB access). Pair with
+        ``read_file_content`` to stream a download without holding a pooled DB
+        connection for the whole transfer."""
+        return await self._reader.resolve_readable_file_by_path(
+            pod_id, path, ctx.user_id, ctx=ctx
+        )
+
+    async def read_file_content(self, file_entity: DatastoreFileEntity) -> bytes:
+        """Read file bytes from storage for an already-resolved entity. Storage
+        only — **no DB session** — safe to call after the resolving UoW closed."""
+        return await self._reader.read_content_for_entity(file_entity)
+
     async def list_file_children(
         self,
         pod_id: UUID,
@@ -314,33 +332,56 @@ class DatastoreFileService:
         everything else is read from the manifest-backed child container, with
         ``document.md`` supporting an optional page range.
         """
-        file_entity, artifact_rel = await self._reader.resolve_child(
-            pod_id, path, ctx.user_id, ctx=ctx
+        file_entity, artifact_rel = await self.resolve_child(pod_id, path, ctx=ctx)
+        artifact_name, content, content_type = await self.read_child_content(
+            file_entity, artifact_rel, page_start=page_start, page_end=page_end
         )
+        return file_entity, artifact_name, content, content_type
+
+    async def resolve_child(
+        self,
+        pod_id: UUID,
+        path: str,
+        ctx: Context,
+    ) -> tuple[DatastoreFileEntity, str]:
+        """Resolve + authorize a document child's source file (DB access).
+        Returns the source entity and the relative artifact path. Pair with
+        ``read_child_content`` so render/storage I/O runs after the DB session
+        closes."""
+        return await self._reader.resolve_child(pod_id, path, ctx.user_id, ctx=ctx)
+
+    async def read_child_content(
+        self,
+        file_entity: DatastoreFileEntity,
+        artifact_rel: str,
+        *,
+        page_start: int | None = None,
+        page_end: int | None = None,
+    ) -> tuple[str, bytes, str]:
+        """Read/render a document child artifact for an already-resolved entity.
+        Page artifacts are rendered on demand (and cached); everything else is
+        read from the manifest-backed child container. Touches only storage/CPU —
+        **no DB session** — so it is safe to call after the resolving UoW closed."""
         if is_child_page_artifact(artifact_rel):
             page_number = _child_page_number(artifact_rel)
             if page_number is None:
                 raise DatastoreValidationError("Invalid page artifact reference")
-            _entity, pages = await self._renderer.render_document_page_images(
-                pod_id,
-                file_entity.path,
-                ctx.user_id,
+            pages = await self._renderer.render_pages_for_entity(
+                file_entity,
                 page_start=page_number,
                 page_end=page_number,
-                ctx=ctx,
             )
             if not pages:
                 raise DatastoreFileNotFoundError(
                     f"Page {page_number} not found for {file_entity.path}"
                 )
-            return file_entity, artifact_rel, pages[0].jpeg_bytes, "image/jpeg"
-        artifact_name, content, content_type = await self._reader.read_child_artifact(
+            return artifact_rel, pages[0].jpeg_bytes, "image/jpeg"
+        return await self._reader.read_child_artifact(
             file_entity,
             artifact_rel,
             page_start=page_start,
             page_end=page_end,
         )
-        return file_entity, artifact_name, content, content_type
 
     async def get_document_markdown(
         self,

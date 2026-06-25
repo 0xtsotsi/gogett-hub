@@ -334,6 +334,28 @@ async def test_get_app_asset_serves_static_asset_without_fallback():
 
 
 @pytest.mark.asyncio
+async def test_read_archive_reads_storage_without_db_access():
+    """Regression (DB pool exhaustion): ``read_archive`` runs after the resolving
+    UoW closes, so it must not touch the repository — the (slow) archive transfer
+    must hold no pooled DB connection."""
+    repo = AsyncMock()
+    authorization_service = AsyncMock()
+    storage = AsyncMock()
+    storage.read_file.return_value = b"ZIPBYTES"
+    storage_factory = Mock(return_value=storage)
+    service = AppService(repo, storage_factory, authorization_service)
+
+    app_id = uuid4()
+    content = await service.read_archive(app_id, "releases/v1/source.zip")
+
+    assert content == b"ZIPBYTES"
+    storage_factory.assert_called_once_with(app_id)
+    storage.read_file.assert_awaited_once_with("releases/v1/source.zip")
+    repo.get_by_name.assert_not_awaited()
+    repo.get_release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_app_asset_missing_path_raises_without_fallback():
     repo = AsyncMock()
     authorization_service = AsyncMock()

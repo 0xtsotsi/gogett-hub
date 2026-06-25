@@ -4,17 +4,28 @@ from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import Response, StreamingResponse
 
-from app.core.api.dependencies import CurrentUser
+from app.core.api.dependencies import CurrentUser, get_uow_factory
 from app.core.api.pagination import parse_uuid_page_token
 from app.core.authorization.dependencies import PodContextDep
 from app.core.helpers.slug import normalize_resource_name
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.apps.api.asset_response import app_asset_response
 from app.modules.apps.api.dependencies import (
     AppServiceDep,
     WidgetContentReaderDep,
+    build_app_service,
 )
 from app.modules.apps.api.schemas.app_schemas import (
     CreateAppFromWidgetRequest,
@@ -318,16 +329,18 @@ async def get_app_asset(
 async def download_app_source_archive(
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
     ctx: PodContextDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ):
-    archive = await app_service.get_app_source_archive(
-        pod_id,
-        app_name,
-        user.id,
-        ctx=ctx,
-    )
+    # Resolve + authorize in a short UoW, release the connection, then read the
+    # archive from storage and stream it without holding a pooled connection.
+    async with uow_factory() as uow:
+        app_service = build_app_service(uow)
+        app_id, archive_path = await app_service.resolve_source_archive(
+            pod_id, app_name, user.id, ctx=ctx
+        )
+    archive = await app_service.read_archive(app_id, archive_path)
 
     return StreamingResponse(
         BytesIO(archive),
@@ -347,16 +360,18 @@ async def download_app_source_archive(
 async def download_app_dist_archive(
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
     ctx: PodContextDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ):
-    archive = await app_service.get_app_dist_archive(
-        pod_id,
-        app_name,
-        user.id,
-        ctx=ctx,
-    )
+    # Resolve + authorize in a short UoW, release the connection, then read the
+    # archive from storage and stream it without holding a pooled connection.
+    async with uow_factory() as uow:
+        app_service = build_app_service(uow)
+        app_id, archive_path = await app_service.resolve_dist_archive(
+            pod_id, app_name, user.id, ctx=ctx
+        )
+    archive = await app_service.read_archive(app_id, archive_path)
 
     return StreamingResponse(
         BytesIO(archive),

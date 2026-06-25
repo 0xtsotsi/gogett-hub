@@ -578,6 +578,33 @@ class AppService:
         user_id: UUID,
         ctx: Context | None = None,
     ) -> bytes:
+        app_id, archive_path = await self.resolve_source_archive(
+            pod_id, name, user_id, ctx=ctx
+        )
+        return await self.read_archive(app_id, archive_path)
+
+    async def get_app_dist_archive(
+        self,
+        pod_id: UUID,
+        name: str,
+        user_id: UUID,
+        ctx: Context | None = None,
+    ) -> bytes:
+        app_id, archive_path = await self.resolve_dist_archive(
+            pod_id, name, user_id, ctx=ctx
+        )
+        return await self.read_archive(app_id, archive_path)
+
+    async def resolve_source_archive(
+        self,
+        pod_id: UUID,
+        name: str,
+        user_id: UUID,
+        ctx: Context | None = None,
+    ) -> tuple[UUID, str]:
+        """Resolve + authorize the source archive's storage location (DB access).
+        Pair with ``read_archive`` so the archive read runs after the DB session
+        closes, not while a pooled connection is held for the whole transfer."""
         app = await self.get_app_by_name(
             pod_id,
             name,
@@ -588,20 +615,17 @@ class AppService:
         assert app is not None
         if not app.source_archive_path:
             raise AppNotFoundError(f"Source archive not found for app '{name}'")
+        return app.id, app.source_archive_path
 
-        storage = self.file_manager_factory(app.id)
-        content = await storage.read_file(app.source_archive_path)
-        if isinstance(content, str):
-            return content.encode("utf-8")
-        return content
-
-    async def get_app_dist_archive(
+    async def resolve_dist_archive(
         self,
         pod_id: UUID,
         name: str,
         user_id: UUID,
         ctx: Context | None = None,
-    ) -> bytes:
+    ) -> tuple[UUID, str]:
+        """Resolve + authorize the dist archive's storage location (DB access).
+        Pair with ``read_archive`` (see ``resolve_source_archive``)."""
         app = await self.get_app_by_name(
             pod_id,
             name,
@@ -613,9 +637,14 @@ class AppService:
         release = await self._get_current_release(app, raise_not_found_name=name)
         if not release.dist_archive_path:
             raise AppNotFoundError(f"Dist archive not found for app '{name}'")
+        return app.id, release.dist_archive_path
 
-        storage = self.file_manager_factory(app.id)
-        content = await storage.read_file(release.dist_archive_path)
+    async def read_archive(self, app_id: UUID, archive_path: str) -> bytes:
+        """Read an archive's bytes from app storage for an already-resolved app.
+        Storage only — **no DB session** — safe to call after the resolving UoW
+        closed."""
+        storage = self.file_manager_factory(app_id)
+        content = await storage.read_file(archive_path)
         if isinstance(content, str):
             return content.encode("utf-8")
         return content

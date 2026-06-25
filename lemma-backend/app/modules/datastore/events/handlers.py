@@ -8,6 +8,7 @@ from uuid import UUID
 from faststream import Depends, Logger
 from faststream.redis import RedisRouter
 
+from app.core.config import settings
 from app.modules.datastore.config import datastore_settings
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import (
@@ -85,6 +86,10 @@ async def _enqueue_file_processing(
     event: DatastoreFileCreatedEvent | DatastoreFileUpdatedEvent,
     fs_logger: Logger,
 ) -> None:
+    if settings.e2e_disable_worker_file_autoindex:
+        # e2e indexes explicitly in-process (index_file); skip the worker path so
+        # it doesn't double-index every upload and overwhelm the shared Kreuzberg.
+        return
     defer_until = None
     if event.event_type == DatastoreFileUpdatedEvent.get_event_type():
         defer_until = _content_update_defer_until(event.occurred_at)

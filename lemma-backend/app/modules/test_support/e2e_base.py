@@ -250,6 +250,13 @@ def e2e_settings(test_database_url, test_redis_url, supertokens_container):
     # Set on os.environ so the worker subprocess (which indexes) inherits it.
     os.environ.setdefault("KREUZBERG_TRANSIENT_RETRY_ATTEMPTS", "8")
 
+    # e2e indexes datastore files explicitly in-process (the index_file helper).
+    # Disable the worker's auto-index-on-upload so it doesn't ALSO index every
+    # uploaded file through the single shared Kreuzberg — that double load OOMs
+    # the container under -n2. Inherited by the worker subprocess.
+    settings.e2e_disable_worker_file_autoindex = True
+    os.environ.setdefault("E2E_DISABLE_WORKER_FILE_AUTOINDEX", "true")
+
     if sandbox_mode == "fake":
         _start_fake_agentbox(agentbox_port)
 

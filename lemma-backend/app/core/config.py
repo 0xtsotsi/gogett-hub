@@ -514,6 +514,16 @@ class Settings(BaseSettings):
             "default it to 'fake' (override with E2E_REAL=1)."
         ),
     )
+    e2e_disable_worker_file_autoindex: bool = Field(
+        default=False,
+        description=(
+            "TEST HOOK ONLY. When true, the worker does NOT auto-index uploaded "
+            "datastore files (the upload->event->process_datastore_file_task path "
+            "is skipped). e2e indexes explicitly in-process via the index_file "
+            "helper; auto-indexing every upload would otherwise overwhelm the "
+            "single shared Kreuzberg under parallel load. Production leaves False."
+        ),
+    )
     agentbox_api_url: Optional[str] = Field(
         description="AgentBox manager API base URL used by workspace execution",
         default=None

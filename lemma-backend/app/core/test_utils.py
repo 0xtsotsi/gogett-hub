@@ -377,6 +377,56 @@ def remove_named_container(name: str) -> None:
     subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
 
 
+SHARED_KREUZBERG_NAME = "lemma-e2e-kreuzberg-shared"
+
+
+@contextmanager
+def shared_kreuzberg(basetemp_parent, worker_id: str) -> Generator[str, None, None]:
+    """Yield the URL of a SINGLE Kreuzberg shared across all xdist workers.
+
+    Kreuzberg bundles an embedding model and is RAM-heavy; one container per
+    worker OOMs most machines. Refcounted via a file lock in the xdist-shared
+    temp root: the first user starts one named container and records its URL;
+    others reuse it; the last user out removes it. Used by BOTH the datastore
+    kreuzberg fixture and the streaq worker fixture (the worker indexes datastore
+    files, so it must point at the same container). Without xdist
+    (``worker_id == 'master'``) it falls back to a plain per-session container.
+    """
+    if worker_id == "master":
+        with get_kreuzberg_container() as kb:
+            yield get_kreuzberg_url(kb)
+        return
+
+    from pathlib import Path
+
+    from filelock import FileLock
+
+    root = Path(basetemp_parent)
+    lock = FileLock(str(root / "kreuzberg.lock"))
+    url_file = root / "kreuzberg_url.txt"
+    refs_file = root / "kreuzberg_refs.txt"
+
+    with lock:
+        if url_file.exists():
+            url = url_file.read_text().strip()
+        else:
+            url = start_shared_kreuzberg(SHARED_KREUZBERG_NAME)
+            url_file.write_text(url)
+        refs = int(refs_file.read_text()) if refs_file.exists() else 0
+        refs_file.write_text(str(refs + 1))
+
+    try:
+        yield url
+    finally:
+        with lock:
+            refs = (int(refs_file.read_text()) if refs_file.exists() else 1) - 1
+            refs_file.write_text(str(refs))
+            if refs <= 0:
+                remove_named_container(SHARED_KREUZBERG_NAME)
+                url_file.unlink(missing_ok=True)
+                refs_file.unlink(missing_ok=True)
+
+
 def get_postgres_url(container: LemmaPostgresContainer) -> str:
     """Helper to extract async database URL from container."""
     host = container.get_container_host_ip()

@@ -4,6 +4,7 @@ import json
 from datetime import date, datetime
 from uuid import UUID
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -21,6 +22,12 @@ def _json_serial(obj):
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
+def _set_datastore_idle_in_transaction_timeout(conn):
+    timeout_ms = int(settings.db_idle_in_transaction_timeout_seconds * 1000)
+    if timeout_ms > 0:
+        conn.execute(f"SET idle_in_transaction_session_timeout = {timeout_ms}")
+
+
 def get_datastore_engine():
     global _engine
     if _engine is None:
@@ -31,12 +38,17 @@ def get_datastore_engine():
         else:
             engine_kwargs["pool_size"] = 10
             engine_kwargs["max_overflow"] = 20
+            engine_kwargs["pool_recycle"] = settings.db_pool_recycle_seconds
         _engine = create_async_engine(
             url,
             json_serializer=lambda obj: json.dumps(obj, default=_json_serial),
             pool_pre_ping=True,
             **engine_kwargs,
         )
+        if settings.environment != "testing":
+            event.listen(
+                _engine.sync_engine, "connect", _set_datastore_idle_in_transaction_timeout
+            )
     return _engine
 
 

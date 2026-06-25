@@ -34,7 +34,7 @@ JOB_TIMEOUT_SECONDS = 1800
 JOB_MAX_RETRIES = 3
 # Keep completed task metadata around long enough for the UI to be useful.
 JOB_RESULT_TTL_SECONDS = 60 * 60 * 24
-WORKER_CONCURRENCY = 100
+WORKER_CONCURRENCY = settings.worker_concurrency
 
 
 broker = RedisBroker(settings.redis_url)
@@ -185,6 +185,10 @@ async def worker_lifespan() -> AsyncGenerator[AppWorkerContext]:
         await _safe_shutdown_step("close_message_bus", close_message_bus)
         await _safe_shutdown_step("close_engine", close_engine)
         await _safe_shutdown_step("channel_service.disconnect", channel_service.disconnect)
+
+        from app.modules.datastore.infrastructure.session import close_datastore_engine
+
+        await _safe_shutdown_step("close_datastore_engine", close_datastore_engine)
         logger.info("Worker shutting down...")
 
 

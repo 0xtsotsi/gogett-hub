@@ -44,6 +44,31 @@ class Settings(BaseSettings):
             "(SQLAlchemy default is 30s, which surfaces as a long hang)."
         ),
     )
+    db_pool_recycle_seconds: int = Field(
+        default=300,
+        description=(
+            "Recycle pooled DB connections after this many seconds to prevent "
+            "stale connections from accumulating (SQLAlchemy pool_recycle)."
+        ),
+    )
+    db_idle_in_transaction_timeout_seconds: float = Field(
+        default=60.0,
+        description=(
+            "Postgres idle_in_transaction_session_timeout in seconds. "
+            "Automatically aborts transactions that sit idle (not executing "
+            "a query) for longer than this, releasing the connection back to "
+            "the pool. Set to 0 to disable. Catches the 'session held open "
+            "during external I/O' anti-pattern at the database level."
+        ),
+    )
+    worker_concurrency: int = Field(
+        default=50,
+        description=(
+            "Maximum concurrent streaq tasks per worker process. Should not "
+            "exceed db_pool_size + db_max_overflow, since each task that "
+            "opens a DB session consumes one pooled connection."
+        ),
+    )
     redis_url: str = Field(
         default="redis://localhost:6379",
         description="Redis connection URL",

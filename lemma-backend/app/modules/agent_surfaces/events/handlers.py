@@ -184,6 +184,11 @@ async def process_surface_message(
         getattr(task_payload.context, "conversation_id", None),
     )
     async with worker_ctx.uow() as uow:
+        # NOTE: The DB session is held during platform API calls, file
+        # ingestion, and voice transcription inside execute_chat. A full fix
+        # requires refactoring AgentSurfaceIngressService to use a uow_factory
+        # and scope DB operations around the external I/O. Mitigated by the
+        # idle_in_transaction_session_timeout guard on the engine.
         service = worker_ctx.build_surface_event_handler(uow)
         await service.execute_chat(task_payload.context)
     logger.info(

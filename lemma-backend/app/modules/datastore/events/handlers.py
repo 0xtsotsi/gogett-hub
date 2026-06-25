@@ -170,6 +170,12 @@ async def process_datastore_file_task(
                 uow_context = worker_ctx.uow()
             except Exception:
                 uow_context = create_uow_from_session_maker(async_session_maker)
+            # NOTE: The DB session is held during storage downloads, document
+            # extraction, and storage uploads inside process_file_async. This is
+            # mitigated by the semaphore (concurrency=2) and the
+            # idle_in_transaction_session_timeout guard on the engine. A full fix
+            # requires refactoring DatastoreFileProcessingService to use a
+            # uow_factory and scope DB operations around the external I/O.
             async with uow_context as uow:
                 service = DatastoreFileProcessingService(pod_uuid, uow)
                 await service.process_file_async(file_uuid, metadata or {})

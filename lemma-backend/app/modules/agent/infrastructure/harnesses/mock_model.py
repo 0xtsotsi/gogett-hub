@@ -30,6 +30,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
@@ -48,12 +49,22 @@ def is_mock_llm_enabled() -> bool:
 
 
 def _current_run_turn_index(messages: Sequence[ModelMessage]) -> int:
-    """Model-response count since the last user prompt = this run's turn index."""
+    """Model-response count since this run's user prompt = this run's turn index.
+
+    The anchor is the last ModelRequest that carries a real user prompt — a
+    ``UserPromptPart`` and NOT a ``ToolReturnPart``. The harness re-injects the
+    user prompt alongside every tool return (``ModelRequest[ToolReturnPart,
+    UserPromptPart]``), so anchoring on any UserPromptPart would reset the count
+    to 0 after each tool call and the mock would re-emit its first turn forever.
+    """
     last_user = -1
     for i, message in enumerate(messages):
-        if isinstance(message, ModelRequest) and any(
-            isinstance(part, UserPromptPart) for part in message.parts
-        ):
+        if not isinstance(message, ModelRequest):
+            continue
+        parts = message.parts
+        has_user = any(isinstance(part, UserPromptPart) for part in parts)
+        has_tool_return = any(isinstance(part, ToolReturnPart) for part in parts)
+        if has_user and not has_tool_return:
             last_user = i
     return sum(
         1 for message in messages[last_user + 1 :] if isinstance(message, ModelResponse)

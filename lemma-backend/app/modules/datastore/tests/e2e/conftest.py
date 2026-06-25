@@ -146,24 +146,47 @@ async def member_users(
 
 @pytest_asyncio.fixture(scope="function")
 async def index_datastore_file(db_manager):
+    import asyncio
+
+    from app.modules.datastore.domain.file_entities import FileStatus
     from app.modules.datastore.infrastructure.models import DatastoreFile
     from app.modules.datastore.services.file_processing_service import (
         DatastoreFileProcessingService,
     )
 
-    async def _index(pod_id, file_id):
+    _TERMINAL = {FileStatus.COMPLETED.value, FileStatus.NOT_REQUIRED.value}
+
+    async def _file_status(file_id):
         async with db_manager.session_factory() as session:
             result = await session.execute(
                 select(DatastoreFile).where(DatastoreFile.id == file_id)
             )
             file_model = result.scalar_one()
-            metadata = file_model.file_metadata or {}
+            return file_model.status, (file_model.file_metadata or {})
+
+    async def _index(pod_id, file_id):
+        _, metadata = await _file_status(file_id)
 
         service = DatastoreFileProcessingService(
             pod_id,
             uow_factory=SessionUnitOfWorkFactory(db_manager.session_factory),
         )
+        # If the upload already enqueued worker indexing, the file may not be
+        # PENDING and process_file_async returns immediately (skipped) — the
+        # worker is still indexing async. Either way, wait until indexing has
+        # actually finished so the subsequent search sees a populated index;
+        # otherwise the search races the indexer and returns nothing under load.
         await service.process_file_async(file_id, metadata)
+        for _ in range(120):  # ~60s at 0.5s
+            status, _ = await _file_status(file_id)
+            if status in _TERMINAL:
+                return
+            if status == FileStatus.FAILED.value:
+                raise AssertionError(f"Indexing failed for file {file_id}")
+            await asyncio.sleep(0.5)
+        raise AssertionError(
+            f"Indexing did not complete for file {file_id} (last status: {status})"
+        )
 
     return _index
 

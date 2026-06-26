@@ -203,6 +203,36 @@ class DatastoreFileService:
             ctx=ctx,
         )
 
+    async def resolve_update_file(
+        self,
+        pod_id: UUID,
+        update_entity: DatastoreFileUpdateEntity,
+        ctx: Context,
+    ):
+        """Resolve + authorize + apply in-memory mutations for a file update (DB
+        only); returns a plan. Pair with write_update_storage -> persist_update_file
+        -> finalize_update_file so the byte move + search sync hold no connection."""
+        return await self._writer.resolve_update_file(
+            pod_id, update_entity, ctx.user_id, ctx=ctx
+        )
+
+    async def write_update_storage(
+        self, plan, update_entity: DatastoreFileUpdateEntity
+    ) -> None:
+        """Upload/move the file bytes for a resolved update plan. Storage only —
+        no DB connection."""
+        await self._writer.write_update_storage(plan, update_entity)
+
+    async def persist_update_file(self, plan) -> DatastoreFileEntity:
+        """Persist the mutated row (+ descendant paths) for a resolved update
+        plan — DB only, in its own short UoW."""
+        return await self._writer.persist_update_file(plan)
+
+    async def finalize_update_file(self, plan, updated_entity) -> None:
+        """Storage + search-index sync after the update row is persisted. No DB
+        connection held."""
+        await self._writer.finalize_update_file(plan, updated_entity)
+
     async def delete_file_by_path(
         self,
         pod_id: UUID,

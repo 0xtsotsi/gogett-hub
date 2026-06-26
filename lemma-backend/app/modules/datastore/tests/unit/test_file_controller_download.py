@@ -291,3 +291,73 @@ async def test_delete_path_offloads_cleanup_after_release(monkeypatch):
     assert service.cleanup_called is False
     assert enqueue_open_state["open"] is False
     assert factory.state["open"] is False
+
+
+class _FakeUpdateService:
+    def __init__(self, state):
+        self._state = state
+        self.resolve_open = None
+        self.write_open = None
+        self.persist_open = None
+        self.getfile_open = None
+        self.finalize_open = None
+
+    async def resolve_update_file(self, pod_id, update_entity, ctx):
+        self.resolve_open = self._state["open"]
+        return SimpleNamespace(id=uuid4())
+
+    async def write_update_storage(self, plan, update_entity):
+        self.write_open = self._state["open"]
+
+    async def persist_update_file(self, plan):
+        self.persist_open = self._state["open"]
+        return SimpleNamespace(id=uuid4())
+
+    async def get_file(self, file_id, ctx):
+        self.getfile_open = self._state["open"]
+        return SimpleNamespace(id=file_id, pod_id=None)
+
+    async def finalize_update_file(self, plan, updated):
+        self.finalize_open = self._state["open"]
+
+
+@pytest.mark.asyncio
+async def test_update_file_moves_bytes_and_finalizes_outside_uow(monkeypatch):
+    factory = _TrackingUowFactory()
+    service = _FakeUpdateService(factory.state)
+
+    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
+    monkeypatch.setattr(
+        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
+    )
+    monkeypatch.setattr(
+        file_controller,
+        "_file_detail_response",
+        AsyncMock(return_value=SimpleNamespace(pod_id=None)),
+    )
+    monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
+
+    class _Req:
+        async def form(self):
+            return {}
+
+    await file_controller.update_file(
+        uuid4(),
+        _Req(),  # request
+        SimpleNamespace(id=uuid4()),  # user
+        data=None,
+        path="/notes.txt",
+        new_path=None,
+        description=None,
+        search_enabled=None,
+        visibility=None,
+        uow_factory=factory,
+    )
+
+    assert service.resolve_open is True  # UoW#1: resolve + authorize + mutate
+    assert service.write_open is False  # bytes moved with no connection held
+    assert service.persist_open is True  # UoW#2: persist the row
+    assert service.getfile_open is True  # response re-read in UoW#2
+    assert service.finalize_open is False  # storage + search sync after commit
+    assert factory.state["open"] is False
+    assert factory.state["opens"] == 2  # exactly two short UoWs

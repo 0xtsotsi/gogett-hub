@@ -292,15 +292,14 @@ async def get_file(
 async def update_file(
     pod_id: UUID,
     request: Request,
-    file_service: FileServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
     data: UploadFile | None = File(default=None),
     path: str = Form(...),
     new_path: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     search_enabled: Optional[bool] = Form(None),
     visibility: str | None = Form(default=None),
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FileDetailResponse:
     form = await request.form()
     provided_fields = set(form.keys())
@@ -320,8 +319,40 @@ async def update_file(
         update_payload["content"] = file_content
 
     update_entity = DatastoreFileUpdateEntity(**update_payload)
-    file_entity = await file_service.update_file_by_path(pod_id, update_entity, ctx=ctx)
-    file_entity = await file_service.get_file(file_entity.id, ctx=ctx)
+
+    # Resolve + authorize + apply mutations in a short UoW, move/upload the bytes
+    # with no connection held, persist the row in a second short UoW, then sync
+    # storage + search after commit (no connection). Upload-new -> persist-row ->
+    # delete-old ordering means a mid-flight failure can only orphan a blob.
+    async with uow_factory() as uow:
+        file_service = build_file_service(uow)
+        ctx = await resolve_pod_context(
+            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
+        )
+        token = set_current_context(ctx)
+        try:
+            plan = await file_service.resolve_update_file(
+                pod_id, update_entity, ctx=ctx
+            )
+        finally:
+            reset_current_context(token)
+
+    await file_service.write_update_storage(plan, update_entity)
+
+    async with uow_factory() as uow2:
+        file_service = build_file_service(uow2)
+        ctx2 = await resolve_pod_context(
+            session=uow2.session, request=request, user_id=user.id, pod_id=pod_id
+        )
+        token2 = set_current_context(ctx2)
+        try:
+            updated = await file_service.persist_update_file(plan)
+            file_entity = await file_service.get_file(updated.id, ctx=ctx2)
+        finally:
+            reset_current_context(token2)
+
+    await file_service.finalize_update_file(plan, updated)
+
     response = await _file_detail_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
     return response

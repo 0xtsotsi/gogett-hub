@@ -9,6 +9,7 @@ endpoint functions directly with a tracking ``uow_factory`` to pin that ordering
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -27,7 +28,7 @@ class _TrackingUowFactory:
             async def __aenter__(self_):
                 state["open"] = True
                 state["opens"] += 1
-                return object()
+                return SimpleNamespace(session=object())
 
             async def __aexit__(self_, *exc):
                 state["open"] = False
@@ -61,12 +62,15 @@ async def test_source_archive_resolves_in_uow_then_reads_after_release(monkeypat
     factory = _TrackingUowFactory()
     service = _FakeAppService(factory.state, b"SOURCE-ZIP")
     monkeypatch.setattr(app_controller, "build_app_service", lambda uow: service)
+    monkeypatch.setattr(
+        app_controller, "resolve_pod_context", AsyncMock(return_value=object())
+    )
 
     response = await app_controller.download_app_source_archive(
         uuid4(),
         "dashboard",
         SimpleNamespace(id=uuid4()),
-        object(),  # ctx
+        SimpleNamespace(),  # request
         uow_factory=factory,
     )
 
@@ -84,12 +88,15 @@ async def test_dist_archive_resolves_in_uow_then_reads_after_release(monkeypatch
     factory = _TrackingUowFactory()
     service = _FakeAppService(factory.state, b"DIST-ZIP")
     monkeypatch.setattr(app_controller, "build_app_service", lambda uow: service)
+    monkeypatch.setattr(
+        app_controller, "resolve_pod_context", AsyncMock(return_value=object())
+    )
 
     response = await app_controller.download_app_dist_archive(
         uuid4(),
         "dashboard",
         SimpleNamespace(id=uuid4()),
-        object(),  # ctx
+        SimpleNamespace(),  # request
         uow_factory=factory,
     )
 

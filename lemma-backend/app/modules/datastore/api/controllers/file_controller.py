@@ -21,7 +21,11 @@ from fastapi.responses import StreamingResponse
 
 from app.core.api.pagination import parse_uuid_page_token
 from app.core.api.dependencies import CurrentUser, get_uow_factory
-from app.core.authorization.dependencies import PodContextDep
+from app.core.authorization.current import (
+    reset_current_context,
+    set_current_context,
+)
+from app.core.authorization.dependencies import PodContextDep, resolve_pod_context
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.datastore.api.dependencies import FileServiceDep, build_file_service
 from app.modules.datastore.api.schemas.datastore_schemas import (
@@ -351,16 +355,23 @@ async def delete_path(
 async def download_file(
     pod_id: UUID,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
     path: str = Query(...),
     uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> StreamingResponse:
-    # Resolve + authorize inside a short UoW, then release the pooled DB
-    # connection before reading bytes from storage and streaming to the client —
-    # the transfer (potentially slow/large) must not pin a connection.
+    # Build the auth context inside the short UoW (not via a request-scoped
+    # PodContextDep, which FastAPI keeps alive for the whole StreamingResponse),
+    # resolve+authorize, release the connection, then read bytes from storage.
     async with uow_factory() as uow:
         file_service = build_file_service(uow)
-        file_entity = await file_service.resolve_readable_file(pod_id, path, ctx=ctx)
+        ctx = await resolve_pod_context(
+            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
+        )
+        token = set_current_context(ctx)
+        try:
+            file_entity = await file_service.resolve_readable_file(pod_id, path, ctx=ctx)
+        finally:
+            reset_current_context(token)
     content = await file_service.read_file_content(file_entity)
     response = _to_file_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
@@ -488,7 +499,7 @@ async def create_file_signed_url(
 async def download_file_child(
     pod_id: UUID,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
     path: str = Query(
         ...,
         description="Child path, e.g. /folder/report.pdf/document.md, "
@@ -498,13 +509,21 @@ async def download_file_child(
     page_end: Optional[int] = Query(default=None, ge=1),
     uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> StreamingResponse:
-    # Resolve + authorize inside a short UoW, then release the pooled DB
-    # connection before rendering/reading the artifact and streaming it.
+    # Build the auth context inside the short UoW (not via a request-scoped
+    # PodContextDep held across the StreamingResponse), resolve+authorize, release
+    # the connection, then render/read the artifact and stream it.
     async with uow_factory() as uow:
         file_service = build_file_service(uow)
-        file_entity, artifact_rel = await file_service.resolve_child(
-            pod_id, path, ctx=ctx
+        ctx = await resolve_pod_context(
+            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
         )
+        token = set_current_context(ctx)
+        try:
+            file_entity, artifact_rel = await file_service.resolve_child(
+                pod_id, path, ctx=ctx
+            )
+        finally:
+            reset_current_context(token)
     artifact_name, content, content_type = await file_service.read_child_content(
         file_entity,
         artifact_rel,

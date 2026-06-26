@@ -370,16 +370,24 @@ async def download_app_source_archive(
     pod_id: UUID,
     app_name: str,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
     uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ):
-    # Resolve + authorize in a short UoW, release the connection, then read the
-    # archive from storage and stream it without holding a pooled connection.
+    # Resolve + authorize in a short UoW (auth context built there, not via a
+    # request-scoped PodContextDep held across the stream), then read the archive
+    # from storage and stream it without holding a pooled connection.
     async with uow_factory() as uow:
         app_service = build_app_service(uow)
-        app_id, archive_path = await app_service.resolve_source_archive(
-            pod_id, app_name, user.id, ctx=ctx
+        ctx = await resolve_pod_context(
+            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
         )
+        token = set_current_context(ctx)
+        try:
+            app_id, archive_path = await app_service.resolve_source_archive(
+                pod_id, app_name, user.id, ctx=ctx
+            )
+        finally:
+            reset_current_context(token)
     archive = await app_service.read_archive(app_id, archive_path)
 
     return StreamingResponse(
@@ -401,16 +409,24 @@ async def download_app_dist_archive(
     pod_id: UUID,
     app_name: str,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
     uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ):
-    # Resolve + authorize in a short UoW, release the connection, then read the
-    # archive from storage and stream it without holding a pooled connection.
+    # Resolve + authorize in a short UoW (auth context built there, not via a
+    # request-scoped PodContextDep held across the stream), then read the archive
+    # from storage and stream it without holding a pooled connection.
     async with uow_factory() as uow:
         app_service = build_app_service(uow)
-        app_id, archive_path = await app_service.resolve_dist_archive(
-            pod_id, app_name, user.id, ctx=ctx
+        ctx = await resolve_pod_context(
+            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
         )
+        token = set_current_context(ctx)
+        try:
+            app_id, archive_path = await app_service.resolve_dist_archive(
+                pod_id, app_name, user.id, ctx=ctx
+            )
+        finally:
+            reset_current_context(token)
     archive = await app_service.read_archive(app_id, archive_path)
 
     return StreamingResponse(

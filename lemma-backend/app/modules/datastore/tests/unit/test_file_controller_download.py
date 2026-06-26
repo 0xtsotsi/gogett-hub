@@ -10,6 +10,7 @@ directly with a tracking ``uow_factory`` to pin that ordering.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -31,7 +32,7 @@ class _TrackingUowFactory:
             async def __aenter__(self_):
                 state["open"] = True
                 state["opens"] += 1
-                return object()
+                return SimpleNamespace(session=object())
 
             async def __aexit__(self_, *exc):
                 state["open"] = False
@@ -68,11 +69,14 @@ async def test_download_file_resolves_in_uow_then_reads_after_release(monkeypatc
         file_controller, "_to_file_response", lambda e, uid: SimpleNamespace(pod_id=None)
     )
     monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
+    monkeypatch.setattr(
+        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
+    )
 
     response = await file_controller.download_file(
         uuid4(),
         SimpleNamespace(id=uuid4()),
-        object(),  # ctx
+        SimpleNamespace(),  # request
         path="/notes.txt",
         uow_factory=factory,
     )
@@ -115,11 +119,14 @@ async def test_download_file_child_resolves_in_uow_then_reads_after_release(monk
         file_controller, "_to_file_response", lambda e, uid: SimpleNamespace(pod_id=None)
     )
     monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
+    monkeypatch.setattr(
+        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
+    )
 
     response = await file_controller.download_file_child(
         uuid4(),
         SimpleNamespace(id=uuid4()),
-        object(),  # ctx
+        SimpleNamespace(),  # request
         path="/report.pdf/doc.md",
         page_start=None,
         page_end=None,

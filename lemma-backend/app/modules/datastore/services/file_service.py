@@ -190,43 +190,65 @@ class DatastoreFileService:
             visibility=visibility,
         )
 
-    async def update_file_by_path(
+    async def resolve_update_file(
         self,
         pod_id: UUID,
         update_entity: DatastoreFileUpdateEntity,
         ctx: Context,
-    ) -> DatastoreFileEntity:
-        return await self._writer.update_file_by_path(
-            pod_id,
-            update_entity,
-            ctx.user_id,
-            ctx=ctx,
+    ):
+        """Resolve + authorize + apply in-memory mutations for a file update (DB
+        only); returns a plan. Pair with write_update_storage -> persist_update_file
+        -> finalize_update_file so the byte move + search sync hold no connection."""
+        return await self._writer.resolve_update_file(
+            pod_id, update_entity, ctx.user_id, ctx=ctx
         )
 
-    async def delete_file_by_path(
+    async def write_update_storage(
+        self, plan, update_entity: DatastoreFileUpdateEntity
+    ) -> None:
+        """Upload/move the file bytes for a resolved update plan. Storage only —
+        no DB connection."""
+        await self._writer.write_update_storage(plan, update_entity)
+
+    async def persist_update_file(self, plan) -> DatastoreFileEntity:
+        """Persist the mutated row (+ descendant paths) for a resolved update
+        plan — DB only, in its own short UoW."""
+        return await self._writer.persist_update_file(plan)
+
+    async def finalize_update_file(self, plan, updated_entity) -> None:
+        """Storage + search-index sync after the update row is persisted. No DB
+        connection held."""
+        await self._writer.finalize_update_file(plan, updated_entity)
+
+    async def resolve_delete_path(
         self,
         pod_id: UUID,
         path: str,
         ctx: Context,
-    ) -> None:
-        await self._writer.delete_file_by_path(
-            pod_id,
-            path,
-            ctx.user_id,
-            ctx=ctx,
+    ):
+        """Authorize + delete the file/folder rows (DB only); returns the storage
+        + search cleanup payload. Pair with ``cleanup_deleted_paths`` (or offload
+        it) so the purge holds no pooled DB connection."""
+        return await self._writer.resolve_delete_path(
+            pod_id, path, ctx.user_id, ctx=ctx
         )
 
-    async def delete_path_by_path(
+    async def cleanup_deleted_paths(
         self,
         pod_id: UUID,
-        path: str,
-        ctx: Context,
+        *,
+        is_folder: bool,
+        folder_prefix: str | None,
+        files: list[dict[str, str]],
     ) -> None:
-        await self._writer.delete_path_by_path(
+        """Purge storage + search-index entries for already-deleted rows. Holds
+        no main DB connection; safe to run after the resolving UoW closed or in a
+        worker task."""
+        await self._writer.cleanup_deleted_paths(
             pod_id,
-            path,
-            ctx.user_id,
-            ctx=ctx,
+            is_folder=is_folder,
+            folder_prefix=folder_prefix,
+            files=files,
         )
 
     # --- Read API ---------------------------------------------------------
@@ -285,6 +307,24 @@ class DatastoreFileService:
             ctx=ctx,
         )
 
+    async def resolve_readable_file(
+        self,
+        pod_id: UUID,
+        path: str,
+        ctx: Context,
+    ) -> DatastoreFileEntity:
+        """Resolve + authorize a downloadable file (DB access). Pair with
+        ``read_file_content`` to stream a download without holding a pooled DB
+        connection for the whole transfer."""
+        return await self._reader.resolve_readable_file_by_path(
+            pod_id, path, ctx.user_id, ctx=ctx
+        )
+
+    async def read_file_content(self, file_entity: DatastoreFileEntity) -> bytes:
+        """Read file bytes from storage for an already-resolved entity. Storage
+        only — **no DB session** — safe to call after the resolving UoW closed."""
+        return await self._reader.read_content_for_entity(file_entity)
+
     async def list_file_children(
         self,
         pod_id: UUID,
@@ -300,6 +340,28 @@ class DatastoreFileService:
             ctx=ctx,
         )
 
+    async def resolve_children_file(
+        self,
+        pod_id: UUID,
+        path: str,
+        ctx: Context,
+    ) -> DatastoreFileEntity:
+        """Resolve + authorize a document for child listing (DB access). Pair
+        with ``load_file_children`` to build the list from the storage manifest
+        without holding a pooled DB connection for the manifest read."""
+        return await self._reader.resolve_children_file(
+            pod_id, path, ctx.user_id, ctx=ctx
+        )
+
+    async def load_file_children(
+        self,
+        file_entity: DatastoreFileEntity,
+        requester_user_id: UUID,
+    ) -> list[dict[str, Any]]:
+        """Build the child list from storage for an already-resolved entity.
+        Storage only — **no DB session** — safe after the resolving UoW closed."""
+        return await self._reader.load_children(file_entity, requester_user_id)
+
     async def get_file_child(
         self,
         pod_id: UUID,
@@ -314,33 +376,56 @@ class DatastoreFileService:
         everything else is read from the manifest-backed child container, with
         ``document.md`` supporting an optional page range.
         """
-        file_entity, artifact_rel = await self._reader.resolve_child(
-            pod_id, path, ctx.user_id, ctx=ctx
+        file_entity, artifact_rel = await self.resolve_child(pod_id, path, ctx=ctx)
+        artifact_name, content, content_type = await self.read_child_content(
+            file_entity, artifact_rel, page_start=page_start, page_end=page_end
         )
+        return file_entity, artifact_name, content, content_type
+
+    async def resolve_child(
+        self,
+        pod_id: UUID,
+        path: str,
+        ctx: Context,
+    ) -> tuple[DatastoreFileEntity, str]:
+        """Resolve + authorize a document child's source file (DB access).
+        Returns the source entity and the relative artifact path. Pair with
+        ``read_child_content`` so render/storage I/O runs after the DB session
+        closes."""
+        return await self._reader.resolve_child(pod_id, path, ctx.user_id, ctx=ctx)
+
+    async def read_child_content(
+        self,
+        file_entity: DatastoreFileEntity,
+        artifact_rel: str,
+        *,
+        page_start: int | None = None,
+        page_end: int | None = None,
+    ) -> tuple[str, bytes, str]:
+        """Read/render a document child artifact for an already-resolved entity.
+        Page artifacts are rendered on demand (and cached); everything else is
+        read from the manifest-backed child container. Touches only storage/CPU —
+        **no DB session** — so it is safe to call after the resolving UoW closed."""
         if is_child_page_artifact(artifact_rel):
             page_number = _child_page_number(artifact_rel)
             if page_number is None:
                 raise DatastoreValidationError("Invalid page artifact reference")
-            _entity, pages = await self._renderer.render_document_page_images(
-                pod_id,
-                file_entity.path,
-                ctx.user_id,
+            pages = await self._renderer.render_pages_for_entity(
+                file_entity,
                 page_start=page_number,
                 page_end=page_number,
-                ctx=ctx,
             )
             if not pages:
                 raise DatastoreFileNotFoundError(
                     f"Page {page_number} not found for {file_entity.path}"
                 )
-            return file_entity, artifact_rel, pages[0].jpeg_bytes, "image/jpeg"
-        artifact_name, content, content_type = await self._reader.read_child_artifact(
+            return artifact_rel, pages[0].jpeg_bytes, "image/jpeg"
+        return await self._reader.read_child_artifact(
             file_entity,
             artifact_rel,
             page_start=page_start,
             page_end=page_end,
         )
-        return file_entity, artifact_name, content, content_type
 
     async def get_document_markdown(
         self,

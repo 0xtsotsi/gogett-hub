@@ -85,29 +85,13 @@ class AppWorkerContext:
             authorization_service=create_authorization_service(uow),
         )
 
-    def build_function_service_with_factory(self):
-        """Build a FunctionService that uses uow_factory for scoped DB sessions.
+    def build_function_use_cases(self):
+        """Build the function use-case layer for the worker (same object the API
+        builds). Used to execute queued runs without holding a pooled connection
+        across the sandbox round-trip."""
+        from app.modules.function.api.dependencies import build_function_use_cases
 
-        Unlike ``build_function_service(uow)``, this does not hold a DB session
-        for the service's entire lifetime. The service opens short UoWs around
-        each DB operation, releasing connections between them — critical for
-        long-running tasks (e.g. function execution) that must not hold pooled
-        connections idle during external I/O.
-        """
-        from app.modules.function.services.function_service import FunctionService
-        from app.modules.workspace.services.workspace_tool_runtime import (
-            get_function_workspace_runtime,
-        )
-
-        return FunctionService(
-            function_repository=None,
-            run_repository=None,
-            workspace_service=get_function_workspace_runtime(),
-            storage_factory=self.build_function_storage_factory(),
-            job_queue=self.job_queue,
-            authorization_service=None,
-            uow_factory=self.uow_factory,
-        )
+        return build_function_use_cases(self.uow_factory)
 
     def build_surface_event_handler(self, uow: SqlAlchemyUnitOfWork):
         from app.modules.agent.api.dependencies import get_conversation_service
@@ -166,6 +150,35 @@ async def _safe_shutdown_step(
         logger.warning("Worker shutdown step failed", step=name, error=str(exc))
 
 
+async def _ensure_consumer_groups_once() -> None:
+    """Create every registered Redis consumer group once, before broker start.
+
+    Closes the broker-start race where a subscriber polls a not-yet-created
+    group, gets NOGROUP, and stops permanently. Idempotent (BUSYGROUP is a
+    no-op) and never raises — group plumbing must not block worker startup.
+    """
+    import redis.asyncio as redis
+
+    from app.core.infrastructure.events.stream_subscriber import (
+        ensure_consumer_groups,
+        registered_stream_groups,
+    )
+
+    client = redis.from_url(settings.redis_url, decode_responses=False)
+    try:
+        registered = len(registered_stream_groups())
+        created = await ensure_consumer_groups(client, warn_on_create=False)
+        logger.info(
+            "Pre-created Redis consumer groups before broker start",
+            registered=registered,
+            created=created,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Initial consumer group ensure failed", error=str(exc))
+    finally:
+        await client.aclose()
+
+
 async def _consumer_group_reconcile_loop() -> None:
     """Periodically re-ensure Redis consumer groups exist.
 
@@ -196,12 +209,19 @@ async def _consumer_group_reconcile_loop() -> None:
 async def worker_lifespan() -> AsyncGenerator[AppWorkerContext]:
     setup_logging(
         settings.environment,
-        service_name="gappy-worker",
+        service_name="lemma-worker",
         json_logs=settings.json_logs_enabled,
         log_level=settings.log_level,
     )
-    init_telemetry(service_name="gappy-worker")
+    init_telemetry(service_name="lemma-worker")
     instrument_database_engine(get_engine())
+    # Pre-create Redis consumer groups BEFORE the broker starts its subscribers.
+    # Several subscribers share a stream (e.g. workflow + surface both consume
+    # `schedule_events`); at broker.start FastStream races to create each group,
+    # and any subscriber that polls before its group exists gets NOGROUP and
+    # stops permanently — the reconcile loop cannot revive a stopped subscriber.
+    # Pre-creating closes that race so every subscriber attaches to a live group.
+    await _ensure_consumer_groups_once()
     await broker.start()
     await channel_service.connect()
     job_queue = get_streaq_job_queue()

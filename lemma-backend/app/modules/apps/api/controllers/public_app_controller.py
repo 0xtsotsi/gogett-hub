@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from app.modules.apps.api.asset_response import app_asset_response
-from app.modules.apps.api.dependencies import AppServiceDep
+from app.modules.apps.api.dependencies import AppUseCasesDep
 
 router = APIRouter(
     prefix="/public/apps",
@@ -36,10 +36,12 @@ def _get_slug(request: Request) -> str:
     summary="Get App Root Asset",
     include_in_schema=False,
 )
-async def get_app_root(request: Request, app_service: AppServiceDep) -> Response:
-    slug = _get_slug(request)
-    asset = await app_service.get_app_asset_by_public_slug(
-        slug,
+async def get_app_root(
+    request: Request,
+    use_cases: AppUseCasesDep,
+) -> Response:
+    asset = await use_cases.serve_public_asset(
+        slug=_get_slug(request),
         asset_path=None,
         request_etag=request.headers.get("if-none-match"),
     )
@@ -56,11 +58,10 @@ async def get_app_root(request: Request, app_service: AppServiceDep) -> Response
 async def get_app_asset_by_slug(
     request: Request,
     asset_path: str,
-    app_service: AppServiceDep,
+    use_cases: AppUseCasesDep,
 ) -> Response:
-    slug = _get_slug(request)
-    asset = await app_service.get_app_asset_by_public_slug(
-        slug,
+    asset = await use_cases.serve_public_asset(
+        slug=_get_slug(request),
         asset_path=asset_path or None,
         request_etag=request.headers.get("if-none-match"),
     )

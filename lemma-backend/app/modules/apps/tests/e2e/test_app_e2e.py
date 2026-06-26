@@ -425,3 +425,45 @@ async def test_delete_app_cleans_up_storage_even_when_archives_share_release_pre
 
     get_res = await authenticated_client.get(f"/pods/{pod_id}/apps/{app_name}")
     assert get_res.status_code == status.HTTP_404_NOT_FOUND, get_res.text
+
+
+@pytest.mark.asyncio
+async def test_app_source_and_dist_archives_download_round_trip(
+    authenticated_client,
+    test_pod,
+):
+    """Regression (DB pool exhaustion): the archive download endpoints resolve in
+    a short UoW and stream the stored archive only after the pooled connection is
+    released. Both archives must round-trip byte-for-byte end-to-end."""
+    pod_id = test_pod["id"]
+    app_name = f"app_archive_{uuid4().hex[:8]}"
+    marker = f"ARCHIVE_{uuid4().hex[:8]}"
+
+    create_res = await authenticated_client.post(
+        f"/pods/{pod_id}/apps",
+        json={"name": app_name, "description": "archive round-trip"},
+    )
+    assert create_res.status_code == status.HTTP_201_CREATED, create_res.text
+
+    source_bytes = build_source_archive(marker)
+    dist_bytes = build_dist_archive(marker)
+    upload_res = await authenticated_client.post(
+        f"/pods/{pod_id}/apps/{app_name}/bundle",
+        files={
+            "source_archive": ("source.zip", source_bytes, "application/zip"),
+            "dist_archive": ("dist.zip", dist_bytes, "application/zip"),
+        },
+    )
+    assert upload_res.status_code == status.HTTP_200_OK, upload_res.text
+
+    source_res = await authenticated_client.get(
+        f"/pods/{pod_id}/apps/{app_name}/source/archive"
+    )
+    assert source_res.status_code == status.HTTP_200_OK, source_res.text
+    assert source_res.content == source_bytes
+
+    dist_res = await authenticated_client.get(
+        f"/pods/{pod_id}/apps/{app_name}/dist/archive"
+    )
+    assert dist_res.status_code == status.HTTP_200_OK, dist_res.text
+    assert dist_res.content == dist_bytes

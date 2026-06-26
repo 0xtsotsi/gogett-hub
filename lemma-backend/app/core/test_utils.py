@@ -306,44 +306,125 @@ def get_kreuzberg_container() -> Generator[LemmaDockerContainer, None, None]:
     )
 
     with container as kb:
-        import time
-        import urllib.request
-        import urllib.error
-
-        host = kb.get_container_host_ip()
-        port = kb.get_exposed_port(8000)
-        health_url = f"http://{host}:{port}/health"
-
-        startup_timeout_seconds = _env_int("KREUZBERG_STARTUP_TIMEOUT_SECONDS", 120)
-        poll_interval_seconds = _env_int("KREUZBERG_STARTUP_POLL_SECONDS", 2)
-        max_retries = max(1, startup_timeout_seconds // max(1, poll_interval_seconds))
-        for _ in range(max_retries):
-            try:
-                with urllib.request.urlopen(health_url, timeout=5) as response:
-                    if response.status == 200:
-                        break
-            except (
-                urllib.error.URLError,
-                ConnectionRefusedError,
-                TimeoutError,
-                ConnectionResetError,
-            ):
-                pass
-            time.sleep(poll_interval_seconds)
-        else:
-            logs = kb.get_logs()
-            if isinstance(logs, tuple):
-                stdout = logs[0].decode("utf-8", errors="replace")
-                stderr = logs[1].decode("utf-8", errors="replace")
-                log_output = f"stdout:\n{stdout}\nstderr:\n{stderr}"
-            else:
-                log_output = logs.decode("utf-8", errors="replace")
-            raise RuntimeError(
-                "Kreuzberg did not become ready "
-                f"after {startup_timeout_seconds} seconds.\n{log_output}"
-            )
-
+        _wait_for_kreuzberg_ready(kb)
         yield kb
+
+
+def _wait_for_kreuzberg_ready(container: LemmaDockerContainer) -> None:
+    """Poll Kreuzberg's /health until ready, else raise with the container logs."""
+    import time
+    import urllib.request
+    import urllib.error
+
+    host = container.get_container_host_ip()
+    port = container.get_exposed_port(8000)
+    health_url = f"http://{host}:{port}/health"
+
+    startup_timeout_seconds = _env_int("KREUZBERG_STARTUP_TIMEOUT_SECONDS", 120)
+    poll_interval_seconds = _env_int("KREUZBERG_STARTUP_POLL_SECONDS", 2)
+    max_retries = max(1, startup_timeout_seconds // max(1, poll_interval_seconds))
+    for _ in range(max_retries):
+        try:
+            with urllib.request.urlopen(health_url, timeout=5) as response:
+                if response.status == 200:
+                    return
+        except (
+            urllib.error.URLError,
+            ConnectionRefusedError,
+            TimeoutError,
+            ConnectionResetError,
+        ):
+            pass
+        time.sleep(poll_interval_seconds)
+
+    logs = container.get_logs()
+    if isinstance(logs, tuple):
+        stdout = logs[0].decode("utf-8", errors="replace")
+        stderr = logs[1].decode("utf-8", errors="replace")
+        log_output = f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    else:
+        log_output = logs.decode("utf-8", errors="replace")
+    raise RuntimeError(
+        "Kreuzberg did not become ready "
+        f"after {startup_timeout_seconds} seconds.\n{log_output}"
+    )
+
+
+def start_shared_kreuzberg(name: str) -> str:
+    """Start ONE named Kreuzberg container and return its URL.
+
+    Kreuzberg bundles an embedding model and is RAM-heavy; one container per
+    xdist worker OOMs most machines. The e2e suite runs a single shared instance
+    across all workers (coordinated by a file lock in the datastore conftest) —
+    this starts it under a fixed name so it's discoverable and removable from any
+    worker. Not auto-stopped; the last worker out calls ``remove_named_container``
+    (and the label-based prune sweeps any straggler).
+    """
+    # Clear any straggler with this name from a previously crashed run.
+    subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+    container = LemmaDockerContainer(KREUZBERG_IMAGE, 8000).with_run_args(
+        "--name", name, "--restart", "unless-stopped"
+    )
+    container.__enter__()  # start detached; intentionally no matching __exit__
+    _wait_for_kreuzberg_ready(container)
+    host = container.get_container_host_ip()
+    port = container.get_exposed_port(8000)
+    return f"http://{host}:{port}"
+
+
+def remove_named_container(name: str) -> None:
+    """Force-remove a container by name (best effort)."""
+    subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+
+
+SHARED_KREUZBERG_NAME = "lemma-e2e-kreuzberg-shared"
+
+
+@contextmanager
+def shared_kreuzberg(basetemp_parent, worker_id: str) -> Generator[str, None, None]:
+    """Yield the URL of a SINGLE Kreuzberg shared across all xdist workers.
+
+    Kreuzberg bundles an embedding model and is RAM-heavy; one container per
+    worker OOMs most machines. Refcounted via a file lock in the xdist-shared
+    temp root: the first user starts one named container and records its URL;
+    others reuse it; the last user out removes it. Used by BOTH the datastore
+    kreuzberg fixture and the streaq worker fixture (the worker indexes datastore
+    files, so it must point at the same container). Without xdist
+    (``worker_id == 'master'``) it falls back to a plain per-session container.
+    """
+    if worker_id == "master":
+        with get_kreuzberg_container() as kb:
+            yield get_kreuzberg_url(kb)
+        return
+
+    from pathlib import Path
+
+    from filelock import FileLock
+
+    root = Path(basetemp_parent)
+    lock = FileLock(str(root / "kreuzberg.lock"))
+    url_file = root / "kreuzberg_url.txt"
+    refs_file = root / "kreuzberg_refs.txt"
+
+    with lock:
+        if url_file.exists():
+            url = url_file.read_text().strip()
+        else:
+            url = start_shared_kreuzberg(SHARED_KREUZBERG_NAME)
+            url_file.write_text(url)
+        refs = int(refs_file.read_text()) if refs_file.exists() else 0
+        refs_file.write_text(str(refs + 1))
+
+    try:
+        yield url
+    finally:
+        with lock:
+            refs = (int(refs_file.read_text()) if refs_file.exists() else 1) - 1
+            refs_file.write_text(str(refs))
+            if refs <= 0:
+                remove_named_container(SHARED_KREUZBERG_NAME)
+                url_file.unlink(missing_ok=True)
+                refs_file.unlink(missing_ok=True)
 
 
 def get_postgres_url(container: LemmaPostgresContainer) -> str:

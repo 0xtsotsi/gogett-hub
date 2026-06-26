@@ -32,7 +32,7 @@ logic lives under `agentbox/providers`.
 
 ## Runtime Image
 
-There is one runtime image: `agentbox-runtime`. It is the development-capable
+There is one runtime image: `lemma-agentbox-runtime`. It is the development-capable
 image and includes Python, Node/npm/pnpm, Chromium, Agent Browser, frontend
 tooling, the Lemma Python SDK/CLI, and the AgentBox runtime server.
 
@@ -57,7 +57,7 @@ Manager:
 AGENTBOX_PROVIDER=docker              # docker, podman, or kubernetes
 AGENTBOX_API_KEY=dev-agentbox-key
 AGENTBOX_API_URL=http://127.0.0.1:8721
-AGENTBOX_RUNTIME_IMAGE=asia-south1-docker.pkg.dev/gappy-global/gappy-repo/agentbox-runtime:latest
+AGENTBOX_RUNTIME_IMAGE=ghcr.io/lemma-work/lemma-agentbox-runtime:latest
 AGENTBOX_RUNTIME_PORT=8080
 AGENTBOX_STATE_DB_PATH=/data/agentbox-manager/state.db
 AGENTBOX_SESSION_IDLE_TIMEOUT_SECONDS=300
@@ -190,7 +190,7 @@ cd agentbox
 AGENTBOX_PROVIDER=docker \
 AGENTBOX_API_KEY=dev-agentbox-key \
 AGENTBOX_API_URL=http://127.0.0.1:8711 \
-AGENTBOX_RUNTIME_IMAGE=asia-south1-docker.pkg.dev/gappy-global/gappy-repo/agentbox-runtime:latest \
+AGENTBOX_RUNTIME_IMAGE=ghcr.io/lemma-work/lemma-agentbox-runtime:latest \
 AGENTBOX_STATE_DB_PATH=/tmp/agentbox-state.db \
 uv run uvicorn agentbox.server:app --host 127.0.0.1 --port 8711
 ```
@@ -223,12 +223,12 @@ make push TAG=2026-05-30-single-runtime
 Published images:
 
 ```text
-agentbox-manager:<tag>
-agentbox-runtime:<tag>
+lemma-agentbox:<tag>
+lemma-agentbox-runtime:<tag>
 ```
 
 Set the runtime image in the manager environment:
 
 ```bash
-AGENTBOX_RUNTIME_IMAGE=asia-south1-docker.pkg.dev/gappy-global/gappy-repo/agentbox-runtime:<tag>
+AGENTBOX_RUNTIME_IMAGE=ghcr.io/lemma-work/lemma-agentbox-runtime:<tag>
 ```

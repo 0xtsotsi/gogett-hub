@@ -5,7 +5,12 @@ from uuid import UUID
 
 from app.core.authorization.context import Context
 from app.core.log.log import get_logger
-from app.modules.datastore.domain.errors import DatastoreInfrastructureError, DatastoreValidationError
+
+from app.modules.datastore.domain.errors import (
+    DatastoreFileNotFoundError,
+    DatastoreInfrastructureError,
+    DatastoreValidationError,
+)
 from app.modules.datastore.domain.file_entities import (
     DatastoreFileEntity,
     DatastoreFileUpdateEntity,
@@ -25,6 +30,11 @@ from app.modules.datastore.services.files.lookup import FileLookup
 from app.modules.datastore.services.files.path_resolver import PathResolver
 from app.modules.datastore.services.files.projection import FileProjection
 from app.modules.datastore.services.files.reader import FileReader
+from app.modules.datastore.services.files.storage_phase import (
+    FileStoragePhase,
+    _PathDeletionCleanup,
+    _UpdatePlan,
+)
 from app.modules.datastore.services.system_skill_files import SystemSkillFileProvider
 
 logger = get_logger(__name__)
@@ -55,6 +65,16 @@ class FileWriter:
         self.projection = projection
         self.lookup = lookup
         self.reader = reader
+        # Storage/search side of the update + delete sagas, on an object that
+        # holds NO repository (DB-free by construction). The projection here is
+        # built without a file_repository: the only methods used (storage_key,
+        # delete_child_artifacts) are storage-only.
+        self._storage_phase = FileStoragePhase(
+            storage,
+            search_factory_provider,
+            FileProjection(storage, file_repository=None),
+            path_resolver,
+        )
 
     async def create_file(
         self,
@@ -283,13 +303,16 @@ class FileWriter:
         )
         return await self.file_repository.create(folder)
 
-    async def update_file_by_path(
+    async def resolve_update_file(
         self,
         pod_id: UUID,
         update_entity: DatastoreFileUpdateEntity,
         requester_user_id: UUID,
         ctx: Context | None = None,
-    ) -> DatastoreFileEntity:
+    ) -> _UpdatePlan:
+        """Resolve + authorize + apply in-memory mutations (incl. rename
+        collision checks) — DB only. The byte upload/move and search sync happen
+        outside this UoW via write_update_storage / persist / finalize."""
         if not update_entity.path:
             raise DatastoreValidationError("Path is required")
         update_entity.path = self.paths._resolve_api_path(
@@ -345,33 +368,20 @@ class FileWriter:
                 ctx=ctx,
             )
 
-        should_sync = previous_path != file_entity.path
-        if update_entity.content is not None:
-            try:
-                await self.storage.upload_file(
-                    self.projection.storage_key(file_entity), update_entity.content
-                )
-            except Exception as exc:
-                raise DatastoreInfrastructureError(
-                    "Failed to upload updated file content"
-                ) from exc
+        new_storage_key = (
+            self.projection.storage_key(file_entity) if file_entity.is_file else None
+        )
+        has_content = update_entity.content is not None
+        rename_moved = (
+            not has_content
+            and previous_storage_key is not None
+            and previous_storage_key != new_storage_key
+        )
+        if has_content:
             file_entity.size_bytes = len(update_entity.content)
-            should_sync = True
-        elif previous_storage_key and previous_storage_key != self.projection.storage_key(
-            file_entity
-        ):
-            try:
-                existing_content = await self.storage.download_file(
-                    previous_storage_key
-                )
-                await self.storage.upload_file(
-                    self.projection.storage_key(file_entity), existing_content
-                )
-                await self.storage.delete_file(previous_storage_key)
-            except Exception as exc:
-                raise DatastoreInfrastructureError(
-                    "Failed to move file content after rename"
-                ) from exc
+
+        should_sync = previous_path != file_entity.path
+        if has_content or rename_moved:
             should_sync = True
         elif (
             update_entity.search_enabled is not None
@@ -379,89 +389,59 @@ class FileWriter:
         ):
             should_sync = True
 
-        if should_sync and self.paths._should_sync_projections(
+        return _UpdatePlan(
+            file_entity=file_entity,
+            previous_path=previous_path,
+            previous_search_enabled=previous_search_enabled,
+            previous_storage_key=previous_storage_key,
+            new_storage_key=new_storage_key,
+            has_content=has_content,
+            rename_moved=rename_moved,
+            should_sync=should_sync,
+            requester_user_id=requester_user_id,
+        )
+
+    async def write_update_storage(
+        self, plan: _UpdatePlan, update_entity: DatastoreFileUpdateEntity
+    ) -> None:
+        """Storage phase of an update — delegated to the repo-free
+        ``FileStoragePhase`` so it provably holds no DB connection."""
+        await self._storage_phase.write_update(plan, update_entity)
+
+    async def persist_update_file(self, plan: _UpdatePlan) -> DatastoreFileEntity:
+        """Persist the mutated row (+ folder descendant paths) — DB only."""
+        file_entity = plan.file_entity
+        if plan.should_sync and self.paths._should_sync_projections(
             True,
             file_entity,
-            previous_search_enabled=previous_search_enabled,
+            previous_search_enabled=plan.previous_search_enabled,
         ):
-            file_entity.mark_content_updated(requester_user_id)
-
-        # Synchronous chunk + converted-artifact cleanup when a file is (or has
-        # become) unsearchable — search disabled OR a non-indexable type (e.g.
-        # after a rename changed its extension). This must NOT depend on the
-        # reindex queue: the queue only enqueues PENDING + search_enabled files,
-        # so a disabled/NOT_REQUIRED file is never processed and any previously
-        # indexed chunks would otherwise be left stale. The removal is idempotent
-        # (a no-op when there are no chunks), so it is also safe on a plain
-        # non-indexable update. Keys use the file's CURRENT path (post-rename),
-        # matching where storage/projection artifacts live after a move.
-        if file_entity.is_file and (
-            not file_entity.search_enabled
-            or not is_indexable_mime_type(file_entity.mime_type, file_entity.name)
-        ):
-            search_service = self._search_factory_provider()(file_entity.pod_id)
-            try:
-                await search_service.remove_file(file_entity.id)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to remove indexed chunks for unsearchable file %s: %s",
-                    file_entity.id,
-                    exc,
-                )
-            await self.projection.delete_child_artifacts(
-                file_entity.pod_id,
-                file_entity.path,
-            )
+            file_entity.mark_content_updated(plan.requester_user_id)
 
         updated_entity = await self.file_repository.update(file_entity)
-        if previous_path != updated_entity.path and updated_entity.is_folder:
+        if plan.previous_path != updated_entity.path and updated_entity.is_folder:
             await self._update_descendant_paths(
-                updated_entity, previous_path, requester_user_id
-            )
-        if previous_path != updated_entity.path:
-            if updated_entity.is_file and updated_entity.search_enabled:
-                search_service = self._search_factory_provider()(updated_entity.pod_id)
-                update_file_path = getattr(search_service, "update_file_path", None)
-                if update_file_path is not None:
-                    try:
-                        await update_file_path(
-                            updated_entity.id,
-                            updated_entity.path,
-                            self.paths._parent_path(updated_entity.path),
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to update indexed path metadata for %s: %s",
-                            updated_entity.id,
-                            exc,
-                        )
-            await self.projection.delete_child_artifacts(
-                updated_entity.pod_id,
-                previous_path,
+                updated_entity, plan.previous_path, plan.requester_user_id
             )
         return updated_entity
 
-    async def delete_file_by_path(
-        self,
-        pod_id: UUID,
-        path: str,
-        requester_user_id: UUID,
-        ctx: Context | None = None,
+    async def finalize_update_file(
+        self, plan: _UpdatePlan, updated_entity: DatastoreFileEntity
     ) -> None:
-        await self.delete_path_by_path(
-            pod_id=pod_id,
-            path=path,
-            requester_user_id=requester_user_id,
-            ctx=ctx,
-        )
+        """Storage + search-index sync after the row is persisted — delegated to
+        the repo-free ``FileStoragePhase`` (holds no DB connection)."""
+        await self._storage_phase.finalize_update(plan, updated_entity)
 
-    async def delete_path_by_path(
+    async def resolve_delete_path(
         self,
         pod_id: UUID,
         path: str,
         requester_user_id: UUID,
         ctx: Context | None = None,
-    ) -> None:
+    ) -> _PathDeletionCleanup:
+        """Authorize + delete the file/folder rows (DB only) and return the
+        storage/search cleanup payload, so the (potentially many-object) storage
+        purge + search-index removal run with no pooled connection held."""
         path = self.paths._resolve_api_path(
             path,
             requester_user_id=requester_user_id,
@@ -488,36 +468,56 @@ class FileWriter:
                 )
             )
 
-        search_service = self._search_factory_provider()(file_entity.pod_id)
-        if file_entity.is_folder:
-            try:
-                await self.storage.delete_prefix(
-                    build_datastore_folder_storage_prefix(
-                        file_entity.pod_id,
-                        file_entity.path,
-                    )
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to delete folder contents from storage %s: %s",
-                    file_entity.path,
-                    exc,
-                )
-            # Child containers (converted markdown, figures, rendered pages) are
-            # colocated under the folder prefix, so the delete above already
-            # removed them — no separate derived-artifact sweep needed.
-
+        is_folder = file_entity.is_folder
+        folder_prefix = (
+            build_datastore_folder_storage_prefix(
+                file_entity.pod_id, file_entity.path
+            )
+            if is_folder
+            else None
+        )
+        files: list[dict[str, str]] = []
         for entity in sorted(
             [*descendants, file_entity],
             key=lambda item: (item.path.count("/"), item.path),
             reverse=True,
         ):
-            await self.projection.delete_single_entity(
-                entity,
-                search_service=search_service,
-                delete_storage=not file_entity.is_folder,
-                actor_id=requester_user_id,
-            )
+            if entity.is_file:
+                files.append(
+                    {
+                        "file_id": str(entity.id),
+                        "path": entity.path,
+                        "storage_key": self.projection.storage_key(entity),
+                    }
+                )
+            entity.mark_deleted(requester_user_id)
+            deleted = await self.file_repository.delete_entity(entity)
+            if not deleted:
+                raise DatastoreFileNotFoundError(f"File {entity.path} not found")
+        return _PathDeletionCleanup(
+            pod_id=file_entity.pod_id,
+            is_folder=is_folder,
+            folder_prefix=folder_prefix,
+            files=tuple(files),
+        )
+
+    async def cleanup_deleted_paths(
+        self,
+        pod_id: UUID,
+        *,
+        is_folder: bool,
+        folder_prefix: str | None,
+        files: list[dict[str, str]],
+    ) -> None:
+        """Purge storage bytes + search-index entries for already-deleted rows —
+        delegated to the repo-free ``FileStoragePhase`` (holds no DB connection;
+        search uses its own pool). Call after resolve_delete_path's UoW closed."""
+        await self._storage_phase.cleanup_deleted_paths(
+            pod_id,
+            is_folder=is_folder,
+            folder_prefix=folder_prefix,
+            files=files,
+        )
 
     async def _apply_new_path(
         self,

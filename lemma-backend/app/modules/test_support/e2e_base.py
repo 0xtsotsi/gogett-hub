@@ -64,7 +64,7 @@ def _cleanup_e2e_workspace_containers() -> None:
         return
 
     ps = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=gappy.e2e=true"],
+        ["docker", "ps", "-aq", "--filter", "label=lemma.e2e=true"],
         capture_output=True,
         text=True,
         check=False,
@@ -77,9 +77,16 @@ def _cleanup_e2e_workspace_containers() -> None:
 def _configure_local_datastore_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from app.core.config import settings
 
+    del tmp_path  # see below
     monkeypatch.setattr(settings, "storage_backend", "local")
     monkeypatch.setattr(settings, "embedding_provider", "local")
-    monkeypatch.setattr(settings, "local_object_storage_root", str(tmp_path / "object-storage"))
+    # Do NOT override local_object_storage_root with a per-test tmp_path: the
+    # session-scoped streaq worker (which auto-indexes uploaded files) uses the
+    # session root, so a per-test root meant the worker could never find files
+    # the API wrote — indexing failed ("Storage object not found") whenever the
+    # worker won the processing race under load. Keep the per-xdist-worker
+    # session root (set in e2e_settings); pods are namespaced by id, so tests
+    # don't collide on storage.
 
 
 async def _run_cleanup_step(
@@ -196,15 +203,15 @@ def e2e_settings(test_database_url, test_redis_url, supertokens_container):
     # workers never share (or rmtree out from under each other) the same dirs.
     # ``PYTEST_XDIST_WORKER`` is e.g. "gw0"/"gw1" under xdist, unset otherwise.
     worker_suffix = _xdist_worker_suffix()
-    settings.email_output_dir = f"/tmp/gappy-test-emails{worker_suffix}"
+    settings.email_output_dir = f"/tmp/lemma-test-emails{worker_suffix}"
     shutil.rmtree(settings.email_output_dir, ignore_errors=True)
     Path(settings.email_output_dir).mkdir(parents=True, exist_ok=True)
-    settings.local_file_storage_root = f"/tmp/gappy-files-tests{worker_suffix}"
+    settings.local_file_storage_root = f"/tmp/lemma-files-tests{worker_suffix}"
     settings.gcs_storage_bucket = None
     settings.public_bucket_name = None
     settings.storage_backend = "local"
     settings.embedding_provider = "local"
-    settings.local_object_storage_root = f"/tmp/gappy-object-storage-tests{worker_suffix}"
+    settings.local_object_storage_root = f"/tmp/lemma-object-storage-tests{worker_suffix}"
 
     # Pin a stable, session-wide AgentBox manager endpoint. The worker subprocess
     # is session-scoped and captures os.environ once at spawn, while the manager
@@ -223,11 +230,73 @@ def e2e_settings(test_database_url, test_redis_url, supertokens_container):
     os.environ["AGENTBOX_API_URL"] = agentbox_url
     os.environ["AGENTBOX_API_KEY"] = agentbox_key
 
+    # E2E execution mode: default to the fast mocked level (no real model, no
+    # Docker) so CI and local runs are fast and deterministic. ``E2E_REAL=1``
+    # (or the per-axis E2E_LLM_MODE / E2E_SANDBOX_MODE) opts into the real model
+    # + Docker AgentBox. Set on os.environ too so the worker subprocess (which
+    # inherits os.environ) runs in the same mode.
+    real = os.environ.get("E2E_REAL", "").lower() in ("1", "true", "yes")
+    llm_mode = os.environ.get("E2E_LLM_MODE") or ("real" if real else "mock")
+    sandbox_mode = os.environ.get("E2E_SANDBOX_MODE") or ("docker" if real else "fake")
+    settings.e2e_llm_mode = llm_mode
+    settings.e2e_sandbox_mode = sandbox_mode
+    os.environ["E2E_LLM_MODE"] = llm_mode
+    os.environ["E2E_SANDBOX_MODE"] = sandbox_mode
+
+    # A single Kreuzberg is shared across all xdist workers (see datastore
+    # conftest); under concurrent indexing load it can briefly stall or be
+    # OOM-restarted by host memory pressure. Allow more transient retries than
+    # the prod default (5) so extraction rides that out instead of failing.
+    # Set on os.environ so the worker subprocess (which indexes) inherits it.
+    os.environ.setdefault("KREUZBERG_TRANSIENT_RETRY_ATTEMPTS", "8")
+
+    # e2e indexes datastore files explicitly in-process (the index_file helper).
+    # Disable the worker's auto-index-on-upload so it doesn't ALSO index every
+    # uploaded file through the single shared Kreuzberg — that double load OOMs
+    # the container under -n2. Inherited by the worker subprocess.
+    settings.e2e_disable_worker_file_autoindex = True
+    os.environ.setdefault("E2E_DISABLE_WORKER_FILE_AUTOINDEX", "true")
+
+    if sandbox_mode == "fake":
+        _start_fake_agentbox(agentbox_port)
+
     from app.core.infrastructure.db import session as db_session_module
 
     db_session_module.reset_engine_state()
 
     return settings
+
+
+_fake_agentbox_started: set[int] = set()
+
+
+def _start_fake_agentbox(port: int) -> None:
+    """Run the in-process fake AgentBox manager on ``port`` in a daemon thread.
+
+    One per session/xdist-worker (the pinned agentbox port is per-worker), so
+    parallel workers don't contend. Replaces the Docker manager for the fast
+    ``e2e_sandbox_mode == "fake"`` path; the session worker + in-process tools
+    reach it over HTTP at the pinned port.
+    """
+    if port in _fake_agentbox_started:
+        return
+    import threading
+    import time
+
+    import uvicorn
+
+    from app.modules.workspace.testing.fake_agentbox import create_fake_agentbox_app
+
+    app = create_fake_agentbox_app()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name=f"fake-agentbox-{port}", daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.02)
+    _fake_agentbox_started.add(port)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -277,6 +346,10 @@ async def worker(e2e_settings):
     (and tearing down) a fresh one per test. The schema is created by the first
     test's db_manager and never dropped mid-run, so the worker's connections stay
     valid for its whole lifetime.
+
+    The worker does NOT need Kreuzberg: e2e disables the worker's auto-index of
+    uploads (e2e_disable_worker_file_autoindex) and indexes in-process instead, so
+    no Kreuzberg URL is wired into the worker subprocess.
     """
     import asyncio
     import redis.asyncio as redis
@@ -285,7 +358,7 @@ async def worker(e2e_settings):
     await redis_client.flushdb()
     await redis_client.aclose()
 
-    log_path = f"/tmp/gappy_e2e_worker_{uuid4().hex}.log"
+    log_path = f"/tmp/lemma_e2e_worker_{uuid4().hex}.log"
     backend_root = Path(__file__).resolve().parents[3]
     with open(log_path, "w+") as log_file:
         # Forward LEMMA_OPENAI_* (and other LEMMA_*) vars from the backend
@@ -420,13 +493,42 @@ async def db_manager(e2e_settings) -> AsyncGenerator[DatabaseManager, None]:
         pod_role_models,
     )
 
-    async with manager.engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    import asyncio as _asyncio
 
-    # Idempotent (checkfirst) — creates the schema on the first test, no-ops after.
-    await manager.create_tables()
-    # Start each test from a clean slate without dropping the schema.
-    await manager.truncate_all()
+    from sqlalchemy.exc import DBAPIError
+
+    # The shared session worker runs agent/datastore transactions concurrently
+    # with this per-test setup; its row writes can deadlock the truncation DELETE
+    # (or the advisory-locked CREATE EXTENSION), and Postgres aborts one side as
+    # the victim. Retry the whole setup — the conflicting transaction clears
+    # within a beat — instead of failing a random test's setup each run.
+    last_exc: BaseException | None = None
+    for _attempt in range(6):
+        try:
+            async with manager.engine.begin() as conn:
+                # Serialize with PostgresSearchService.ensure_schema(), which also
+                # runs CREATE EXTENSION under this advisory key (concurrent
+                # CREATE EXTENSION on pg_extension otherwise deadlocks). Key must
+                # match _ENSURE_SCHEMA_LOCK_KEY in postgres_search_service.
+                await conn.execute(
+                    text("SELECT pg_advisory_xact_lock(:key)"), {"key": 0x6C656D6D61}
+                )
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            # Idempotent (checkfirst) — creates schema on the first test, no-ops after.
+            await manager.create_tables()
+            # Start each test from a clean slate without dropping the schema.
+            await manager.truncate_all()
+            break
+        except DBAPIError as exc:
+            message = str(exc).lower()
+            if "deadlock" not in message and "lock" not in message:
+                raise
+            last_exc = exc
+            await _asyncio.sleep(0.3 * (_attempt + 1))
+    else:
+        assert last_exc is not None
+        raise last_exc
+
     yield manager
     await manager.close()
 

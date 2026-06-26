@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,6 +105,37 @@ class Settings(BaseSettings):
             "Maximum concurrent streaq tasks per worker process. Should not "
             "exceed db_pool_size + db_max_overflow (default 20), since each "
             "task that opens a DB session consumes one pooled connection."
+        ),
+    )
+    agent_run_stop_poll_interval_seconds: float = Field(
+        default=1.0,
+        description=(
+            "Minimum interval between DB polls of an agent run's stop flag. The "
+            "harness checks should_stop at every streaming checkpoint (per token "
+            "/ part / tool call); without throttling that is one SELECT per token "
+            "per run, flooding the pool. The checker caches the result and "
+            "re-queries at most this often (0 disables throttling). A stop "
+            "request is still honored within this interval."
+        ),
+    )
+    agent_context_brief_cache_ttl_seconds: int = Field(
+        default=60,
+        description=(
+            "TTL for the in-process cache of an agent's rendered runtime-context "
+            "brief, keyed by (agent, conversation, pod, user). The brief is "
+            "injected into the system prompt and rebuilt on every message; it "
+            "only changes when pod inventory/grants change, so caching it keeps "
+            "the hot path off the DB. Tradeoff: a just-changed grant/table can "
+            "lag by up to this long. 0 disables caching."
+        ),
+    )
+    function_run_poll_interval_seconds: float = Field(
+        default=5.0,
+        description=(
+            "Interval an agent's JOB-function tool waits between DB polls of the "
+            "function run's status. JOB functions are long-running, so 1s polling "
+            "is needlessly aggressive; 5s cuts the poll query rate 5x. The overall "
+            "wait budget is unchanged."
         ),
     )
     worker_shutdown_grace_period_seconds: int = Field(
@@ -269,7 +300,6 @@ class Settings(BaseSettings):
         default=None, description="Microsoft OAuth Client Secret"
     )
 
-
     # WhatsApp Business API Settings
 
     # Telegram Bot Settings
@@ -341,7 +371,7 @@ class Settings(BaseSettings):
         description="Email transport backend",
     )
     email_output_dir: str = Field(
-        default="/tmp/gappy-emails",
+        default="/tmp/lemma-emails",
         description="Directory used by filesystem email transport",
     )
 
@@ -440,7 +470,7 @@ class Settings(BaseSettings):
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "tauri://localhost",
-            "http://tauri.localhost"
+            "http://tauri.localhost",
         ],
         description="Allowed CORS origins",
     )
@@ -473,12 +503,36 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @model_validator(mode="after")
+    def _require_app_base_domain_outside_local(self) -> "Settings":
+        # Apps are served by host at `<slug>.<app_base_domain>`. Outside
+        # local/testing there is no safe default (the old `apps.lemma.work`
+        # default silently mis-served every install), so fail loud at startup
+        # rather than route apps at a wrong/cloud domain. Local installs get this
+        # from the stack (APP_BASE_DOMAIN); testing leaves it unset on purpose.
+        if not self.is_local_mode() and not (self.app_base_domain or "").strip():
+            raise ValueError(
+                "APP_BASE_DOMAIN must be set in development/production: it is the "
+                "base domain apps are served under (e.g. apps.example.com). It has "
+                "no safe default outside local/testing."
+            )
+        return self
+
     # App serving: apps are served by host, at `<public_slug>.<app_base_domain>`.
-    # Locally this is a sslip.io wildcard (e.g. 127-0-0-1.sslip.io:8711) that
-    # resolves to loopback; in cloud it is the real apps domain behind nginx.
+    # Locally the stack sets this to a sslip.io wildcard (e.g.
+    # 127-0-0-1.sslip.io:8711) that resolves to loopback; in cloud it is the real
+    # apps domain behind the ingress. There is intentionally NO cloud default: an
+    # empty value disables host-based app routing, and it is REQUIRED outside
+    # local/testing (see _require_app_base_domain_outside_local).
     app_base_domain: str = Field(
-        default="apps.lemma.work",
-        description="Base domain for public app subdomains",
+        default="",
+        description=(
+            "Base domain under which public apps are served, as "
+            "`<public_slug>.<app_base_domain>`. The local stack sets this to the "
+            "sslip.io wildcard host (e.g. 127-0-0-1.sslip.io:8711); in cloud it is "
+            "the real apps domain behind the ingress. Empty disables host-based "
+            "app routing and is rejected at startup in development/production."
+        ),
     )
     browser_sdk_path: Optional[str] = Field(
         default=None,
@@ -496,14 +550,50 @@ class Settings(BaseSettings):
             "location or the monorepo lemma-typescript build."
         ),
     )
+    e2e_llm_mode: Literal["real", "mock"] = Field(
+        default="real",
+        description=(
+            "TEST HOOK ONLY. 'mock' swaps the agent's LLM for a deterministic "
+            "pydantic-ai FunctionModel (scripted via conversation metadata) so "
+            "e2e runs need no real model or API key. Production/dev leave this at "
+            "'real'. The e2e fixtures default it to 'mock' (override with E2E_REAL=1)."
+        ),
+    )
+    e2e_mock_llm_latency_ms: int = Field(
+        default=0,
+        description=(
+            "TEST HOOK ONLY. Per-turn delay (ms) the mock LLM sleeps before "
+            "streaming, to emulate real model I/O latency. Default 0 (instant). "
+            "Set this for load tests so the worker is I/O-bound like production "
+            "instead of CPU-bound on an instant mock — otherwise concurrent runs "
+            "saturate one core and distort connection/latency measurements."
+        ),
+    )
+    e2e_sandbox_mode: Literal["docker", "fake"] = Field(
+        default="docker",
+        description=(
+            "TEST HOOK ONLY. 'fake' runs workspace/CLI tools against an in-process "
+            "subprocess AgentBox instead of the Docker manager, so e2e needs no "
+            "Docker image. Production/dev leave this at 'docker'. The e2e fixtures "
+            "default it to 'fake' (override with E2E_REAL=1)."
+        ),
+    )
+    e2e_disable_worker_file_autoindex: bool = Field(
+        default=False,
+        description=(
+            "TEST HOOK ONLY. When true, the worker does NOT auto-index uploaded "
+            "datastore files (the upload->event->process_datastore_file_task path "
+            "is skipped). e2e indexes explicitly in-process via the index_file "
+            "helper; auto-indexing every upload would otherwise overwhelm the "
+            "single shared Kreuzberg under parallel load. Production leaves False."
+        ),
+    )
     agentbox_api_url: Optional[str] = Field(
         description="AgentBox manager API base URL used by workspace execution",
-        default=None
+        default=None,
     )
     agentbox_api_key: Optional[str] = Field(
-        description="Bearer API key for the AgentBox manager",
-        default=None
-
+        description="Bearer API key for the AgentBox manager", default=None
     )
     workspace_callback_api_url: Optional[str] = Field(
         default=None,

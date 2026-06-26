@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from functools import partial
-from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -20,15 +18,12 @@ from app.core.config import settings
 from app.core.log.log import get_logger
 from app.core.authorization.models import ResourcePermissionGrantModel
 from app.core.authorization.permissions import Permissions
-from app.core.authorization.service import AuthorizationDataService
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
-from app.core.infrastructure.jobs.streaq_job_queue import get_streaq_job_queue
 from app.modules.agent.domain.entities import Agent
 from app.modules.agent.infrastructure.repositories import (
     AgentRepository,
 )
 from app.modules.agent.tools.context import BaseAgentContext
-from app.modules.pod.services.authorization_factory import create_authorization_service
 from app.modules.function.domain.entities import (
     FunctionEntity,
     FunctionRunEntity,
@@ -41,13 +36,7 @@ from app.modules.function.infrastructure.repositories import (
     FunctionRepository,
     FunctionRunRepository,
 )
-from app.modules.function.services.function_file_manager import FunctionFileManager
-from app.modules.function.services.function_service import FunctionService
-from app.modules.icon.services.icon_service import IconService
-from app.modules.workspace.services.workspace_tool_runtime import (
-    WorkspaceToolRuntime,
-    get_function_workspace_runtime,
-)
+from app.modules.function.api.dependencies import build_function_use_cases
 
 
 logger = get_logger(__name__)
@@ -198,39 +187,30 @@ class AgentCallableToolFactory:
             ctx: RunContext[BaseAgentContext],
             **request: Any,
         ) -> dict[str, Any]:
-            async with self.uow_factory() as uow:
-                # Build a delegated-workload context so execute_function authorizes
-                # the call as the agent (which holds the function.execute grant),
-                # acting on behalf of the user. Execution needs only
-                # function.execute — the agent need not also be granted
-                # function.read.
-                auth_ctx = await AuthorizationDataService(
-                    uow.session
-                ).build_delegated_workload_context(
-                    user_id=ctx.deps.user_id,
-                    principal_type="AGENT",
-                    principal_id=parent_agent_id,
-                    pod_id=function.pod_id,
-                    delegation_scope=frozenset([Permissions.FUNCTION_EXECUTE]),
-                    delegation_actor_name=parent_agent_name,
-                )
-                # Reuse the agent's cached workspace token instead of minting a
-                # separate function-workload token.
-                run_as_workload = RunAsWorkload(
-                    workload_type=ctx.deps.workload_type or "agent",
-                    workload_id=parent_agent_id,
-                    workload_name=parent_agent_name,
-                )
-                service = self._build_function_service(uow)
-                run = await service.execute_function(
-                    pod_id=function.pod_id,
-                    name=function.name,
-                    input_data=dict(request),
-                    user_id=ctx.deps.user_id,
-                    ctx=auth_ctx,
-                    run_as_workload=run_as_workload,
-                )
-                await uow.commit()
+            # The use case authorizes the call as the agent (which holds the
+            # function.execute grant) on behalf of the user. It builds the
+            # delegated-workload context AND runs the DB resolve phase inside ONE
+            # short UoW (so ctx.require's resource hydration never touches a closed
+            # session), then runs the sandbox with no pooled connection held.
+            # Reuse the agent's cached workspace token instead of minting a
+            # separate function-workload token.
+            run_as_workload = RunAsWorkload(
+                workload_type=ctx.deps.workload_type or "agent",
+                workload_id=parent_agent_id,
+                workload_name=parent_agent_name,
+            )
+            use_cases = build_function_use_cases(self.uow_factory)
+            run = await use_cases.execute_function_as_workload(
+                pod_id=function.pod_id,
+                name=function.name,
+                input_data=dict(request),
+                user_id=ctx.deps.user_id,
+                principal_type="AGENT",
+                principal_id=parent_agent_id,
+                delegation_scope=frozenset([Permissions.FUNCTION_EXECUTE]),
+                delegation_actor_name=parent_agent_name,
+                run_as_workload=run_as_workload,
+            )
 
             # JOB functions enqueue a background run and return PENDING; await it.
             if function.type == FunctionType.JOB and run.status in (
@@ -355,12 +335,14 @@ class AgentCallableToolFactory:
             FunctionRunStatus.CANCELLED,
         }
         run: FunctionRunEntity | None = None
-        for _ in range(_SUBAGENT_TOOL_TIMEOUT_SECONDS):
+        interval = settings.function_run_poll_interval_seconds
+        attempts = max(1, int(_SUBAGENT_TOOL_TIMEOUT_SECONDS / interval))
+        for _ in range(attempts):
             async with self.uow_factory() as uow:
                 run = await FunctionRunRepository(uow).get_run(run_id)
             if run is not None and run.status in terminal:
                 return run
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(interval)
         if run is None:
             raise RuntimeError(f"Function run {run_id} not found")
         return run
@@ -389,32 +371,6 @@ class AgentCallableToolFactory:
             f"Input schema: {_schema_preview(agent.input_schema)}\n"
             f"Output schema: {_schema_preview(agent.output_schema)}"
         )
-
-    def _build_function_service(self, uow) -> FunctionService:
-        if settings.effective_storage_backend() == "gcs":
-            if not settings.gcs_storage_bucket:
-                raise ValueError("GCS storage requires GCS_STORAGE_BUCKET")
-            function_storage_factory = partial(
-                FunctionFileManager,
-                bucket_name=settings.gcs_storage_bucket,
-            )
-        else:
-            function_storage_factory = partial(
-                FunctionFileManager,
-                root_path=Path(settings.local_file_storage_root) / "common",
-            )
-        return FunctionService(
-            function_repository=FunctionRepository(uow),
-            run_repository=FunctionRunRepository(uow),
-            workspace_service=self._build_workspace_service(),
-            storage_factory=function_storage_factory,
-            job_queue=get_streaq_job_queue(),
-            icon_service=IconService(),
-            authorization_service=create_authorization_service(uow),
-        )
-
-    def _build_workspace_service(self) -> WorkspaceToolRuntime:
-        return get_function_workspace_runtime()
 
     def _build_dynamic_function_schema(
         self,

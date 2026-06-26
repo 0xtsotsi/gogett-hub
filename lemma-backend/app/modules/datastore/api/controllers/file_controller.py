@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from app.core.api.pagination import parse_uuid_page_token
 from app.core.api.dependencies import CurrentUser
 from app.core.authorization.dependencies import PodContextDep
-from app.modules.datastore.api.dependencies import FileServiceDep
+from app.modules.datastore.api.dependencies import FileServiceDep, FileUseCasesDep
 from app.modules.datastore.api.schemas.datastore_schemas import (
     CreateFolderRequest,
     DirectoryTreeResponse,
@@ -279,9 +279,8 @@ async def get_file(
 async def update_file(
     pod_id: UUID,
     request: Request,
-    file_service: FileServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    use_cases: FileUseCasesDep,
     data: UploadFile | None = File(default=None),
     path: str = Form(...),
     new_path: Optional[str] = Form(None),
@@ -307,8 +306,9 @@ async def update_file(
         update_payload["content"] = file_content
 
     update_entity = DatastoreFileUpdateEntity(**update_payload)
-    file_entity = await file_service.update_file_by_path(pod_id, update_entity, ctx=ctx)
-    file_entity = await file_service.get_file(file_entity.id, ctx=ctx)
+    file_entity = await use_cases.update_file(
+        pod_id=pod_id, update_entity=update_entity, request=request, user_id=user.id
+    )
     response = await _file_detail_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
     return response
@@ -322,20 +322,14 @@ async def update_file(
 )
 async def delete_path(
     pod_id: UUID,
-    file_service: FileServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(...),
 ) -> Response:
-    file_entity = await file_service.get_file_by_path(
-        pod_id,
-        path,
-        ctx=ctx,
+    await use_cases.delete_path(
+        pod_id=pod_id, path=path, request=request, user_id=user.id
     )
-    response = _to_file_response(file_entity, user.id)
-    _ensure_file_in_pod(response, pod_id)
-
-    await file_service.delete_path_by_path(pod_id, path, ctx=ctx)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -348,16 +342,16 @@ async def delete_path(
 )
 async def download_file(
     pod_id: UUID,
-    file_service: FileServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(...),
 ) -> StreamingResponse:
-    file_entity, content = await file_service.download_file_content_by_path(
-        pod_id,
-        path,
-        ctx=ctx,
+    download = await use_cases.download_file(
+        pod_id=pod_id, path=path, request=request, user_id=user.id
     )
+    file_entity = download.entity
+    content = download.content
     response = _to_file_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
 
@@ -394,21 +388,19 @@ async def download_file(
 )
 async def list_file_children(
     pod_id: UUID,
-    file_service: FileServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(...),
 ) -> FileChildrenResponse:
-    file_entity, children = await file_service.list_file_children(
-        pod_id,
-        path,
-        ctx=ctx,
+    result = await use_cases.list_children(
+        pod_id=pod_id, path=path, request=request, user_id=user.id
     )
-    response = _to_file_response(file_entity, user.id)
+    response = _to_file_response(result.entity, user.id)
     _ensure_file_in_pod(response, pod_id)
     return FileChildrenResponse(
         path=response.path,
-        items=[FileChildSchema.model_validate(child) for child in children],
+        items=[FileChildSchema.model_validate(child) for child in result.children],
     )
 
 
@@ -483,9 +475,9 @@ async def create_file_signed_url(
 )
 async def download_file_child(
     pod_id: UUID,
-    file_service: FileServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(
         ...,
         description="Child path, e.g. /folder/report.pdf/document.md, "
@@ -494,18 +486,18 @@ async def download_file_child(
     page_start: Optional[int] = Query(default=None, ge=1),
     page_end: Optional[int] = Query(default=None, ge=1),
 ) -> StreamingResponse:
-    (
-        file_entity,
-        artifact_name,
-        content,
-        content_type,
-    ) = await file_service.get_file_child(
-        pod_id,
-        path,
-        ctx=ctx,
+    result = await use_cases.download_child(
+        pod_id=pod_id,
+        path=path,
+        request=request,
+        user_id=user.id,
         page_start=page_start,
         page_end=page_end,
     )
+    file_entity = result.entity
+    artifact_name = result.artifact_name
+    content = result.content
+    content_type = result.content_type
     response = _to_file_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
 

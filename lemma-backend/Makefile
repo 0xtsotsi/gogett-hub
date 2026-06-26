@@ -21,8 +21,13 @@ LOAD_TEST_COMPOSE := load_tests/docker-compose.load-test.yml
 LOAD_TEST_ENV     := load_tests/.env.load_test
 MAX_SUBSCRIBERS   ?= 100
 WRITER_VUS        ?= 2
+# Full-journey load test (load-test-journey): each VU self-provisions then loops
+# the chat message. Uses the in-process mock LLM (E2E_LLM_MODE=mock in compose).
+MAX_USERS         ?= 100
+THINK_MS          ?= 500
+LEMMA_API_URL     ?= http://localhost:8000
 
-.PHONY: help test test-unit test-e2e test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-sse load-test-monitor load-test-down load-test
+.PHONY: help test test-unit test-e2e test-e2e-real test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-sse load-test-journey load-test-monitor load-test-down load-test
 
 help:
 	@echo "Lemma backend:"
@@ -52,6 +57,8 @@ help:
 	@echo "  make load-test-setup   # provision test user / pod / table, write .env.load_test"
 	@echo "  make load-test-run     # run k6 WebSocket load test (reads .env.load_test)"
 	@echo "  make load-test-sse     # run k6 SSE streaming load test"
+	@echo "  make load-test-journey # run k6 full chat-journey test (self-provisioning, mock LLM)"
+	@echo "                         #   knobs: MAX_USERS=100 THINK_MS=500"
 	@echo "  make load-test-monitor # monitor DB connections (pg_stat_activity poller)"
 	@echo "  make load-test-down    # tear down containers and clean up"
 	@echo "  Override: MAX_SUBSCRIBERS=200 WRITER_VUS=4 make load-test"
@@ -64,14 +71,27 @@ test:
 test-unit:
 	uv run pytest -m "not e2e"
 
+# Default e2e gate: fast + deterministic. The agent LLM is a mocked
+# FunctionModel and workspace tools hit the in-process fake AgentBox, so there
+# is NO real model call and NO Docker workspace. Parallelized via xdist. This is
+# what CI runs (no API keys, no Docker image needed). real_llm/real_sandbox
+# tests auto-skip here.
 test-e2e:
-	uv run pytest -m e2e
+	uv run pytest $(E2E_PARALLEL) -m e2e -o timeout=120
+
+# Real e2e: real model from env (needs LEMMA_OPENAI_API_KEY) + real Docker
+# AgentBox. Runs the real_llm/real_sandbox tests too. For local/manual/nightly
+# verification of the actual model + sandbox. Serial (Docker workspace shares a
+# global container namespace).
+test-e2e-real:
+	E2E_REAL=1 uv run pytest -m e2e
 
 test-e2e-fast:
 	uv run pytest $(E2E_PARALLEL) -m "e2e and not slow and not worker and not workspace and not provider and not local_cli"
 
+# Real runtime suite only (real model + Docker), serial. Subset of test-e2e-real.
 test-e2e-runtime:
-	uv run pytest -m "e2e and (slow or worker or workspace or provider or local_cli)"
+	E2E_REAL=1 uv run pytest -m "e2e and (slow or worker or workspace or provider or local_cli)"
 
 test-module:
 	@test -n "$(MODULE)" || (echo "MODULE is required, e.g. make test-module MODULE=pod" && exit 1)
@@ -173,6 +193,20 @@ load-test-sse:
 		-e WRITER_VUS=$(WRITER_VUS) \
 		-v "$$(pwd)/load_tests:/scripts" \
 		grafana/k6:latest run /scripts/sse_concurrent.js
+	@echo ""
+	@echo "Container resource snapshot at test end:"
+	docker stats lemma-load-api lemma-load-worker --no-stream --format \
+		"table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
+
+load-test-journey:
+	@echo "Running k6 full-journey load test (MAX_USERS=$(MAX_USERS), THINK_MS=$(THINK_MS))…"
+	@echo "Each VU self-provisions (signup→org→pod→TODO agent→conversation) then loops the message."
+	docker run --rm --network host \
+		-e LEMMA_API_URL=$(LEMMA_API_URL) \
+		-e MAX_USERS=$(MAX_USERS) \
+		-e THINK_MS=$(THINK_MS) \
+		-v "$$(pwd)/load_tests:/scripts" \
+		grafana/k6:latest run /scripts/journey.js
 	@echo ""
 	@echo "Container resource snapshot at test end:"
 	docker stats lemma-load-api lemma-load-worker --no-stream --format \

@@ -64,6 +64,23 @@ class FilePageRenderer:
         entity = await self.reader.get_file_by_path(
             pod_id, path, requester_user_id, ctx=ctx
         )
+        pages = await self.render_pages_for_entity(
+            entity, page_start=page_start, page_end=page_end
+        )
+        return entity, pages
+
+    async def render_pages_for_entity(
+        self,
+        entity: DatastoreFileEntity,
+        *,
+        page_start: int,
+        page_end: int | None = None,
+    ) -> list[RenderedPage]:
+        """Render (and cache) page images for an already-resolved, authorized
+        entity. Touches only object storage + the CPU renderer — **no DB
+        session** — so it is safe to call after the resolving UoW has closed,
+        keeping a pooled connection from being held during rendering.
+        """
         if entity.is_folder:
             raise DatastoreValidationError("Folders cannot be rendered to images")
         if not self.is_pdf(entity):
@@ -94,8 +111,7 @@ class FilePageRenderer:
                 await self._store_cached(key, jpeg, entity.path, page_number)
                 results[page_number] = RenderedPage(page_number, jpeg, False, key)
 
-        ordered = [results[p] for p in page_numbers if p in results]
-        return entity, ordered
+        return [results[p] for p in page_numbers if p in results]
 
     def _clamp_pages(self, page_start: int, page_end: int | None) -> list[int]:
         start = max(1, page_start)

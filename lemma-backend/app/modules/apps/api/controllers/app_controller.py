@@ -4,7 +4,15 @@ from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import Response, StreamingResponse
 
 from app.core.api.dependencies import CurrentUser
@@ -14,6 +22,7 @@ from app.core.helpers.slug import normalize_resource_name
 from app.modules.apps.api.asset_response import app_asset_response
 from app.modules.apps.api.dependencies import (
     AppServiceDep,
+    AppUseCasesDep,
     WidgetContentReaderDep,
 )
 from app.modules.apps.api.schemas.app_schemas import (
@@ -25,7 +34,10 @@ from app.modules.apps.api.schemas.app_schemas import (
     AppMessageResponse,
     UpdateAppRequest,
 )
-from app.modules.apps.domain.entities import AppEntity, AppUpdateEntity
+from app.modules.apps.domain.entities import (
+    AppEntity,
+    AppUpdateEntity,
+)
 
 router = APIRouter(
     prefix="/pods/{pod_id}/apps",
@@ -210,11 +222,13 @@ async def update_app(
 async def delete_app(
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: AppUseCasesDep,
 ) -> AppMessageResponse:
-    await app_service.delete_app(pod_id, app_name, user.id, ctx=ctx)
+    await use_cases.delete_app(
+        pod_id=pod_id, app_name=app_name, request=request, user_id=user.id
+    )
     return AppMessageResponse(message=f"App {app_name} deleted successfully")
 
 
@@ -229,9 +243,8 @@ async def upload_app_bundle(
     request: Request,
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    use_cases: AppUseCasesDep,
     source_archive: UploadFile | None = File(default=None),
     dist_archive: UploadFile | None = File(default=None),
 ) -> AppBundleUploadResponse:
@@ -242,17 +255,17 @@ async def upload_app_bundle(
     if dist_archive is not None:
         dist_archive_bytes = await dist_archive.read()
 
-    app = await app_service.upload_bundle(
-        pod_id,
-        app_name,
-        user.id,
+    app = await use_cases.upload_bundle(
+        pod_id=pod_id,
+        app_name=app_name,
+        request=request,
+        user_id=user.id,
         source_archive_bytes=source_archive_bytes,
         dist_archive_bytes=dist_archive_bytes,
-        ctx=ctx,
     )
     return AppBundleUploadResponse(
         message="Bundle uploaded successfully",
-        app=await _app_detail_response(ctx, app),
+        app=AppDetailResponse.model_validate(app),
     )
 
 
@@ -266,17 +279,16 @@ async def get_app_root_asset(
     request: Request,
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    use_cases: AppUseCasesDep,
 ) -> Response:
-    asset = await app_service.get_app_asset(
-        pod_id,
-        app_name,
-        user.id,
+    asset = await use_cases.serve_asset(
+        pod_id=pod_id,
+        app_name=app_name,
+        request=request,
+        user_id=user.id,
         asset_path=None,
         request_etag=request.headers.get("if-none-match"),
-        ctx=ctx,
     )
     return app_asset_response(asset)
 
@@ -292,17 +304,16 @@ async def get_app_asset(
     pod_id: UUID,
     app_name: str,
     asset_path: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    use_cases: AppUseCasesDep,
 ) -> Response:
-    asset = await app_service.get_app_asset(
-        pod_id,
-        app_name,
-        user.id,
+    asset = await use_cases.serve_asset(
+        pod_id=pod_id,
+        app_name=app_name,
+        request=request,
+        user_id=user.id,
         asset_path=asset_path,
         request_etag=request.headers.get("if-none-match"),
-        ctx=ctx,
     )
     return app_asset_response(asset)
 
@@ -318,17 +329,13 @@ async def get_app_asset(
 async def download_app_source_archive(
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: AppUseCasesDep,
 ):
-    archive = await app_service.get_app_source_archive(
-        pod_id,
-        app_name,
-        user.id,
-        ctx=ctx,
+    archive = await use_cases.download_source_archive(
+        pod_id=pod_id, app_name=app_name, request=request, user_id=user.id
     )
-
     return StreamingResponse(
         BytesIO(archive),
         media_type="application/zip",
@@ -347,17 +354,13 @@ async def download_app_source_archive(
 async def download_app_dist_archive(
     pod_id: UUID,
     app_name: str,
-    app_service: AppServiceDep,
     user: CurrentUser,
-    ctx: PodContextDep,
+    request: Request,
+    use_cases: AppUseCasesDep,
 ):
-    archive = await app_service.get_app_dist_archive(
-        pod_id,
-        app_name,
-        user.id,
-        ctx=ctx,
+    archive = await use_cases.download_dist_archive(
+        pod_id=pod_id, app_name=app_name, request=request, user_id=user.id
     )
-
     return StreamingResponse(
         BytesIO(archive),
         media_type="application/zip",

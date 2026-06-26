@@ -1,4 +1,4 @@
-REGISTRY ?= asia-south1-docker.pkg.dev/gappy-global/gappy-repo
+REGISTRY ?= ghcr.io/lemma-work
 TAG ?= dev
 PLATFORM ?= linux/amd64
 PLATFORMS ?= linux/amd64,linux/arm64
@@ -8,8 +8,8 @@ NODE_IMAGE ?= node:25.9.0-slim
 # and reinstalls the current lemma SDK/CLI source (no stale Docker layer cache).
 CACHE_BUST ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%s)
 
-MANAGER_IMAGE := $(REGISTRY)/agentbox-manager
-RUNTIME_IMAGE := $(REGISTRY)/agentbox-runtime
+MANAGER_IMAGE := $(REGISTRY)/lemma-agentbox
+RUNTIME_IMAGE := $(REGISTRY)/lemma-agentbox-runtime
 
 .PHONY: build build-manager build-runtime
 .PHONY: push push-manager push-runtime

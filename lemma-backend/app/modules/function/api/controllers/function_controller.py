@@ -2,9 +2,10 @@
 
 from uuid import UUID
 from typing import Optional
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
-from app.core.api.dependencies import UoWDep
+from app.core.api.dependencies import UoWDep, get_uow_factory
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.authorization.grants import (
     list_grantee_resource_grants,
     normalize_pod_resource_grants,
@@ -36,11 +37,11 @@ from app.modules.function.api.schemas.function_schemas import (
 )
 from app.modules.function.domain.entities import (
     FunctionEntity,
-    FunctionRunStatus,
     FunctionUpdateEntity,
 )
 from app.modules.function.api.dependencies import (
     FunctionServiceDep,
+    FunctionUseCasesDep,
     FunctionViewerDep,
     FunctionResourceDeleteDep,
     FunctionResourceEditorDep,
@@ -95,39 +96,23 @@ async def create_function(
     request: Request,
     pod_id: UUID,
     data: CreateFunctionRequest,
-    function_service: FunctionServiceDep,
-    ctx: PodContextDep,
+    use_cases: FunctionUseCasesDep,
 ) -> FunctionActionResponse:
     """Create a new function in a pod."""
     user: UserEntity = request.state.user
-    user_id = user.id
-    entity_data = {
-        "pod_id": pod_id,
-        "user_id": user_id,
-        "name": normalize_resource_name(data.name),
-        "description": data.description,
-        "icon_url": data.icon_url,
-        "config": data.config,
-        "type": data.type,
-        "visibility": data.visibility.value,
-    }
-    entity = FunctionEntity(**entity_data)
-
-    function = await function_service.create_function(
-        entity,
-        user_id,
-        code=data.code,
-        ctx=ctx,
+    entity = FunctionEntity(
+        pod_id=pod_id,
+        user_id=user.id,
+        name=normalize_resource_name(data.name),
+        description=data.description,
+        icon_url=data.icon_url,
+        config=data.config,
+        type=data.type,
+        visibility=data.visibility.value,
     )
-    function = await function_service.get_function_by_name(
-        pod_id,
-        function.name,
-        user_id,
-        raise_not_found=True,
-        include_code=False,
-        ctx=ctx,
+    function = await use_cases.create_function(
+        pod_id=pod_id, entity=entity, user_id=user.id, code=data.code, request=request
     )
-    assert function is not None
     return await _function_action_response(function)
 
 
@@ -299,24 +284,18 @@ async def update_function(
     pod_id: UUID,
     function_name: str,
     data: UpdateFunctionRequest,
-    function_service: FunctionServiceDep,
-    ctx: PodContextDep,
+    use_cases: FunctionUseCasesDep,
 ) -> FunctionActionResponse:
     """Update a function."""
     user: UserEntity = request.state.user
-    user_id = user.id
-
-    update_payload = data.model_dump(exclude_unset=True)
-    update_entity = FunctionUpdateEntity(**update_payload)
-
-    function = await function_service.update_function(
-        pod_id,
-        function_name,
-        update_entity,
-        user_id,
-        ctx=ctx,
+    update_entity = FunctionUpdateEntity(**data.model_dump(exclude_unset=True))
+    function = await use_cases.update_function(
+        pod_id=pod_id,
+        name=function_name,
+        update_entity=update_entity,
+        user_id=user.id,
+        request=request,
     )
-
     return await _function_action_response(function)
 
 
@@ -333,15 +312,13 @@ async def delete_function(
     request: Request,
     pod_id: UUID,
     function_name: str,
-    function_service: FunctionServiceDep,
-    ctx: PodContextDep,
+    use_cases: FunctionUseCasesDep,
 ) -> FunctionMessageResponse:
     """Delete a function."""
     user: UserEntity = request.state.user
-    user_id = user.id
-
-    await function_service.delete_function(pod_id, function_name, user_id, ctx=ctx)
-
+    await use_cases.delete_function(
+        pod_id=pod_id, name=function_name, user_id=user.id, request=request
+    )
     return FunctionMessageResponse(
         message=f"Function {function_name} deleted successfully"
     )
@@ -361,29 +338,26 @@ async def execute_function(
     pod_id: UUID,
     function_name: str,
     data: ExecuteFunctionRequest,
-    function_service: FunctionServiceDep,
-    uow: UoWDep,
-    ctx: PodContextDep,
+    use_cases: FunctionUseCasesDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FunctionRunResponse:
     """Execute a function."""
     user: UserEntity = request.state.user
     user_id = user.id
     user_email = getattr(user, "email", None)
     if user_email is None:
-        resolved_user = await UserRepository(uow).get(user_id)
+        async with uow_factory() as uow:
+            resolved_user = await UserRepository(uow).get(user_id)
         user_email = str(resolved_user.email) if resolved_user is not None else None
 
-    run = await function_service.execute_function(
-        pod_id,
-        function_name,
-        data.input_data,
-        user_id,
-        user_email,
-        ctx=ctx,
+    run = await use_cases.execute_function(
+        pod_id=pod_id,
+        name=function_name,
+        input_data=data.input_data,
+        user_id=user_id,
+        user_email=user_email,
+        request=request,
     )
-    if run.status in {FunctionRunStatus.PENDING, FunctionRunStatus.RUNNING}:
-        await uow.commit()
-
     return FunctionRunResponse.model_validate(run)
 
 

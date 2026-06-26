@@ -841,21 +841,37 @@ async def test_callable_function_tool_passes_flat_model_args_as_input(
         instruction="",
     )
 
-    import unittest.mock as mock
+    # The tool delegates to FunctionUseCases.execute_function_as_workload (which
+    # owns auth + run creation); patch the use-case builder to capture input_data.
+    class _FakeUseCases:
+        async def execute_function_as_workload(
+            self,
+            *,
+            pod_id,
+            name,
+            input_data,
+            user_id,
+            principal_type,
+            principal_id,
+            delegation_scope,
+            delegation_actor_name,
+            run_as_workload=None,
+        ):
+            captured["input_data"] = input_data
+            captured["user_id"] = user_id
+            return SimpleNamespace(
+                id=uuid4(),
+                status=FunctionRunStatus.COMPLETED,
+                output_data={"ok": True},
+                error=None,
+            )
 
-    # Patch AuthorizationDataService so the test doesn't need a real DB session.
-    fake_auth_ctx = SimpleNamespace(require=mock.AsyncMock())
-    fake_auth_service_instance = mock.AsyncMock()
-    fake_auth_service_instance.build_delegated_workload_context = mock.AsyncMock(
-        return_value=fake_auth_ctx
-    )
     monkeypatch.setattr(
-        "app.modules.agent.tools.callable_tool_factory.AuthorizationDataService",
-        lambda session: fake_auth_service_instance,
+        "app.modules.agent.tools.callable_tool_factory.build_function_use_cases",
+        lambda uow_factory: _FakeUseCases(),
     )
 
     factory = AgentCallableToolFactory(uow_factory=lambda: _FakeUow())
-    monkeypatch.setattr(factory, "_build_function_service", lambda uow: _FakeService())
     tool = factory._build_function_tool(function, parent_agent=parent_agent)
 
     user_id = uuid4()

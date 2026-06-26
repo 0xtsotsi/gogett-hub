@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.core.infrastructure.db.uow_factory import SessionUnitOfWorkFactory
-from app.core.test_utils import get_kreuzberg_container, get_kreuzberg_url
+from app.core.test_utils import shared_kreuzberg
 from app.modules.datastore.tests.e2e.harness import (
     DatastoreApi,
     invite_to_pod,
@@ -41,21 +41,26 @@ scenario = e2e_fixtures.scenario
 
 
 @pytest.fixture(scope="session")
-def kreuzberg_container():
-    with get_kreuzberg_container() as kb:
-        yield kb
+def kreuzberg_url(tmp_path_factory, worker_id):
+    """URL of the single Kreuzberg shared across all xdist workers + the worker.
+
+    Shared so the heavy embedding container runs once (see
+    ``app.core.test_utils.shared_kreuzberg``). The streaq worker uses the same
+    container via the ``worker`` fixture, which is why this lives in shared
+    test_utils rather than inline here.
+    """
+    with shared_kreuzberg(tmp_path_factory.getbasetemp().parent, worker_id) as url:
+        yield url
 
 
 @pytest.fixture(scope="session")
-def e2e_settings(_shared_e2e_settings, kreuzberg_container):
-    # kreuzberg_url now lives on datastore_settings; local_object_storage_root
-    # stays on core settings.
-    datastore_settings.kreuzberg_url = get_kreuzberg_url(kreuzberg_container)
-    # Keep the per-worker namespaced root (set in e2e_settings) so parallel
-    # xdist workers stay isolated; just nest the datastore object storage under it.
-    _shared_e2e_settings.local_object_storage_root = (
-        f"{_shared_e2e_settings.local_object_storage_root}/datastore"
-    )
+def e2e_settings(_shared_e2e_settings, kreuzberg_url):
+    # kreuzberg_url lives on datastore_settings. Object storage stays on the core
+    # per-worker root WITHOUT a datastore-specific suffix: the streaq worker
+    # (which indexes uploaded files) reads core settings, so the datastore object
+    # store must match what the API/test process writes — diverging the suffix
+    # left the worker looking in the wrong place ("Storage object not found").
+    datastore_settings.kreuzberg_url = kreuzberg_url
     return _shared_e2e_settings
 
 
@@ -98,24 +103,47 @@ async def member_users(
 
 @pytest_asyncio.fixture(scope="function")
 async def index_datastore_file(db_manager):
+    import asyncio
+
+    from app.modules.datastore.domain.file_entities import FileStatus
     from app.modules.datastore.infrastructure.models import DatastoreFile
     from app.modules.datastore.services.file_processing_service import (
         DatastoreFileProcessingService,
     )
 
-    async def _index(pod_id, file_id):
+    _TERMINAL = {FileStatus.COMPLETED.value, FileStatus.NOT_REQUIRED.value}
+
+    async def _file_status(file_id):
         async with db_manager.session_factory() as session:
             result = await session.execute(
                 select(DatastoreFile).where(DatastoreFile.id == file_id)
             )
             file_model = result.scalar_one()
-            metadata = file_model.file_metadata or {}
+            return file_model.status, (file_model.file_metadata or {})
+
+    async def _index(pod_id, file_id):
+        _, metadata = await _file_status(file_id)
 
         service = DatastoreFileProcessingService(
             pod_id,
             uow_factory=SessionUnitOfWorkFactory(db_manager.session_factory),
         )
+        # If the upload already enqueued worker indexing, the file may not be
+        # PENDING and process_file_async returns immediately (skipped) — the
+        # worker is still indexing async. Either way, wait until indexing has
+        # actually finished so the subsequent search sees a populated index;
+        # otherwise the search races the indexer and returns nothing under load.
         await service.process_file_async(file_id, metadata)
+        for _ in range(120):  # ~60s at 0.5s
+            status, _ = await _file_status(file_id)
+            if status in _TERMINAL:
+                return
+            if status == FileStatus.FAILED.value:
+                raise AssertionError(f"Indexing failed for file {file_id}")
+            await asyncio.sleep(0.5)
+        raise AssertionError(
+            f"Indexing did not complete for file {file_id} (last status: {status})"
+        )
 
     return _index
 
@@ -129,7 +157,7 @@ __all__ = [
     "fixed_test_org",
     "fixed_test_user",
     "index_datastore_file",
-    "kreuzberg_container",
+    "kreuzberg_url",
     "member_users",
     "pod_api",
     "postgres_container",

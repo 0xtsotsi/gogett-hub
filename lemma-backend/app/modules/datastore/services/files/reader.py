@@ -264,23 +264,51 @@ class FileReader:
         requester_user_id: UUID,
         ctx: Context | None = None,
     ) -> tuple[DatastoreFileEntity, bytes]:
-        path = self.paths._resolve_api_path(
-            path,
-            requester_user_id=requester_user_id,
-        )
-        file_entity = await self.get_file_by_path(
+        file_entity = await self.resolve_readable_file_by_path(
             pod_id,
             path,
             requester_user_id,
             ctx=ctx,
         )
+        content = await self.read_content_for_entity(file_entity)
+        return file_entity, content
+
+    async def resolve_readable_file_by_path(
+        self,
+        pod_id: UUID,
+        path: str,
+        requester_user_id: UUID,
+        ctx: Context | None = None,
+    ) -> DatastoreFileEntity:
+        """Resolve + authorize a downloadable file (this is the DB-touching half
+        of a download). Pair with ``read_content_for_entity`` so the storage
+        download runs *after* the resolving DB session has closed, instead of
+        pinning a pooled connection for the whole transfer."""
+        path = self.paths._resolve_api_path(
+            path,
+            requester_user_id=requester_user_id,
+        )
+        return await self.get_file_by_path(
+            pod_id,
+            path,
+            requester_user_id,
+            ctx=ctx,
+        )
+
+    async def read_content_for_entity(
+        self, file_entity: DatastoreFileEntity
+    ) -> bytes:
+        """Read a file's bytes from object storage for an already-resolved,
+        authorized entity. Touches only storage (+ the in-memory system-skill
+        overlay) — **no DB session** — so it is safe to call after the resolving
+        UoW has closed."""
         if file_entity.is_folder:
             raise DatastoreValidationError("Folders do not have downloadable content")
         system_skill_content = self.system_skill_files.read_file(file_entity.path)
         if system_skill_content is not None:
-            return file_entity, system_skill_content
+            return system_skill_content
         try:
-            content = await self.storage.download_file(datastore_storage_key(file_entity))
+            return await self.storage.download_file(datastore_storage_key(file_entity))
         except DatastoreObjectNotFoundError as exc:
             # Metadata exists but the stored blob is gone — report a clean 404
             # instead of letting the storage error surface as a 500.
@@ -288,7 +316,6 @@ class FileReader:
                 f"File content for {file_entity.path} is unavailable "
                 "(the stored object is missing)"
             ) from exc
-        return file_entity, content
 
     # -- Child (derived) artifacts ----------------------------------------
     #
@@ -297,6 +324,22 @@ class FileReader:
     # ``…/report.pdf/image_0.png``, ``…/report.pdf/pages/page_0001.jpg``). They
     # are manifest-backed storage objects, not DB rows, so they never appear in
     # directory listings — but the source file's read grant governs access.
+
+    async def resolve_children_file(
+        self,
+        pod_id: UUID,
+        path: str,
+        requester_user_id: UUID,
+        ctx: Context | None = None,
+    ) -> DatastoreFileEntity:
+        """Resolve + authorize the document whose children are requested (DB
+        access only). Pair with ``load_children`` to build the child list from
+        the storage manifest without holding a pooled DB connection."""
+        path = self.paths._resolve_api_path(path, requester_user_id=requester_user_id)
+        file_entity = await self.get_file_by_path(pod_id, path, requester_user_id, ctx=ctx)
+        if file_entity.is_folder:
+            raise DatastoreValidationError("Folders do not have document child files")
+        return file_entity
 
     async def list_file_children(
         self,
@@ -307,14 +350,24 @@ class FileReader:
     ) -> tuple[DatastoreFileEntity, list[dict[str, Any]]]:
         """List a document's derived child artifacts (converted markdown,
         extracted figures, and renderable pages)."""
-        path = self.paths._resolve_api_path(path, requester_user_id=requester_user_id)
-        file_entity = await self.get_file_by_path(pod_id, path, requester_user_id, ctx=ctx)
-        if file_entity.is_folder:
-            raise DatastoreValidationError("Folders do not have document child files")
+        file_entity = await self.resolve_children_file(
+            pod_id, path, requester_user_id, ctx=ctx
+        )
+        children = await self.load_children(file_entity, requester_user_id)
+        return file_entity, children
+
+    async def load_children(
+        self,
+        file_entity: DatastoreFileEntity,
+        requester_user_id: UUID,
+    ) -> list[dict[str, Any]]:
+        """Build the child-artifact list from the storage manifest for an
+        already-resolved entity. Storage only — **no DB session** — safe to call
+        after the resolving UoW has closed."""
         manifest = await self._load_child_manifest(file_entity)
         children: list[dict[str, Any]] = []
         if manifest is None:
-            return file_entity, children
+            return children
         base = self.paths._to_api_path(file_entity.path, requester_user_id=requester_user_id)
         for artifact in manifest.get("artifacts", []):
             name = artifact.get("name") if isinstance(artifact, dict) else None
@@ -343,7 +396,7 @@ class FileReader:
                     "page_number": page_number,
                 }
             )
-        return file_entity, children
+        return children
 
     async def resolve_child(
         self,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import mimetypes
 from io import BytesIO
 from pathlib import PurePosixPath
 from uuid import UUID
@@ -14,7 +13,7 @@ import structlog
 from app.core.authorization.context import Context, ResourceRef, ResourceType, ResourceVisibility
 from app.core.html_document import wrap_html_fragment
 from app.core.ports.widget_content import WidgetArtifact
-from app.core.runtime_config import inject_runtime_config, runtime_config_token
+from app.core.runtime_config import runtime_config_token
 from app.core.authorization.permissions import Permissions
 from app.core.helpers.slug import normalize_public_slug, normalize_resource_name
 from app.modules.apps.domain.entities import (
@@ -32,10 +31,16 @@ from app.modules.apps.domain.errors import (
 from app.modules.apps.domain.ports import (
     AppRepositoryPort,
     AppStorageFactoryPort,
-    AppStoragePort,
 )
 from app.modules.apps.services.app_dist_bundle import load_app_dist_bundle
 from app.modules.apps.services.app_html_validation import lint_app_html
+from app.modules.apps.services.app_storage_phase import (
+    AppStoragePhase,
+    _AppDeletionCleanup,
+    _AssetReadInputs,
+    _UploadPlan,
+    _WrittenBundle,
+)
 from app.modules.pod.domain.pod_entities import PodRole
 from app.modules.pod.domain.visibility import (
     PERSONAL_VISIBILITY_VALUES,
@@ -43,10 +48,6 @@ from app.modules.pod.domain.visibility import (
 )
 
 logger = structlog.get_logger()
-
-mimetypes.add_type("application/javascript", ".js")
-mimetypes.add_type("application/wasm", ".wasm")
-mimetypes.add_type("image/svg+xml", ".svg")
 
 
 class AppService:
@@ -59,6 +60,9 @@ class AppService:
         self.repository = app_repository
         self.file_manager_factory = file_manager_factory
         self.authorization_service = authorization_service
+        # Storage side of the asset/archive/bundle/delete sagas, on an object
+        # that holds NO repository (DB-free by construction).
+        self._storage_phase = AppStoragePhase(file_manager_factory)
 
     @staticmethod
     def _quote_etag(etag: str | None) -> str | None:
@@ -93,11 +97,6 @@ class AppService:
             raise AppNotFoundError("App asset not found")
         return path.as_posix()
 
-    @staticmethod
-    def _guess_media_type(path: str) -> str:
-        media_type, _encoding = mimetypes.guess_type(path)
-        return media_type or "application/octet-stream"
-
     async def _validate_unique_public_slug(
         self,
         *,
@@ -126,14 +125,16 @@ class AppService:
             raise AppNotFoundError(f"Current release not found for app '{raise_not_found_name}'")
         return release
 
-    async def _build_asset_document(
+    async def _resolve_asset_document(
         self,
         app: AppEntity,
         *,
         raise_not_found_name: str,
         asset_path: str | None,
         request_etag: str | None = None,
-    ) -> AppAssetDocument:
+    ) -> _AssetReadInputs | AppAssetDocument:
+        """DB phase: resolve release + ETag. Returns a not-modified document on a
+        304 (no storage needed) or the inputs for the storage read otherwise."""
         release = await self._get_current_release(app, raise_not_found_name=raise_not_found_name)
         normalized_asset_path = self._normalize_requested_asset_path(asset_path)
         entrypoint_request = normalized_asset_path in {"", "index.html"}
@@ -153,51 +154,18 @@ class AppService:
                 is_entrypoint=entrypoint_request,
             )
 
-        storage = self.file_manager_factory(app.id)
-        is_entrypoint = normalized_asset_path in {"", "index.html"}
-        requested_storage_path = (
-            f"{release.dist_root_path}index.html"
-            if not normalized_asset_path
-            else f"{release.dist_root_path}{normalized_asset_path}"
-        )
-        try:
-            content = await storage.read_file(requested_storage_path)
-        except FileNotFoundError:
-            # SPA fallback: paths without a file extension are client-side routes —
-            # serve index.html so the React app can handle them.
-            has_extension = "." in PurePosixPath(normalized_asset_path).name if normalized_asset_path else False
-            if has_extension:
-                raise AppNotFoundError(f"App asset '{normalized_asset_path}' not found")
-            index_path = f"{release.dist_root_path}index.html"
-            try:
-                content = await storage.read_file(index_path)
-            except FileNotFoundError as exc:
-                raise AppNotFoundError("App index.html not found") from exc
-            is_entrypoint = True
-        if is_entrypoint:
-            content = inject_runtime_config(content, app.pod_id)
-        return AppAssetDocument(
-            content=content,
-            media_type=self._guess_media_type(requested_storage_path if not is_entrypoint else "index.html"),
-            etag=quoted_etag,
-            is_entrypoint=is_entrypoint,
+        return _AssetReadInputs(
+            app_id=app.id,
+            pod_id=app.pod_id,
+            dist_root_path=release.dist_root_path,
+            normalized_asset_path=normalized_asset_path,
+            quoted_etag=quoted_etag,
         )
 
-    async def _delete_release_files(
-        self,
-        storage: AppStoragePort,
-        release: AppReleaseEntity,
-    ) -> None:
-        await storage.delete_prefix(release.dist_root_path)
-        if release.dist_archive_path and not release.dist_archive_path.startswith(release.dist_root_path):
-            await self._delete_file_if_present(storage, release.dist_archive_path)
-
-    @staticmethod
-    async def _delete_file_if_present(storage: AppStoragePort, path: str) -> None:
-        try:
-            await storage.delete_file(path)
-        except FileNotFoundError:
-            return
+    async def read_app_asset(self, inputs: _AssetReadInputs) -> AppAssetDocument:
+        """Storage phase: read the asset bytes — delegated to the repo-free
+        ``AppStoragePhase`` (holds no DB connection)."""
+        return await self._storage_phase.read_asset(inputs)
 
     async def _require_pod_permission(
         self,
@@ -413,13 +381,16 @@ class AppService:
             return refreshed or updated
         return updated
 
-    async def delete_app(
+    async def resolve_delete_app(
         self,
         pod_id: UUID,
         name: str,
         user_id: UUID,
         ctx: Context | None = None,
-    ) -> None:
+    ) -> _AppDeletionCleanup:
+        """Authorize + delete the app row (DB only). Returns the storage paths to
+        purge so the caller can clean up AFTER this UoW commits — the storage
+        cleanup (potentially many objects) must not hold a connection."""
         app = await self.repository.get_by_name(pod_id, name)
         if not app:
             raise AppNotFoundError(f"App {name} not found")
@@ -436,30 +407,35 @@ class AppService:
                 resource_id=app.id,
                 ctx=ctx,
             )
-
-        storage = self.file_manager_factory(app.id)
         releases = await self.repository.list_releases(app.id)
-        if app.source_archive_path:
-            await self._delete_file_if_present(storage, app.source_archive_path)
-        for release in releases:
-            await self._delete_release_files(storage, release)
-        await storage.delete_prefix("")
         await self.repository.delete(app.id)
+        return _AppDeletionCleanup(
+            app_id=app.id,
+            source_archive_path=app.source_archive_path,
+            releases=tuple(releases),
+        )
 
-    async def upload_bundle(
+    async def cleanup_app_storage(self, cleanup: _AppDeletionCleanup) -> None:
+        """Delete an app's stored bytes — delegated to the repo-free
+        ``AppStoragePhase`` (holds no DB connection). Call after
+        resolve_delete_app's UoW has committed."""
+        await self._storage_phase.cleanup_storage(cleanup)
+
+    async def resolve_upload_bundle(
         self,
         pod_id: UUID,
         name: str,
         user_id: UUID,
         *,
-        source_archive_bytes: bytes | None,
+        has_source: bool,
         dist_archive_bytes: bytes | None,
         ctx: Context | None = None,
-    ) -> AppEntity:
+    ) -> _UploadPlan:
+        """Authorize + dedup (DB only). The storage writes happen outside this UoW
+        via write_bundle_storage; finalize_upload_bundle then persists."""
         app = await self.repository.get_by_name(pod_id, name)
         if not app:
             raise AppNotFoundError(f"App {name} not found")
-
         if ctx is not None:
             await ctx.require(Permissions.APP_UPDATE, ResourceRef.app(pod_id, app.id))
         else:
@@ -472,45 +448,99 @@ class AppService:
                 resource_id=app.id,
                 ctx=ctx,
             )
-
-        if source_archive_bytes is None and dist_archive_bytes is None:
+        if not has_source and dist_archive_bytes is None:
             raise AppValidationError("Provide source_archive and/or dist_archive")
 
-        storage = self.file_manager_factory(app.id)
-
-        if source_archive_bytes is not None:
-            path = "source/archive.zip"
-            await storage.write_file(path, source_archive_bytes)
-            app.source_archive_path = path
-
+        version: str | None = None
+        release_root: str | None = None
+        existing_release_id: UUID | None = None
+        needs_dist_write = False
         if dist_archive_bytes is not None:
-            bundle = load_app_dist_bundle(dist_archive_bytes)
+            # Validate the bundle up front (raises AppValidationError on a missing
+            # root index.html), regardless of dedup — matches prior behavior and
+            # ensures no storage write happens for an invalid bundle.
+            load_app_dist_bundle(dist_archive_bytes)
             version = hashlib.sha256(dist_archive_bytes).hexdigest()
-            release = await self.repository.get_release_by_version(app.id, version)
-            if release is None:
-                release_root = f"releases/{version}/dist/"
-                for item in bundle.files:
-                    await storage.write_file(f"{release_root}{item.path}", item.content)
+            release_root = f"releases/{version}/dist/"
+            existing = await self.repository.get_release_by_version(app.id, version)
+            existing_release_id = existing.id if existing is not None else None
+            needs_dist_write = existing is None
+        return _UploadPlan(
+            app_id=app.id,
+            pod_id=pod_id,
+            name=name,
+            has_source=has_source,
+            version=version,
+            release_root=release_root,
+            existing_release_id=existing_release_id,
+            needs_dist_write=needs_dist_write,
+        )
 
-                dist_archive_path = f"{release_root}archive.zip"
-                await storage.write_file(dist_archive_path, dist_archive_bytes)
+    async def write_bundle_storage(
+        self,
+        plan: _UploadPlan,
+        source_archive_bytes: bytes | None,
+        dist_archive_bytes: bytes | None,
+    ) -> _WrittenBundle:
+        """Write uploaded bytes to storage — delegated to the repo-free
+        ``AppStoragePhase`` (holds no DB connection). Call between
+        resolve_upload_bundle and finalize_upload_bundle."""
+        return await self._storage_phase.write_bundle(
+            plan, source_archive_bytes, dist_archive_bytes
+        )
 
-                release = await self.repository.create_release(
-                    AppReleaseEntity(
-                        app_id=app.id,
-                        version=version,
-                        dist_root_path=release_root,
-                        dist_archive_path=dist_archive_path,
-                    )
+    async def finalize_upload_bundle(
+        self, plan: _UploadPlan, written: _WrittenBundle, user_id: UUID
+    ) -> AppEntity:
+        """Persist the release + app pointer (DB only) after the storage writes."""
+        app = await self.repository.get_by_name(plan.pod_id, plan.name)
+        if not app:
+            raise AppNotFoundError(f"App {plan.name} not found")
+        release_id = plan.existing_release_id
+        if plan.needs_dist_write:
+            release = await self.repository.create_release(
+                AppReleaseEntity(
+                    app_id=app.id,
+                    version=plan.version,
+                    dist_root_path=plan.release_root,
+                    dist_archive_path=written.dist_archive_path,
                 )
-
-            app.current_release_id = release.id
+            )
+            release_id = release.id
+        if written.source_path is not None:
+            app.source_archive_path = written.source_path
+        if plan.version is not None:
+            app.current_release_id = release_id
             app.status = AppStatus.READY
-
         app.user_id = user_id
         return await self.repository.update(app)
 
-    async def get_app_asset(
+    async def upload_bundle(
+        self,
+        pod_id: UUID,
+        name: str,
+        user_id: UUID,
+        *,
+        source_archive_bytes: bytes | None,
+        dist_archive_bytes: bytes | None,
+        ctx: Context | None = None,
+    ) -> AppEntity:
+        # Back-compat single-call path (holds the connection across storage). The
+        # controller uses resolve/write/finalize so storage holds no connection.
+        plan = await self.resolve_upload_bundle(
+            pod_id,
+            name,
+            user_id,
+            has_source=source_archive_bytes is not None,
+            dist_archive_bytes=dist_archive_bytes,
+            ctx=ctx,
+        )
+        written = await self.write_bundle_storage(
+            plan, source_archive_bytes, dist_archive_bytes
+        )
+        return await self.finalize_upload_bundle(plan, written, user_id)
+
+    async def resolve_app_asset(
         self,
         pod_id: UUID,
         name: str,
@@ -519,65 +549,49 @@ class AppService:
         asset_path: str | None,
         request_etag: str | None = None,
         ctx: Context | None = None,
-    ) -> AppAssetDocument:
+    ) -> _AssetReadInputs | AppAssetDocument:
+        """DB+authz phase for serving an authed app asset. Call inside a short UoW;
+        then call read_app_asset (storage) outside it. Returns a not-modified
+        document directly on a 304."""
         app = await self.get_app_by_name(
-            pod_id,
-            name,
-            user_id,
-            raise_not_found=True,
-            ctx=ctx,
+            pod_id, name, user_id, raise_not_found=True, ctx=ctx
         )
         assert app is not None
-        return await self._build_asset_document(
+        return await self._resolve_asset_document(
             app,
             raise_not_found_name=name,
             asset_path=asset_path,
             request_etag=request_etag,
         )
 
-    async def get_app_asset_public(
-        self,
-        pod_id: UUID,
-        name: str,
-        *,
-        asset_path: str | None,
-        request_etag: str | None = None,
-    ) -> AppAssetDocument:
-        """Fetch an app asset without a permission check — for unauthenticated serving."""
-        app = await self.repository.get_by_name(pod_id, name)
-        if not app:
-            raise AppNotFoundError(f"App '{name}' not found")
-        return await self._build_asset_document(
-            app,
-            raise_not_found_name=name,
-            asset_path=asset_path,
-            request_etag=request_etag,
-        )
-
-    async def get_app_asset_by_public_slug(
+    async def resolve_app_asset_by_public_slug(
         self,
         public_slug: str,
         *,
         asset_path: str | None,
         request_etag: str | None = None,
-    ) -> AppAssetDocument:
+    ) -> _AssetReadInputs | AppAssetDocument:
+        """DB phase for serving a public (unauthenticated) app asset by slug."""
         app = await self.repository.get_by_public_slug(public_slug)
         if not app:
             raise AppNotFoundError(f"App with public slug '{public_slug}' not found")
-        return await self._build_asset_document(
+        return await self._resolve_asset_document(
             app,
             raise_not_found_name=public_slug,
             asset_path=asset_path,
             request_etag=request_etag,
         )
 
-    async def get_app_source_archive(
+    async def resolve_source_archive(
         self,
         pod_id: UUID,
         name: str,
         user_id: UUID,
         ctx: Context | None = None,
-    ) -> bytes:
+    ) -> tuple[UUID, str]:
+        """Resolve + authorize the source archive's storage location (DB access).
+        Pair with ``read_archive`` so the archive read runs after the DB session
+        closes, not while a pooled connection is held for the whole transfer."""
         app = await self.get_app_by_name(
             pod_id,
             name,
@@ -588,20 +602,17 @@ class AppService:
         assert app is not None
         if not app.source_archive_path:
             raise AppNotFoundError(f"Source archive not found for app '{name}'")
+        return app.id, app.source_archive_path
 
-        storage = self.file_manager_factory(app.id)
-        content = await storage.read_file(app.source_archive_path)
-        if isinstance(content, str):
-            return content.encode("utf-8")
-        return content
-
-    async def get_app_dist_archive(
+    async def resolve_dist_archive(
         self,
         pod_id: UUID,
         name: str,
         user_id: UUID,
         ctx: Context | None = None,
-    ) -> bytes:
+    ) -> tuple[UUID, str]:
+        """Resolve + authorize the dist archive's storage location (DB access).
+        Pair with ``read_archive`` (see ``resolve_source_archive``)."""
         app = await self.get_app_by_name(
             pod_id,
             name,
@@ -613,12 +624,12 @@ class AppService:
         release = await self._get_current_release(app, raise_not_found_name=name)
         if not release.dist_archive_path:
             raise AppNotFoundError(f"Dist archive not found for app '{name}'")
+        return app.id, release.dist_archive_path
 
-        storage = self.file_manager_factory(app.id)
-        content = await storage.read_file(release.dist_archive_path)
-        if isinstance(content, str):
-            return content.encode("utf-8")
-        return content
+    async def read_archive(self, app_id: UUID, archive_path: str) -> bytes:
+        """Read an archive's bytes — delegated to the repo-free ``AppStoragePhase``
+        (holds no DB connection). Safe after the resolving UoW closed."""
+        return await self._storage_phase.read_archive(app_id, archive_path)
 
     def _normalize_app_visibility(self, entity: AppEntity) -> None:
         entity.visibility = self._normalize_visibility_value(entity.visibility).value

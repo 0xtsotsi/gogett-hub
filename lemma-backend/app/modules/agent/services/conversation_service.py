@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from uuid import UUID
 
 
@@ -64,6 +66,26 @@ _POD_ASSISTANT_AGENT_ID = DEFAULT_POD_AGENT_ID
 # as a card by the client) and are resolved via the approvals endpoint, which
 # synthesizes their tool return and resumes the run.
 _PAUSING_TOOL_NAMES = ("ask_user", "request_approval")
+
+
+# When set, starting a new agent run does NOT publish the AgentRunStartedEvent
+# that hands execution to the streaq worker. The caller takes responsibility for
+# executing the run itself. Used by the surface e2e suite, which runs the agent
+# in-process (to deliver via the in-test fake platform servers) and would
+# otherwise double-run it with the shared session worker.
+_SUPPRESS_RUN_ENQUEUE: ContextVar[bool] = ContextVar(
+    "suppress_agent_run_enqueue", default=False
+)
+
+
+@contextmanager
+def suppress_agent_run_enqueue() -> Iterator[None]:
+    """Run agent-run starts inline: skip the worker-dispatch event publish."""
+    token = _SUPPRESS_RUN_ENQUEUE.set(True)
+    try:
+        yield
+    finally:
+        _SUPPRESS_RUN_ENQUEUE.reset(token)
 
 
 class _Unset:
@@ -896,9 +918,8 @@ class ConversationService:
             pod_id=pod_id,
             agent_name=agent_name,
         )
-        conversation = await self.conversation_repository.get_conversation(
-            conversation.id
-        )
+        # _get_or_create_conversation_for_message already returned a fully loaded,
+        # access-checked conversation — no need to re-fetch it.
         self._validate_conversation_access(
             conversation,
             user_id=user_id,
@@ -913,9 +934,11 @@ class ConversationService:
                 agent_id=conversation.agent_id,
                 action=Permissions.AGENT_EXECUTE,
             )
-        await self.conversation_repository.lock_conversation(conversation.id)
-
+        # Resolve the agent (a read) before taking the conversation lock, so the
+        # FOR UPDATE span covers only the active-run check + run/message writes.
         agent = await self._resolve_agent(conversation=conversation, user_id=user_id)
+
+        await self.conversation_repository.lock_conversation(conversation.id)
         active_run = await self.conversation_repository.get_active_agent_run_for_update(
             conversation.id
         )
@@ -964,7 +987,7 @@ class ConversationService:
             conversation.id,
             input_added_payload(active_run.id, message_to_payload(saved_user_message)),
         )
-        if started_new_run:
+        if started_new_run and not _SUPPRESS_RUN_ENQUEUE.get():
             await EventPublisher.publish(
                 AGENT_EVENTS_STREAM,
                 AgentRunStartedEvent(

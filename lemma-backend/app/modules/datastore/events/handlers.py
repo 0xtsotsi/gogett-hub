@@ -8,6 +8,7 @@ from uuid import UUID
 from faststream import Depends, Logger
 from faststream.redis import RedisRouter
 
+from app.core.config import settings
 from app.modules.datastore.config import datastore_settings
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import (
@@ -16,6 +17,7 @@ from app.core.infrastructure.db.uow_factory import (
 )
 from app.core.infrastructure.events.stream_subscriber import redis_stream_sub
 from app.modules.datastore.api.dependencies import (
+    build_file_service,
     build_pod_member_sync_service,
 )
 from app.modules.datastore.domain.events import (
@@ -85,6 +87,10 @@ async def _enqueue_file_processing(
     event: DatastoreFileCreatedEvent | DatastoreFileUpdatedEvent,
     fs_logger: Logger,
 ) -> None:
+    if settings.e2e_disable_worker_file_autoindex:
+        # e2e indexes explicitly in-process (index_file); skip the worker path so
+        # it doesn't double-index every upload and overwhelm the shared Kreuzberg.
+        return
     defer_until = None
     if event.event_type == DatastoreFileUpdatedEvent.get_event_type():
         defer_until = _content_update_defer_until(event.occurred_at)
@@ -180,6 +186,52 @@ async def process_datastore_file_task(
         logger.info("FINISHED process_datastore_file_task for %s", file_uuid)
     except Exception as exc:
         logger.error("process_datastore_file_task failed for %s: %s", file_uuid, exc)
+        raise
+
+
+@streaq_task(name="cleanup_deleted_datastore_paths")
+async def cleanup_deleted_datastore_paths_task(
+    _task_context=None,
+    *,
+    pod_id: str,
+    is_folder: bool,
+    folder_prefix: str | None = None,
+    files: list[dict] | None = None,
+):
+    """Purge storage bytes + search-index entries for file/folder rows that the
+    API already deleted in its short UoW. Builds the file service with a UoW that
+    is never queried (storage/search only), so no main pooled connection is held
+    during the (potentially many-object) cleanup."""
+    try:
+        worker_ctx: AppWorkerContext | None = streaq_worker.context
+    except Exception:
+        worker_ctx = None
+    uow_factory = (
+        worker_ctx.uow_factory
+        if worker_ctx is not None
+        else SessionUnitOfWorkFactory(async_session_maker)
+    )
+    pod_uuid = UUID(pod_id)
+    logger.info(
+        "STARTING cleanup_deleted_datastore_paths for pod %s (is_folder=%s, files=%d)",
+        pod_uuid,
+        is_folder,
+        len(files or []),
+    )
+    try:
+        async with uow_factory() as uow:
+            service = build_file_service(uow)
+            await service.cleanup_deleted_paths(
+                pod_uuid,
+                is_folder=is_folder,
+                folder_prefix=folder_prefix,
+                files=files or [],
+            )
+        logger.info("FINISHED cleanup_deleted_datastore_paths for pod %s", pod_uuid)
+    except Exception as exc:
+        logger.error(
+            "cleanup_deleted_datastore_paths failed for pod %s: %s", pod_uuid, exc
+        )
         raise
 
 

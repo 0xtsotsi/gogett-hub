@@ -58,13 +58,31 @@ def _ensure_repo_root_on_path() -> None:
         sys.path.insert(0, repo_root_str)
 
 
-def _cleanup_e2e_workspace_containers() -> None:
-    """Remove leftover workspace containers created by e2e runs."""
+def _cleanup_e2e_workspace_containers(*, sandboxes_only: bool = False) -> None:
+    """Remove leftover Docker containers created by e2e runs.
+
+    The shared session testcontainers (postgres/redis/supertokens/kreuzberg) and
+    the AgentBox sandbox pods BOTH carry ``lemma.e2e=true``, so a broad sweep by
+    that label would tear down the live session containers mid-run. AgentBox
+    sandbox pods additionally carry ``app.kubernetes.io/name=agentbox-sandbox``
+    (set unconditionally in ``agentbox/providers/docker.py``).
+
+    - ``sandboxes_only=True`` (per-test cleanup): remove ONLY agentbox sandbox
+      pods, sparing the shared session containers — otherwise the workspace
+      teardown after the first test kills postgres/redis and every later test
+      fails to connect.
+    - default (session boundaries): remove ALL e2e-labeled containers for a clean
+      slate, which is safe because the session containers aren't up yet (start)
+      or are being torn down anyway (finish).
+    """
     if not shutil.which("docker"):
         return
 
+    label_filters = ["--filter", "label=lemma.e2e=true"]
+    if sandboxes_only:
+        label_filters += ["--filter", "label=app.kubernetes.io/name=agentbox-sandbox"]
     ps = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=lemma.e2e=true"],
+        ["docker", "ps", "-aq", *label_filters],
         capture_output=True,
         text=True,
         check=False,
@@ -72,6 +90,24 @@ def _cleanup_e2e_workspace_containers() -> None:
     container_ids = [line.strip() for line in ps.stdout.splitlines() if line.strip()]
     if container_ids:
         subprocess.run(["docker", "rm", "-f", *container_ids], check=False)
+
+    if sandboxes_only:
+        return
+    # At session boundaries also prune orphaned ``lemma-e2e-*`` networks left by
+    # interrupted runs (each LemmaDockerNetwork is a separate Docker network and
+    # consumes a subnet from the default address pool — accumulating them
+    # eventually exhausts the pool: "all predefined address pools have been fully
+    # subnetted", and every later run fails at ``docker network create``). In-use
+    # networks (the live session's) can't be removed and fail harmlessly.
+    nets = subprocess.run(
+        ["docker", "network", "ls", "-q", "--filter", "name=lemma-e2e"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    network_ids = [line.strip() for line in nets.stdout.splitlines() if line.strip()]
+    if network_ids:
+        subprocess.run(["docker", "network", "rm", *network_ids], check=False)
 
 
 def _configure_local_datastore_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -310,7 +346,10 @@ def cleanup_workspace_containers_session():
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def cleanup_workspace_containers_function():
     yield
-    _cleanup_e2e_workspace_containers()
+    # Per-test: only reap this test's sandbox pods. Sweeping all lemma.e2e
+    # containers here would kill the shared session testcontainers and break every
+    # subsequent test.
+    _cleanup_e2e_workspace_containers(sandboxes_only=True)
     from app.core.infrastructure.channels.channel_service import channel_service
     from app.core.infrastructure.db.session import close_engine
     from app.core.infrastructure.events.message_bus import close_message_bus

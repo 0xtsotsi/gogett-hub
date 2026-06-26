@@ -137,7 +137,9 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
         return
     from app.modules.test_support import e2e_base
 
-    e2e_base._cleanup_e2e_workspace_containers()
+    # Per-test: reap only this test's agentbox sandbox pods, NOT the shared
+    # session testcontainers (which carry the same lemma.e2e label).
+    e2e_base._cleanup_e2e_workspace_containers(sandboxes_only=True)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

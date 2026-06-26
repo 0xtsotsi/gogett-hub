@@ -66,9 +66,12 @@ const createPodMs = new Trend("create_pod_ms", true);
 const createAgentMs = new Trend("create_agent_ms", true);
 const createConvMs = new Trend("create_conv_ms", true);
 const messageRoundtripMs = new Trend("message_roundtrip_ms", true);
+const createFileMs = new Trend("create_file_ms", true);
+const downloadFileMs = new Trend("download_file_ms", true);
 
 const provisionSuccess = new Rate("provision_success");
 const messageSuccess = new Rate("message_success");
+const fileSuccess = new Rate("file_success");
 const tokensReceived = new Counter("tokens_received");
 const toolCallsReceived = new Counter("tool_calls_received");
 const journeyErrors = new Counter("journey_errors");
@@ -257,6 +260,35 @@ export function journeyVU() {
 
   check(resp, { "message run completed": () => completed });
 
+  // File create + download — verify these flows don't pin a DB connection
+  // across object-storage I/O. Auth-only headers (k6 sets the multipart type).
+  const fname = `lt-${__VU}-${__ITER}.txt`;
+  const authOnly = { Authorization: vuState.H.Authorization };
+  const up = http.post(
+    `${API_URL}/pods/${vuState.podId}/datastore/files`,
+    {
+      data: http.file("hello from loadtest\n", fname, "text/plain"),
+      name: fname,
+      directory_path: "/",
+      search_enabled: "false",
+    },
+    { headers: authOnly, tags: { name: "create_file" }, timeout: "30s" }
+  );
+  createFileMs.add(up.timings.duration);
+  if (up.status === 200 || up.status === 201) {
+    const dl = http.get(
+      `${API_URL}/pods/${vuState.podId}/datastore/files/download?path=${encodeURIComponent("/" + fname)}`,
+      { headers: authOnly, tags: { name: "download_file" }, timeout: "30s" }
+    );
+    downloadFileMs.add(dl.timings.duration);
+    const ok = dl.status === 200;
+    fileSuccess.add(ok);
+    if (!ok) journeyErrors.add(1);
+  } else {
+    fileSuccess.add(false);
+    journeyErrors.add(1);
+  }
+
   sleep(THINK_MS / 1000);
 }
 
@@ -271,6 +303,8 @@ const LATENCY_METRICS = [
   ["create_agent", "create_agent_ms"],
   ["create_conv", "create_conv_ms"],
   ["message_roundtrip", "message_roundtrip_ms"],
+  ["create_file", "create_file_ms"],
+  ["download_file", "download_file_ms"],
 ];
 
 function fmt(n) {
@@ -308,8 +342,10 @@ export function handleSummary(data) {
   lines.push("------------------------------------------------------");
   const ms = (m.message_success && m.message_success.values) || {};
   const ps = (m.provision_success && m.provision_success.values) || {};
+  const fs = (m.file_success && m.file_success.values) || {};
   lines.push("provision_success rate : " + fmt((ps.rate || 0) * 100) + "%");
   lines.push("message_success rate   : " + fmt((ms.rate || 0) * 100) + "%");
+  lines.push("file_success rate      : " + fmt((fs.rate || 0) * 100) + "%");
   lines.push("tokens_received        : " + fmt((m.tokens_received && m.tokens_received.values.count)));
   lines.push("tool_calls_received    : " + fmt((m.tool_calls_received && m.tool_calls_received.values.count)));
   lines.push("journey_errors         : " + fmt((m.journey_errors && m.journey_errors.values.count)));

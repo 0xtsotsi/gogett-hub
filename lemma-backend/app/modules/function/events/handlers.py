@@ -166,8 +166,8 @@ async def process_function_run(
                 if function is None:
                     raise FunctionNotFoundError(f"Function {run.function_id} not found")
 
-            service = worker_ctx.build_function_service_with_factory()
-            await service.execute_run_by_id(
+            use_cases = worker_ctx.build_function_use_cases()
+            await use_cases.execute_run_by_id(
                 parsed_run_id,
                 timeout_seconds=_JOB_FUNCTION_TIMEOUT_SECONDS,
             )

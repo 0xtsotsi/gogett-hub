@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
-    Depends,
     File,
     HTTPException,
     Query,
@@ -16,20 +15,15 @@ from fastapi import (
 )
 from fastapi.responses import Response, StreamingResponse
 
-from app.core.api.dependencies import CurrentUser, get_uow_factory
+from app.core.api.dependencies import CurrentUser
 from app.core.api.pagination import parse_uuid_page_token
-from app.core.authorization.current import (
-    reset_current_context,
-    set_current_context,
-)
-from app.core.authorization.dependencies import PodContextDep, resolve_pod_context
+from app.core.authorization.dependencies import PodContextDep
 from app.core.helpers.slug import normalize_resource_name
-from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.apps.api.asset_response import app_asset_response
 from app.modules.apps.api.dependencies import (
     AppServiceDep,
+    AppUseCasesDep,
     WidgetContentReaderDep,
-    build_app_service,
 )
 from app.modules.apps.api.schemas.app_schemas import (
     CreateAppFromWidgetRequest,
@@ -41,7 +35,6 @@ from app.modules.apps.api.schemas.app_schemas import (
     UpdateAppRequest,
 )
 from app.modules.apps.domain.entities import (
-    AppAssetDocument,
     AppEntity,
     AppUpdateEntity,
 )
@@ -231,23 +224,11 @@ async def delete_app(
     app_name: str,
     user: CurrentUser,
     request: Request,
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+    use_cases: AppUseCasesDep,
 ) -> AppMessageResponse:
-    # Delete the row in a short UoW, then clean up the app's stored bytes with no
-    # pooled connection held (the cleanup can touch many objects).
-    async with uow_factory() as uow:
-        app_service = build_app_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            cleanup = await app_service.resolve_delete_app(
-                pod_id, app_name, user.id, ctx=ctx
-            )
-        finally:
-            reset_current_context(token)
-    await app_service.cleanup_app_storage(cleanup)
+    await use_cases.delete_app(
+        pod_id=pod_id, app_name=app_name, request=request, user_id=user.id
+    )
     return AppMessageResponse(message=f"App {app_name} deleted successfully")
 
 
@@ -263,7 +244,7 @@ async def upload_app_bundle(
     pod_id: UUID,
     app_name: str,
     user: CurrentUser,
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+    use_cases: AppUseCasesDep,
     source_archive: UploadFile | None = File(default=None),
     dist_archive: UploadFile | None = File(default=None),
 ) -> AppBundleUploadResponse:
@@ -274,72 +255,18 @@ async def upload_app_bundle(
     if dist_archive is not None:
         dist_archive_bytes = await dist_archive.read()
 
-    # Resolve+authorize+dedup in a short UoW, write the bundle bytes with no
-    # pooled connection held, then persist the release pointer in a second UoW.
-    async with uow_factory() as uow:
-        app_service = build_app_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            plan = await app_service.resolve_upload_bundle(
-                pod_id,
-                app_name,
-                user.id,
-                has_source=source_archive_bytes is not None,
-                dist_archive_bytes=dist_archive_bytes,
-                ctx=ctx,
-            )
-        finally:
-            reset_current_context(token)
-    written = await app_service.write_bundle_storage(
-        plan, source_archive_bytes, dist_archive_bytes
+    app = await use_cases.upload_bundle(
+        pod_id=pod_id,
+        app_name=app_name,
+        request=request,
+        user_id=user.id,
+        source_archive_bytes=source_archive_bytes,
+        dist_archive_bytes=dist_archive_bytes,
     )
-    async with uow_factory() as uow2:
-        app = await build_app_service(uow2).finalize_upload_bundle(
-            plan, written, user.id
-        )
     return AppBundleUploadResponse(
         message="Bundle uploaded successfully",
         app=AppDetailResponse.model_validate(app),
     )
-
-
-async def _serve_app_asset(
-    *,
-    request: Request,
-    pod_id: UUID,
-    app_name: str,
-    user_id: UUID,
-    asset_path: str | None,
-    uow_factory: UnitOfWorkFactory,
-) -> Response:
-    # Resolve + authorize + ETag in a short UoW (connection released here), then
-    # read the asset bytes from storage with no pooled connection held — a
-    # request-scoped AppServiceDep/PodContextDep would pin the connection for the
-    # whole response while reading from GCS/local storage.
-    async with uow_factory() as uow:
-        app_service = build_app_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user_id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            resolved = await app_service.resolve_app_asset(
-                pod_id,
-                app_name,
-                user_id,
-                asset_path=asset_path,
-                request_etag=request.headers.get("if-none-match"),
-                ctx=ctx,
-            )
-        finally:
-            reset_current_context(token)
-    if isinstance(resolved, AppAssetDocument):
-        return app_asset_response(resolved)
-    asset = await app_service.read_app_asset(resolved)
-    return app_asset_response(asset)
 
 
 @router.get(
@@ -353,16 +280,17 @@ async def get_app_root_asset(
     pod_id: UUID,
     app_name: str,
     user: CurrentUser,
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+    use_cases: AppUseCasesDep,
 ) -> Response:
-    return await _serve_app_asset(
-        request=request,
+    asset = await use_cases.serve_asset(
         pod_id=pod_id,
         app_name=app_name,
+        request=request,
         user_id=user.id,
         asset_path=None,
-        uow_factory=uow_factory,
+        request_etag=request.headers.get("if-none-match"),
     )
+    return app_asset_response(asset)
 
 
 @router.get(
@@ -377,16 +305,17 @@ async def get_app_asset(
     app_name: str,
     asset_path: str,
     user: CurrentUser,
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+    use_cases: AppUseCasesDep,
 ) -> Response:
-    return await _serve_app_asset(
-        request=request,
+    asset = await use_cases.serve_asset(
         pod_id=pod_id,
         app_name=app_name,
+        request=request,
         user_id=user.id,
         asset_path=asset_path,
-        uow_factory=uow_factory,
+        request_etag=request.headers.get("if-none-match"),
     )
+    return app_asset_response(asset)
 
 
 @router.get(
@@ -402,25 +331,11 @@ async def download_app_source_archive(
     app_name: str,
     user: CurrentUser,
     request: Request,
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+    use_cases: AppUseCasesDep,
 ):
-    # Resolve + authorize in a short UoW (auth context built there, not via a
-    # request-scoped PodContextDep held across the stream), then read the archive
-    # from storage and stream it without holding a pooled connection.
-    async with uow_factory() as uow:
-        app_service = build_app_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            app_id, archive_path = await app_service.resolve_source_archive(
-                pod_id, app_name, user.id, ctx=ctx
-            )
-        finally:
-            reset_current_context(token)
-    archive = await app_service.read_archive(app_id, archive_path)
-
+    archive = await use_cases.download_source_archive(
+        pod_id=pod_id, app_name=app_name, request=request, user_id=user.id
+    )
     return StreamingResponse(
         BytesIO(archive),
         media_type="application/zip",
@@ -441,25 +356,11 @@ async def download_app_dist_archive(
     app_name: str,
     user: CurrentUser,
     request: Request,
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+    use_cases: AppUseCasesDep,
 ):
-    # Resolve + authorize in a short UoW (auth context built there, not via a
-    # request-scoped PodContextDep held across the stream), then read the archive
-    # from storage and stream it without holding a pooled connection.
-    async with uow_factory() as uow:
-        app_service = build_app_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            app_id, archive_path = await app_service.resolve_dist_archive(
-                pod_id, app_name, user.id, ctx=ctx
-            )
-        finally:
-            reset_current_context(token)
-    archive = await app_service.read_archive(app_id, archive_path)
-
+    archive = await use_cases.download_dist_archive(
+        pod_id=pod_id, app_name=app_name, request=request, user_id=user.id
+    )
     return StreamingResponse(
         BytesIO(archive),
         media_type="application/zip",

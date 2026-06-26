@@ -123,8 +123,7 @@ async def test_send_message_starts_run_before_stream_body_is_consumed(monkeypatc
         conversation_controller, "_build_conversation_service", lambda uow: service
     )
     monkeypatch.setattr(
-        conversation_controller,
-        "resolve_pod_context",
+        "app.core.authorization.scope.resolve_pod_context",
         AsyncMock(return_value=allow_all_context()),
     )
 
@@ -156,8 +155,7 @@ async def test_send_message_encodes_stream_failures_as_sse_errors(monkeypatch) -
         conversation_controller, "_build_conversation_service", lambda uow: service
     )
     monkeypatch.setattr(
-        conversation_controller,
-        "resolve_pod_context",
+        "app.core.authorization.scope.resolve_pod_context",
         AsyncMock(return_value=allow_all_context()),
     )
 
@@ -192,8 +190,7 @@ async def test_send_message_raises_usage_limit_before_stream_starts(monkeypatch)
         conversation_controller, "_build_conversation_service", lambda uow: service
     )
     monkeypatch.setattr(
-        conversation_controller,
-        "resolve_pod_context",
+        "app.core.authorization.scope.resolve_pod_context",
         AsyncMock(return_value=allow_all_context()),
     )
 

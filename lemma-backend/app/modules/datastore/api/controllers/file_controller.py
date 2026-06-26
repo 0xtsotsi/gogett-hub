@@ -8,7 +8,6 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
-    Depends,
     File,
     Form,
     Query,
@@ -20,19 +19,9 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 
 from app.core.api.pagination import parse_uuid_page_token
-from app.core.api.dependencies import CurrentUser, get_uow_factory
-from app.core.config import settings
-from app.core.authorization.current import (
-    reset_current_context,
-    set_current_context,
-)
-from app.core.authorization.dependencies import PodContextDep, resolve_pod_context
-from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
-from app.modules.datastore.api.dependencies import FileServiceDep, build_file_service
-from app.modules.datastore.infrastructure.reindex_queue import (
-    enqueue_datastore_path_cleanup,
-)
-from app.core.log.log import get_logger
+from app.core.api.dependencies import CurrentUser
+from app.core.authorization.dependencies import PodContextDep
+from app.modules.datastore.api.dependencies import FileServiceDep, FileUseCasesDep
 from app.modules.datastore.api.schemas.datastore_schemas import (
     CreateFolderRequest,
     DirectoryTreeResponse,
@@ -74,8 +63,6 @@ router = APIRouter(
     tags=["files"],
     redirect_slashes=False,
 )
-
-logger = get_logger(__name__)
 
 BINARY_FILE_RESPONSE = {
     200: {
@@ -293,13 +280,13 @@ async def update_file(
     pod_id: UUID,
     request: Request,
     user: CurrentUser,
+    use_cases: FileUseCasesDep,
     data: UploadFile | None = File(default=None),
     path: str = Form(...),
     new_path: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     search_enabled: Optional[bool] = Form(None),
     visibility: str | None = Form(default=None),
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FileDetailResponse:
     form = await request.form()
     provided_fields = set(form.keys())
@@ -319,40 +306,9 @@ async def update_file(
         update_payload["content"] = file_content
 
     update_entity = DatastoreFileUpdateEntity(**update_payload)
-
-    # Resolve + authorize + apply mutations in a short UoW, move/upload the bytes
-    # with no connection held, persist the row in a second short UoW, then sync
-    # storage + search after commit (no connection). Upload-new -> persist-row ->
-    # delete-old ordering means a mid-flight failure can only orphan a blob.
-    async with uow_factory() as uow:
-        file_service = build_file_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            plan = await file_service.resolve_update_file(
-                pod_id, update_entity, ctx=ctx
-            )
-        finally:
-            reset_current_context(token)
-
-    await file_service.write_update_storage(plan, update_entity)
-
-    async with uow_factory() as uow2:
-        file_service = build_file_service(uow2)
-        ctx2 = await resolve_pod_context(
-            session=uow2.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token2 = set_current_context(ctx2)
-        try:
-            updated = await file_service.persist_update_file(plan)
-            file_entity = await file_service.get_file(updated.id, ctx=ctx2)
-        finally:
-            reset_current_context(token2)
-
-    await file_service.finalize_update_file(plan, updated)
-
+    file_entity = await use_cases.update_file(
+        pod_id=pod_id, update_entity=update_entity, request=request, user_id=user.id
+    )
     response = await _file_detail_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
     return response
@@ -368,47 +324,12 @@ async def delete_path(
     pod_id: UUID,
     user: CurrentUser,
     request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(...),
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> Response:
-    # Authorize + delete the rows in a short UoW (released on exit), then offload
-    # the storage + search-index cleanup to the worker so the API never holds a
-    # pooled connection across the (potentially many-object) purge. If the
-    # enqueue fails, clean up in-process (still no connection held) so deleted
-    # rows never leave orphaned blobs.
-    async with uow_factory() as uow:
-        file_service = build_file_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            cleanup = await file_service.resolve_delete_path(pod_id, path, ctx=ctx)
-        finally:
-            reset_current_context(token)
-
-    files = list(cleanup.files)
-    enqueued = False
-    if not settings.e2e_disable_worker_file_autoindex:
-        # When the worker file-path is active, offload the purge; otherwise (e2e
-        # without a datastore worker) fall through to in-process cleanup below.
-        try:
-            enqueued = await enqueue_datastore_path_cleanup(
-                pod_id=cleanup.pod_id,
-                is_folder=cleanup.is_folder,
-                folder_prefix=cleanup.folder_prefix,
-                files=files,
-            )
-        except Exception as exc:
-            logger.warning("Failed to enqueue datastore path cleanup: %s", exc)
-            enqueued = False
-    if not enqueued:
-        await file_service.cleanup_deleted_paths(
-            cleanup.pod_id,
-            is_folder=cleanup.is_folder,
-            folder_prefix=cleanup.folder_prefix,
-            files=files,
-        )
+    await use_cases.delete_path(
+        pod_id=pod_id, path=path, request=request, user_id=user.id
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -423,23 +344,14 @@ async def download_file(
     pod_id: UUID,
     user: CurrentUser,
     request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(...),
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> StreamingResponse:
-    # Build the auth context inside the short UoW (not via a request-scoped
-    # PodContextDep, which FastAPI keeps alive for the whole StreamingResponse),
-    # resolve+authorize, release the connection, then read bytes from storage.
-    async with uow_factory() as uow:
-        file_service = build_file_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            file_entity = await file_service.resolve_readable_file(pod_id, path, ctx=ctx)
-        finally:
-            reset_current_context(token)
-    content = await file_service.read_file_content(file_entity)
+    download = await use_cases.download_file(
+        pod_id=pod_id, path=path, request=request, user_id=user.id
+    )
+    file_entity = download.entity
+    content = download.content
     response = _to_file_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
 
@@ -478,29 +390,17 @@ async def list_file_children(
     pod_id: UUID,
     user: CurrentUser,
     request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(...),
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FileChildrenResponse:
-    # Resolve + authorize inside a short UoW (released on exit), then read the
-    # child manifest from storage with no pooled DB connection held.
-    async with uow_factory() as uow:
-        file_service = build_file_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            file_entity = await file_service.resolve_children_file(
-                pod_id, path, ctx=ctx
-            )
-        finally:
-            reset_current_context(token)
-    children = await file_service.load_file_children(file_entity, user.id)
-    response = _to_file_response(file_entity, user.id)
+    result = await use_cases.list_children(
+        pod_id=pod_id, path=path, request=request, user_id=user.id
+    )
+    response = _to_file_response(result.entity, user.id)
     _ensure_file_in_pod(response, pod_id)
     return FileChildrenResponse(
         path=response.path,
-        items=[FileChildSchema.model_validate(child) for child in children],
+        items=[FileChildSchema.model_validate(child) for child in result.children],
     )
 
 
@@ -577,6 +477,7 @@ async def download_file_child(
     pod_id: UUID,
     user: CurrentUser,
     request: Request,
+    use_cases: FileUseCasesDep,
     path: str = Query(
         ...,
         description="Child path, e.g. /folder/report.pdf/document.md, "
@@ -584,29 +485,19 @@ async def download_file_child(
     ),
     page_start: Optional[int] = Query(default=None, ge=1),
     page_end: Optional[int] = Query(default=None, ge=1),
-    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> StreamingResponse:
-    # Build the auth context inside the short UoW (not via a request-scoped
-    # PodContextDep held across the StreamingResponse), resolve+authorize, release
-    # the connection, then render/read the artifact and stream it.
-    async with uow_factory() as uow:
-        file_service = build_file_service(uow)
-        ctx = await resolve_pod_context(
-            session=uow.session, request=request, user_id=user.id, pod_id=pod_id
-        )
-        token = set_current_context(ctx)
-        try:
-            file_entity, artifact_rel = await file_service.resolve_child(
-                pod_id, path, ctx=ctx
-            )
-        finally:
-            reset_current_context(token)
-    artifact_name, content, content_type = await file_service.read_child_content(
-        file_entity,
-        artifact_rel,
+    result = await use_cases.download_child(
+        pod_id=pod_id,
+        path=path,
+        request=request,
+        user_id=user.id,
         page_start=page_start,
         page_end=page_end,
     )
+    file_entity = result.entity
+    artifact_name = result.artifact_name
+    content = result.content
+    content_type = result.content_type
     response = _to_file_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
 

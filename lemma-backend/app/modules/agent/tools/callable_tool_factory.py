@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from functools import partial
-from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -20,9 +18,7 @@ from app.core.config import settings
 from app.core.log.log import get_logger
 from app.core.authorization.models import ResourcePermissionGrantModel
 from app.core.authorization.permissions import Permissions
-from app.core.authorization.service import AuthorizationDataService
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
-from app.core.infrastructure.jobs.streaq_job_queue import get_streaq_job_queue
 from app.modules.agent.domain.entities import Agent
 from app.modules.agent.infrastructure.repositories import (
     AgentRepository,
@@ -40,13 +36,7 @@ from app.modules.function.infrastructure.repositories import (
     FunctionRepository,
     FunctionRunRepository,
 )
-from app.modules.function.services.function_file_manager import FunctionFileManager
-from app.modules.function.services.function_service import FunctionService
-from app.modules.icon.services.icon_service import IconService
-from app.modules.workspace.services.workspace_tool_runtime import (
-    WorkspaceToolRuntime,
-    get_function_workspace_runtime,
-)
+from app.modules.function.api.dependencies import build_function_use_cases
 
 
 logger = get_logger(__name__)
@@ -197,26 +187,11 @@ class AgentCallableToolFactory:
             ctx: RunContext[BaseAgentContext],
             **request: Any,
         ) -> dict[str, Any]:
-            # Build a delegated-workload context so execute_function authorizes
-            # the call as the agent (which holds the function.execute grant),
-            # acting on behalf of the user. Execution needs only function.execute
-            # — the agent need not also be granted function.read. Build it in a
-            # SHORT UoW and release the connection before executing: a synchronous
-            # (API-type) function runs in a sandbox for up to
-            # _API_FUNCTION_TIMEOUT_SECONDS and must not pin a pooled worker
-            # connection for that whole round-trip.
-            async with self.uow_factory() as uow:
-                auth_ctx = await AuthorizationDataService(
-                    uow.session
-                ).build_delegated_workload_context(
-                    user_id=ctx.deps.user_id,
-                    principal_type="AGENT",
-                    principal_id=parent_agent_id,
-                    pod_id=function.pod_id,
-                    delegation_scope=frozenset([Permissions.FUNCTION_EXECUTE]),
-                    delegation_actor_name=parent_agent_name,
-                )
-
+            # The use case authorizes the call as the agent (which holds the
+            # function.execute grant) on behalf of the user. It builds the
+            # delegated-workload context AND runs the DB resolve phase inside ONE
+            # short UoW (so ctx.require's resource hydration never touches a closed
+            # session), then runs the sandbox with no pooled connection held.
             # Reuse the agent's cached workspace token instead of minting a
             # separate function-workload token.
             run_as_workload = RunAsWorkload(
@@ -224,16 +199,16 @@ class AgentCallableToolFactory:
                 workload_id=parent_agent_id,
                 workload_name=parent_agent_name,
             )
-            # Factory-mode service: scopes its run-row writes in short UoWs, so no
-            # connection is held during the sandbox execution. The run row (and
-            # the JOB enqueue event) commit inside the service's own short UoW.
-            service = self._build_function_service_with_factory()
-            run = await service.execute_function(
+            use_cases = build_function_use_cases(self.uow_factory)
+            run = await use_cases.execute_function_as_workload(
                 pod_id=function.pod_id,
                 name=function.name,
                 input_data=dict(request),
                 user_id=ctx.deps.user_id,
-                ctx=auth_ctx,
+                principal_type="AGENT",
+                principal_id=parent_agent_id,
+                delegation_scope=frozenset([Permissions.FUNCTION_EXECUTE]),
+                delegation_actor_name=parent_agent_name,
                 run_as_workload=run_as_workload,
             )
 
@@ -396,41 +371,6 @@ class AgentCallableToolFactory:
             f"Input schema: {_schema_preview(agent.input_schema)}\n"
             f"Output schema: {_schema_preview(agent.output_schema)}"
         )
-
-    def _function_storage_factory(self):
-        if settings.effective_storage_backend() == "gcs":
-            if not settings.gcs_storage_bucket:
-                raise ValueError("GCS storage requires GCS_STORAGE_BUCKET")
-            return partial(
-                FunctionFileManager,
-                bucket_name=settings.gcs_storage_bucket,
-            )
-        return partial(
-            FunctionFileManager,
-            root_path=Path(settings.local_file_storage_root) / "common",
-        )
-
-    def _build_function_service_with_factory(self) -> FunctionService:
-        """Factory-mode FunctionService for executing a function as an agent tool.
-
-        Scopes its own short UoWs, so a synchronous (API-type) function's sandbox
-        round-trip does not hold a pooled DB connection in the worker.
-        Authorization is carried by the delegated ``ctx`` passed to
-        ``execute_function``.
-        """
-        return FunctionService(
-            function_repository=None,
-            run_repository=None,
-            workspace_service=self._build_workspace_service(),
-            storage_factory=self._function_storage_factory(),
-            job_queue=get_streaq_job_queue(),
-            icon_service=IconService(),
-            authorization_service=None,
-            uow_factory=self.uow_factory,
-        )
-
-    def _build_workspace_service(self) -> WorkspaceToolRuntime:
-        return get_function_workspace_runtime()
 
     def _build_dynamic_function_schema(
         self,

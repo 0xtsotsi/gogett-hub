@@ -4,8 +4,10 @@ from typing import Annotated, Optional
 
 from fastapi import Depends
 
-from app.core.api.dependencies import UoWDep
+from app.core.api.dependencies import UoWDep, get_uow_factory
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.infrastructure.events.message_bus import get_message_bus
+from app.modules.datastore.application.file_use_cases import FileUseCases
 from app.modules.datastore.infrastructure.repositories import (
     DatastoreFileRepository,
     DatastoreTableRepository,
@@ -119,6 +121,19 @@ def get_file_service(
     return build_file_service(uow)
 
 
+def build_file_use_cases(uow_factory: UnitOfWorkFactory) -> FileUseCases:
+    """Construct the datastore file use-case layer (factory mode). The API and
+    the worker build the same object so they share one saga implementation."""
+    return FileUseCases(uow_factory, build_file_service)
+
+
+def get_file_use_cases(
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+) -> FileUseCases:
+    return build_file_use_cases(uow_factory)
+
+
 TableServiceDep = Annotated[TableService, Depends(get_table_service)]
 RecordServiceDep = Annotated[RecordService, Depends(get_record_service)]
 FileServiceDep = Annotated[DatastoreFileService, Depends(get_file_service)]
+FileUseCasesDep = Annotated[FileUseCases, Depends(get_file_use_cases)]

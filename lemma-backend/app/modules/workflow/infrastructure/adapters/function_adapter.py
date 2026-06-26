@@ -1,62 +1,32 @@
 """Function adapter for the workflow module."""
 
-from functools import partial
-from pathlib import Path
 from typing import Any, Dict
 from uuid import UUID
 
 from app.core.authorization.context import Context
-from app.core.config import settings
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
-from app.core.infrastructure.jobs.streaq_job_queue import get_streaq_job_queue
+from app.modules.function.domain.entities import FunctionRunStatus, FunctionType
 from app.modules.workflow.domain.ports import FunctionPort
-from app.modules.function.domain.entities import FunctionType
 
 
 class FunctionControlAdapter(FunctionPort):
     def __init__(self, uow: SqlAlchemyUnitOfWork):
         self.uow = uow
-
-        # Initialize dependencies for FunctionService
-        from app.modules.workspace.services.workspace_sandbox_service import (
-            WorkspaceSandboxService,
-        )
-        from app.modules.function.services.function_file_manager import (
-            FunctionFileManager,
-        )
-        from app.modules.function.services.function_service import FunctionService
+        # A short-UoW read repo for run-status reconciliation.
         from app.modules.function.infrastructure.repositories import (
-            FunctionRepository,
             FunctionRunRepository,
         )
-        from app.core.infrastructure.events.message_bus import get_message_bus
-        from app.modules.pod.services.authorization_factory import (
-            create_authorization_service,
-        )
 
-        self.workspace_service = WorkspaceSandboxService()
         self.run_repository = FunctionRunRepository(uow)
-        message_bus = get_message_bus()
-        if settings.effective_storage_backend() == "gcs":
-            if not settings.gcs_storage_bucket:
-                raise ValueError("GCS storage requires GCS_STORAGE_BUCKET")
-            function_storage_factory = partial(
-                FunctionFileManager,
-                bucket_name=settings.gcs_storage_bucket,
-            )
-        else:
-            function_storage_factory = partial(
-                FunctionFileManager,
-                root_path=Path(settings.local_file_storage_root) / "common",
-            )
+        # The function use case scopes its own short UoWs (it must not hold the
+        # workflow's pooled connection across the sandbox round-trip), so build it
+        # from a session factory rather than the workflow's bound uow.
+        from app.core.infrastructure.db.session import async_session_maker
+        from app.core.infrastructure.db.uow_factory import SessionUnitOfWorkFactory
+        from app.modules.function.api.dependencies import build_function_use_cases
 
-        self.function_service = FunctionService(
-            function_repository=FunctionRepository(uow, message_bus=message_bus),
-            run_repository=FunctionRunRepository(uow, message_bus=message_bus),
-            workspace_service=self.workspace_service,
-            storage_factory=function_storage_factory,
-            job_queue=get_streaq_job_queue(),
-            authorization_service=create_authorization_service(uow),
+        self._use_cases = build_function_use_cases(
+            SessionUnitOfWorkFactory(async_session_maker)
         )
 
     async def execute_function(
@@ -67,31 +37,25 @@ class FunctionControlAdapter(FunctionPort):
         user_id: UUID,
         ctx: Context | None = None,
     ) -> Any:
-        run = await self.function_service.execute_function(
+        run = await self._use_cases.execute_function_for_user(
             pod_id=pod_id,
             name=function_name,
             input_data=inputs,
             user_id=user_id,
-            ctx=ctx,
         )
 
-        if run.status == "COMPLETED":  # FunctionRunStatus.COMPLETED
+        if run.status == FunctionRunStatus.COMPLETED:
             return run.output_data
-        elif run.status == "FAILED":
+        if run.status == FunctionRunStatus.FAILED:
             raise RuntimeError(f"Function execution failed: {run.error}")
 
-        function = await self.function_service.repository.get(run.function_id)
-        if function is not None and function.type == FunctionType.JOB:
-            return {
-                "run_id": str(run.id),
-                "status": run.status,
-                "function_type": FunctionType.JOB.value,
-            }
-
-        raise RuntimeError(
-            "API function execution returned a non-terminal run; API functions "
-            "must complete inline"
-        )
+        # A non-terminal run is a JOB dispatched to the worker; suspend the
+        # workflow on the run id (API functions always complete inline or fail).
+        return {
+            "run_id": str(run.id),
+            "status": str(getattr(run.status, "value", run.status)),
+            "function_type": FunctionType.JOB.value,
+        }
 
     async def get_run_status(self, function_run_id: UUID) -> Dict[str, Any]:
         """Status/output of a function run, for completion reconciliation."""

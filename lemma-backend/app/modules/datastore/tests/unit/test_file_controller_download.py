@@ -1,10 +1,10 @@
-"""Controller-level regression for DB pool exhaustion.
+"""Use-case-level regression for DB pool exhaustion.
 
-The streaming download endpoint must resolve + authorize the file *inside* a
-short Unit of Work and read the bytes from storage *after* that UoW (and its
-pooled DB connection) has been released — otherwise a slow/large transfer pins a
-connection for its whole duration. These tests drive the endpoint function
-directly with a tracking ``uow_factory`` to pin that ordering.
+The file sagas must resolve + authorize *inside* a short Unit of Work and do the
+storage / search work *after* that UoW (and its pooled DB connection) has been
+released — otherwise a slow/large transfer or a many-object purge pins a
+connection for its whole duration. These tests drive ``FileUseCases`` (the owner
+of the saga) with a tracking ``uow_factory`` to pin that ordering.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.modules.datastore.api.controllers import file_controller
+from app.modules.datastore.application import file_use_cases as ucmod
+from app.modules.datastore.application.file_use_cases import FileUseCases
 
 
 class _TrackingUowFactory:
@@ -41,6 +42,20 @@ class _TrackingUowFactory:
         return _Cm()
 
 
+def _use_cases(factory, service):
+    """Build FileUseCases with a stubbed pod-context resolution + a fixed
+    per-phase service. ``resolve_pod_context`` is patched globally per test."""
+    return FileUseCases(factory, lambda uow: service)
+
+
+@pytest.fixture(autouse=True)
+def _stub_pod_context(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.authorization.scope.resolve_pod_context",
+        AsyncMock(return_value=object()),
+    )
+
+
 class _FakeFileService:
     def __init__(self, state, content, entity):
         self._state = state
@@ -59,26 +74,13 @@ class _FakeFileService:
 
 
 @pytest.mark.asyncio
-async def test_download_file_resolves_in_uow_then_reads_after_release(monkeypatch):
+async def test_download_file_resolves_in_uow_then_reads_after_release():
     factory = _TrackingUowFactory()
     entity = SimpleNamespace(content_type="text/plain", name="notes.txt")
     service = _FakeFileService(factory.state, b"DOWNLOAD-BYTES", entity)
 
-    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
-    monkeypatch.setattr(
-        file_controller, "_to_file_response", lambda e, uid: SimpleNamespace(pod_id=None)
-    )
-    monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
-    monkeypatch.setattr(
-        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
-
-    response = await file_controller.download_file(
-        uuid4(),
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
-        path="/notes.txt",
-        uow_factory=factory,
+    result = await _use_cases(factory, service).download_file(
+        pod_id=uuid4(), path="/notes.txt", request=SimpleNamespace(), user_id=uuid4()
     )
 
     # Resolve + authorize happened while the connection was held...
@@ -87,10 +89,8 @@ async def test_download_file_resolves_in_uow_then_reads_after_release(monkeypatc
     assert service.read_while_open is False
     assert factory.state["open"] is False
     assert factory.state["opens"] == 1
-
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    assert body == b"DOWNLOAD-BYTES"
-    assert "filename" in response.headers.get("content-disposition", "")
+    assert result.content == b"DOWNLOAD-BYTES"
+    assert result.entity is entity
 
 
 class _FakeChildService:
@@ -110,35 +110,24 @@ class _FakeChildService:
 
 
 @pytest.mark.asyncio
-async def test_download_file_child_resolves_in_uow_then_reads_after_release(monkeypatch):
+async def test_download_child_resolves_in_uow_then_reads_after_release():
     factory = _TrackingUowFactory()
     service = _FakeChildService(factory.state, b"# child")
 
-    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
-    monkeypatch.setattr(
-        file_controller, "_to_file_response", lambda e, uid: SimpleNamespace(pod_id=None)
-    )
-    monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
-    monkeypatch.setattr(
-        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
-
-    response = await file_controller.download_file_child(
-        uuid4(),
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
+    result = await _use_cases(factory, service).download_child(
+        pod_id=uuid4(),
         path="/report.pdf/doc.md",
+        request=SimpleNamespace(),
+        user_id=uuid4(),
         page_start=None,
         page_end=None,
-        uow_factory=factory,
     )
 
     assert service.resolved_while_open is True
     assert service.read_while_open is False
     assert factory.state["open"] is False
-
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    assert body == b"# child"
+    assert result.content == b"# child"
+    assert result.content_type == "text/markdown"
 
 
 class _FakeChildrenService:
@@ -153,47 +142,23 @@ class _FakeChildrenService:
 
     async def load_file_children(self, file_entity, requester_user_id):
         self.load_while_open = self._state["open"]
-        return [
-            {
-                "name": "doc.md",
-                "path": "/report.pdf/doc.md",
-                "kind": "artifact",
-                "content_type": "text/markdown",
-                "size_bytes": 1,
-                "page_number": None,
-            }
-        ]
+        return [{"name": "doc.md", "path": "/report.pdf/doc.md"}]
 
 
 @pytest.mark.asyncio
-async def test_list_children_resolves_in_uow_then_reads_after_release(monkeypatch):
+async def test_list_children_resolves_in_uow_then_reads_after_release():
     factory = _TrackingUowFactory()
     service = _FakeChildrenService(factory.state)
 
-    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
-    monkeypatch.setattr(
-        file_controller,
-        "_to_file_response",
-        lambda e, uid: SimpleNamespace(path="/report.pdf", pod_id=None),
-    )
-    monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
-    monkeypatch.setattr(
-        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
-
-    response = await file_controller.list_file_children(
-        uuid4(),
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
-        path="/report.pdf",
-        uow_factory=factory,
+    result = await _use_cases(factory, service).list_children(
+        pod_id=uuid4(), path="/report.pdf", request=SimpleNamespace(), user_id=uuid4()
     )
 
     # Resolve happened under the connection; the storage manifest read did not.
     assert service.resolved_while_open is True
     assert service.load_while_open is False
     assert factory.state["open"] is False
-    assert len(response.items) == 1
+    assert len(result.children) == 1
 
 
 class _FakeDeleteService:
@@ -221,29 +186,16 @@ async def test_delete_path_in_process_cleanup_runs_after_release(monkeypatch):
     )
     service = _FakeDeleteService(factory.state, cleanup)
 
-    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
-    monkeypatch.setattr(
-        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
     # e2e-style: no datastore worker, so the offload is skipped and cleanup runs
     # in-process — but still only after the UoW (connection) has been released.
-    monkeypatch.setattr(
-        file_controller.settings, "e2e_disable_worker_file_autoindex", True
-    )
+    monkeypatch.setattr(ucmod.settings, "e2e_disable_worker_file_autoindex", True)
     enqueue_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(
-        file_controller, "enqueue_datastore_path_cleanup", enqueue_mock
+    monkeypatch.setattr(ucmod, "enqueue_datastore_path_cleanup", enqueue_mock)
+
+    await _use_cases(factory, service).delete_path(
+        pod_id=uuid4(), path="/x.txt", request=SimpleNamespace(), user_id=uuid4()
     )
 
-    response = await file_controller.delete_path(
-        uuid4(),
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
-        path="/x.txt",
-        uow_factory=factory,
-    )
-
-    assert response.status_code == 204
     assert service.resolved_while_open is True
     enqueue_mock.assert_not_awaited()
     assert service.cleanup_called is True
@@ -267,24 +219,13 @@ async def test_delete_path_offloads_cleanup_after_release(monkeypatch):
         enqueue_open_state["open"] = factory.state["open"]
         return True
 
-    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
-    monkeypatch.setattr(
-        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
-    monkeypatch.setattr(
-        file_controller.settings, "e2e_disable_worker_file_autoindex", False
-    )
-    monkeypatch.setattr(file_controller, "enqueue_datastore_path_cleanup", _enqueue)
+    monkeypatch.setattr(ucmod.settings, "e2e_disable_worker_file_autoindex", False)
+    monkeypatch.setattr(ucmod, "enqueue_datastore_path_cleanup", _enqueue)
 
-    response = await file_controller.delete_path(
-        uuid4(),
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
-        path="/folder",
-        uow_factory=factory,
+    await _use_cases(factory, service).delete_path(
+        pod_id=uuid4(), path="/folder", request=SimpleNamespace(), user_id=uuid4()
     )
 
-    assert response.status_code == 204
     assert service.resolved_while_open is True
     # The cleanup was offloaded (not run in-process) and enqueued only after the
     # connection was released.
@@ -322,36 +263,15 @@ class _FakeUpdateService:
 
 
 @pytest.mark.asyncio
-async def test_update_file_moves_bytes_and_finalizes_outside_uow(monkeypatch):
+async def test_update_file_moves_bytes_and_finalizes_outside_uow():
     factory = _TrackingUowFactory()
     service = _FakeUpdateService(factory.state)
 
-    monkeypatch.setattr(file_controller, "build_file_service", lambda uow: service)
-    monkeypatch.setattr(
-        file_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
-    monkeypatch.setattr(
-        file_controller,
-        "_file_detail_response",
-        AsyncMock(return_value=SimpleNamespace(pod_id=None)),
-    )
-    monkeypatch.setattr(file_controller, "_ensure_file_in_pod", lambda r, pid: None)
-
-    class _Req:
-        async def form(self):
-            return {}
-
-    await file_controller.update_file(
-        uuid4(),
-        _Req(),  # request
-        SimpleNamespace(id=uuid4()),  # user
-        data=None,
-        path="/notes.txt",
-        new_path=None,
-        description=None,
-        search_enabled=None,
-        visibility=None,
-        uow_factory=factory,
+    await _use_cases(factory, service).update_file(
+        pod_id=uuid4(),
+        update_entity=SimpleNamespace(),
+        request=SimpleNamespace(),
+        user_id=uuid4(),
     )
 
     assert service.resolve_open is True  # UoW#1: resolve + authorize + mutate

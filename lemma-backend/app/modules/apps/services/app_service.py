@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import mimetypes
-from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
 from uuid import UUID
@@ -15,7 +13,7 @@ import structlog
 from app.core.authorization.context import Context, ResourceRef, ResourceType, ResourceVisibility
 from app.core.html_document import wrap_html_fragment
 from app.core.ports.widget_content import WidgetArtifact
-from app.core.runtime_config import inject_runtime_config, runtime_config_token
+from app.core.runtime_config import runtime_config_token
 from app.core.authorization.permissions import Permissions
 from app.core.helpers.slug import normalize_public_slug, normalize_resource_name
 from app.modules.apps.domain.entities import (
@@ -33,10 +31,16 @@ from app.modules.apps.domain.errors import (
 from app.modules.apps.domain.ports import (
     AppRepositoryPort,
     AppStorageFactoryPort,
-    AppStoragePort,
 )
 from app.modules.apps.services.app_dist_bundle import load_app_dist_bundle
 from app.modules.apps.services.app_html_validation import lint_app_html
+from app.modules.apps.services.app_storage_phase import (
+    AppStoragePhase,
+    _AppDeletionCleanup,
+    _AssetReadInputs,
+    _UploadPlan,
+    _WrittenBundle,
+)
 from app.modules.pod.domain.pod_entities import PodRole
 from app.modules.pod.domain.visibility import (
     PERSONAL_VISIBILITY_VALUES,
@@ -44,55 +48,6 @@ from app.modules.pod.domain.visibility import (
 )
 
 logger = structlog.get_logger()
-
-mimetypes.add_type("application/javascript", ".js")
-mimetypes.add_type("application/wasm", ".wasm")
-mimetypes.add_type("image/svg+xml", ".svg")
-
-
-@dataclass(frozen=True, slots=True)
-class _AssetReadInputs:
-    """Storage-read inputs resolved from the DB, carried out of the short UoW.
-
-    Lets a controller resolve+authorize+ETag in a short UoW (connection released)
-    and then read the asset bytes from storage with NO pooled connection held.
-    """
-
-    app_id: UUID
-    pod_id: UUID
-    dist_root_path: str
-    normalized_asset_path: str
-    quoted_etag: str
-
-
-@dataclass(frozen=True, slots=True)
-class _AppDeletionCleanup:
-    """Storage paths to purge after an app row is deleted, carried out of the
-    short UoW so the (potentially many-object) cleanup holds no connection."""
-
-    app_id: UUID
-    source_archive_path: str | None
-    releases: tuple
-
-
-@dataclass(frozen=True, slots=True)
-class _UploadPlan:
-    """DB-resolved plan for a bundle upload, carried across the storage write."""
-
-    app_id: UUID
-    pod_id: UUID
-    name: str
-    has_source: bool
-    version: str | None
-    release_root: str | None
-    existing_release_id: UUID | None
-    needs_dist_write: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _WrittenBundle:
-    source_path: str | None
-    dist_archive_path: str | None
 
 
 class AppService:
@@ -105,6 +60,9 @@ class AppService:
         self.repository = app_repository
         self.file_manager_factory = file_manager_factory
         self.authorization_service = authorization_service
+        # Storage side of the asset/archive/bundle/delete sagas, on an object
+        # that holds NO repository (DB-free by construction).
+        self._storage_phase = AppStoragePhase(file_manager_factory)
 
     @staticmethod
     def _quote_etag(etag: str | None) -> str | None:
@@ -138,11 +96,6 @@ class AppService:
         if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise AppNotFoundError("App asset not found")
         return path.as_posix()
-
-    @staticmethod
-    def _guess_media_type(path: str) -> str:
-        media_type, _encoding = mimetypes.guess_type(path)
-        return media_type or "application/octet-stream"
 
     async def _validate_unique_public_slug(
         self,
@@ -210,38 +163,9 @@ class AppService:
         )
 
     async def read_app_asset(self, inputs: _AssetReadInputs) -> AppAssetDocument:
-        """Storage phase: read the asset bytes. Holds NO DB connection — safe to
-        call after the resolving UoW has closed."""
-        storage = self.file_manager_factory(inputs.app_id)
-        normalized_asset_path = inputs.normalized_asset_path
-        is_entrypoint = normalized_asset_path in {"", "index.html"}
-        requested_storage_path = (
-            f"{inputs.dist_root_path}index.html"
-            if not normalized_asset_path
-            else f"{inputs.dist_root_path}{normalized_asset_path}"
-        )
-        try:
-            content = await storage.read_file(requested_storage_path)
-        except FileNotFoundError:
-            # SPA fallback: paths without a file extension are client-side routes —
-            # serve index.html so the React app can handle them.
-            has_extension = "." in PurePosixPath(normalized_asset_path).name if normalized_asset_path else False
-            if has_extension:
-                raise AppNotFoundError(f"App asset '{normalized_asset_path}' not found")
-            index_path = f"{inputs.dist_root_path}index.html"
-            try:
-                content = await storage.read_file(index_path)
-            except FileNotFoundError as exc:
-                raise AppNotFoundError("App index.html not found") from exc
-            is_entrypoint = True
-        if is_entrypoint:
-            content = inject_runtime_config(content, inputs.pod_id)
-        return AppAssetDocument(
-            content=content,
-            media_type=self._guess_media_type(requested_storage_path if not is_entrypoint else "index.html"),
-            etag=inputs.quoted_etag,
-            is_entrypoint=is_entrypoint,
-        )
+        """Storage phase: read the asset bytes — delegated to the repo-free
+        ``AppStoragePhase`` (holds no DB connection)."""
+        return await self._storage_phase.read_asset(inputs)
 
     async def _build_asset_document(
         self,
@@ -263,22 +187,6 @@ class AppService:
         if isinstance(resolved, AppAssetDocument):
             return resolved
         return await self.read_app_asset(resolved)
-
-    async def _delete_release_files(
-        self,
-        storage: AppStoragePort,
-        release: AppReleaseEntity,
-    ) -> None:
-        await storage.delete_prefix(release.dist_root_path)
-        if release.dist_archive_path and not release.dist_archive_path.startswith(release.dist_root_path):
-            await self._delete_file_if_present(storage, release.dist_archive_path)
-
-    @staticmethod
-    async def _delete_file_if_present(storage: AppStoragePort, path: str) -> None:
-        try:
-            await storage.delete_file(path)
-        except FileNotFoundError:
-            return
 
     async def _require_pod_permission(
         self,
@@ -529,17 +437,10 @@ class AppService:
         )
 
     async def cleanup_app_storage(self, cleanup: _AppDeletionCleanup) -> None:
-        """Delete an app's stored bytes. Holds NO DB connection; call after
-        resolve_delete_app's UoW has committed. Best-effort (rows already gone)."""
-        try:
-            storage = self.file_manager_factory(cleanup.app_id)
-            if cleanup.source_archive_path:
-                await self._delete_file_if_present(storage, cleanup.source_archive_path)
-            for release in cleanup.releases:
-                await self._delete_release_files(storage, release)
-            await storage.delete_prefix("")
-        except Exception as exc:  # pragma: no cover - best-effort cleanup
-            logger.warning("App storage cleanup failed for %s: %s", cleanup.app_id, exc)
+        """Delete an app's stored bytes — delegated to the repo-free
+        ``AppStoragePhase`` (holds no DB connection). Call after
+        resolve_delete_app's UoW has committed."""
+        await self._storage_phase.cleanup_storage(cleanup)
 
     async def delete_app(
         self,
@@ -614,21 +515,12 @@ class AppService:
         source_archive_bytes: bytes | None,
         dist_archive_bytes: bytes | None,
     ) -> _WrittenBundle:
-        """Write uploaded bytes to storage. Holds NO DB connection — call between
+        """Write uploaded bytes to storage — delegated to the repo-free
+        ``AppStoragePhase`` (holds no DB connection). Call between
         resolve_upload_bundle and finalize_upload_bundle."""
-        storage = self.file_manager_factory(plan.app_id)
-        source_path: str | None = None
-        if plan.has_source and source_archive_bytes is not None:
-            source_path = "source/archive.zip"
-            await storage.write_file(source_path, source_archive_bytes)
-        dist_archive_path: str | None = None
-        if plan.needs_dist_write and dist_archive_bytes is not None:
-            bundle = load_app_dist_bundle(dist_archive_bytes)
-            for item in bundle.files:
-                await storage.write_file(f"{plan.release_root}{item.path}", item.content)
-            dist_archive_path = f"{plan.release_root}archive.zip"
-            await storage.write_file(dist_archive_path, dist_archive_bytes)
-        return _WrittenBundle(source_path=source_path, dist_archive_path=dist_archive_path)
+        return await self._storage_phase.write_bundle(
+            plan, source_archive_bytes, dist_archive_bytes
+        )
 
     async def finalize_upload_bundle(
         self, plan: _UploadPlan, written: _WrittenBundle, user_id: UUID
@@ -853,14 +745,9 @@ class AppService:
         return app.id, release.dist_archive_path
 
     async def read_archive(self, app_id: UUID, archive_path: str) -> bytes:
-        """Read an archive's bytes from app storage for an already-resolved app.
-        Storage only — **no DB session** — safe to call after the resolving UoW
-        closed."""
-        storage = self.file_manager_factory(app_id)
-        content = await storage.read_file(archive_path)
-        if isinstance(content, str):
-            return content.encode("utf-8")
-        return content
+        """Read an archive's bytes — delegated to the repo-free ``AppStoragePhase``
+        (holds no DB connection). Safe after the resolving UoW closed."""
+        return await self._storage_phase.read_archive(app_id, archive_path)
 
     def _normalize_app_visibility(self, entity: AppEntity) -> None:
         entity.visibility = self._normalize_visibility_value(entity.visibility).value

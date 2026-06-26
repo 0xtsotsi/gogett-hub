@@ -10,11 +10,8 @@ from fastapi.responses import StreamingResponse
 
 from app.core.api.dependencies import CurrentUser, get_uow_factory
 from app.core.api.pagination import parse_uuid_page_token
-from app.core.authorization.current import (
-    reset_current_context,
-    set_current_context,
-)
-from app.core.authorization.dependencies import PodContextDep, resolve_pod_context
+from app.core.authorization.dependencies import PodContextDep
+from app.core.authorization.scope import pod_context_scope
 from app.core.domain.errors import BadRequestError
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.agent.api.controllers.shared import (
@@ -383,22 +380,17 @@ async def send_message(
     subscription = channel_service.subscribe([conversation_channel(conversation_id)])
     iterator = await subscription.__aenter__()
     try:
-        async with uow_factory() as uow:
-            ctx = await resolve_pod_context(
-                session=uow.session, request=request, user_id=user.id, pod_id=pod_id
+        async with pod_context_scope(
+            uow_factory, request=request, user_id=user.id, pod_id=pod_id
+        ) as scope:
+            service = _build_conversation_service(scope.uow)
+            result = await service.add_user_message_and_start_run(
+                conversation_id=conversation_id,
+                user_id=user.id,
+                content=data.content,
+                pod_id=pod_id,
+                message_metadata=data.metadata,
             )
-            token = set_current_context(ctx)
-            try:
-                service = _build_conversation_service(uow)
-                result = await service.add_user_message_and_start_run(
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    content=data.content,
-                    pod_id=pod_id,
-                    message_metadata=data.metadata,
-                )
-            finally:
-                reset_current_context(token)
     except (AgentNotFoundError, ConversationNotFoundError) as exc:
         await close_subscription(type(exc), exc, exc.__traceback__)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
@@ -450,20 +442,15 @@ async def stream_conversation(
     # rather than via a request-scoped PodContextDep, which would pin a pooled
     # connection for the whole StreamingResponse. See send_message for rationale.
     try:
-        async with uow_factory() as uow:
-            ctx = await resolve_pod_context(
-                session=uow.session, request=request, user_id=user.id, pod_id=pod_id
+        async with pod_context_scope(
+            uow_factory, request=request, user_id=user.id, pod_id=pod_id
+        ) as scope:
+            service = _build_conversation_service(scope.uow)
+            await service.get_conversation(
+                conversation_id=conversation_id,
+                user_id=user.id,
+                pod_id=pod_id,
             )
-            token = set_current_context(ctx)
-            try:
-                service = _build_conversation_service(uow)
-                await service.get_conversation(
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    pod_id=pod_id,
-                )
-            finally:
-                reset_current_context(token)
     except (AgentNotFoundError, ConversationNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
 
@@ -471,20 +458,15 @@ async def stream_conversation(
         async with channel_service.subscribe(
             [conversation_channel(conversation_id)]
         ) as iterator:
-            async with uow_factory() as uow:
-                ctx = await resolve_pod_context(
-                    session=uow.session, request=request, user_id=user.id, pod_id=pod_id
+            async with pod_context_scope(
+                uow_factory, request=request, user_id=user.id, pod_id=pod_id
+            ) as scope:
+                service = _build_conversation_service(scope.uow)
+                active_run = await service.get_active_agent_run(
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    pod_id=pod_id,
                 )
-                token = set_current_context(ctx)
-                try:
-                    service = _build_conversation_service(uow)
-                    active_run = await service.get_active_agent_run(
-                        conversation_id=conversation_id,
-                        user_id=user.id,
-                        pod_id=pod_id,
-                    )
-                finally:
-                    reset_current_context(token)
             if active_run is None:
                 return
 

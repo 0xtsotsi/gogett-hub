@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated
 from fastapi import Depends
 
-from app.core.api.dependencies import UoWDep
+from app.core.api.dependencies import UoWDep, get_uow_factory
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.authorization.context import ResourceType
 from app.core.authorization.dependencies import (
@@ -25,6 +25,8 @@ from app.modules.function.infrastructure.repositories import (
     FunctionRepository,
     FunctionRunRepository,
 )
+from app.modules.function.application.function_run_executor import FunctionRunExecutor
+from app.modules.function.application.function_use_cases import FunctionUseCases
 from app.modules.function.services.function_file_manager import FunctionFileManager
 from app.modules.function.services.function_service import FunctionService
 from app.modules.pod.services.authorization_factory import create_authorization_service
@@ -42,14 +44,15 @@ def _get_function_storage_factory():
     )
 
 
-def get_function_service(uow: UoWDep) -> FunctionService:
-    """Provide FunctionService."""
+def build_function_service(uow) -> FunctionService:
+    """Construct a bound FunctionService (single wiring source). Used by read
+    endpoints and as the per-phase collaborator the use case builds inside each
+    short UoW."""
     message_bus = get_message_bus()
-    workspace_service = get_function_workspace_runtime()
     return FunctionService(
         function_repository=FunctionRepository(uow, message_bus=message_bus),
         run_repository=FunctionRunRepository(uow, message_bus=message_bus),
-        workspace_service=workspace_service,
+        workspace_service=get_function_workspace_runtime(),
         storage_factory=_get_function_storage_factory(),
         job_queue=get_streaq_job_queue(),
         icon_service=IconService(),
@@ -57,32 +60,39 @@ def get_function_service(uow: UoWDep) -> FunctionService:
     )
 
 
-def build_function_service_with_factory(
-    uow_factory: UnitOfWorkFactory,
-) -> FunctionService:
-    """Build a FunctionService in factory mode (scopes its own short UoWs).
+def get_function_service(uow: UoWDep) -> FunctionService:
+    """Provide FunctionService."""
+    return build_function_service(uow)
 
-    Used by the sandbox-touching API paths (create/update/execute) and the
-    agent-as-tool function caller so the pooled DB connection is released during
-    the multi-second sandbox round-trip (schema extraction / function execution)
-    instead of being held for the whole request. Mirrors the worker's
-    ``AppWorkerContext.build_function_service_with_factory()``. Authorization on
-    these paths flows through the request ``Context`` (``ctx.require``), so no
-    session-bound ``authorization_service`` is needed.
-    """
-    return FunctionService(
-        function_repository=None,
-        run_repository=None,
+
+def build_function_run_executor(uow_factory: UnitOfWorkFactory) -> FunctionRunExecutor:
+    """Construct the sandbox execution engine (factory mode — short-UoW status
+    writes). No repos held, no ctx."""
+    return FunctionRunExecutor(
+        uow_factory=uow_factory,
         workspace_service=get_function_workspace_runtime(),
         storage_factory=_get_function_storage_factory(),
-        job_queue=get_streaq_job_queue(),
-        icon_service=IconService(),
-        authorization_service=None,
-        uow_factory=uow_factory,
     )
 
 
+def build_function_use_cases(uow_factory: UnitOfWorkFactory) -> FunctionUseCases:
+    """Construct the function use-case layer. The API and the worker build the
+    same object so they share one saga implementation."""
+    return FunctionUseCases(
+        uow_factory,
+        build_function_service,
+        build_function_run_executor(uow_factory),
+    )
+
+
+def get_function_use_cases(
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+) -> FunctionUseCases:
+    return build_function_use_cases(uow_factory)
+
+
 FunctionServiceDep = Annotated[FunctionService, Depends(get_function_service)]
+FunctionUseCasesDep = Annotated[FunctionUseCases, Depends(get_function_use_cases)]
 
 # Auth dependencies for controller routes
 FunctionViewerDep = require_action(Permissions.FUNCTION_READ, pod_from_path)

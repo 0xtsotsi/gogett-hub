@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from app.core.api.dependencies import UoWDep
+from app.core.api.dependencies import UoWDep, get_uow_factory
 from app.core.authorization.context import ResourceType
 from app.core.authorization.dependencies import (
     pod_from_path,
@@ -16,9 +16,11 @@ from app.core.authorization.dependencies import (
 )
 from app.core.authorization.permissions import Permissions
 from app.core.config import settings
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.infrastructure.events.message_bus import get_message_bus
 from app.core.ports.widget_content import WidgetContentReader
 from app.modules.agent.services.widget_asset_service import WidgetAssetService
+from app.modules.apps.application.app_use_cases import AppUseCases
 from app.modules.apps.infrastructure.repositories import AppRepository
 from app.modules.apps.services.app_file_manager import AppFileManager
 from app.modules.apps.services.app_service import AppService
@@ -51,6 +53,21 @@ def get_app_service(uow: UoWDep) -> AppService:
 
 
 AppServiceDep = Annotated[AppService, Depends(get_app_service)]
+
+
+def build_app_use_cases(uow_factory: UnitOfWorkFactory) -> AppUseCases:
+    """Construct the app use-case layer (factory mode). The API and the worker
+    build the same object so they share one saga implementation."""
+    return AppUseCases(uow_factory, build_app_service)
+
+
+def get_app_use_cases(
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+) -> AppUseCases:
+    return build_app_use_cases(uow_factory)
+
+
+AppUseCasesDep = Annotated[AppUseCases, Depends(get_app_use_cases)]
 
 
 def get_widget_content_reader(uow: UoWDep) -> WidgetContentReader:

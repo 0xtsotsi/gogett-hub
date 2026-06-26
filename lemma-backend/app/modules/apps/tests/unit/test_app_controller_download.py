@@ -1,9 +1,10 @@
-"""Controller-level regression for DB pool exhaustion.
+"""Use-case-level regression for DB pool exhaustion.
 
-The app archive download endpoints must resolve + authorize the archive location
-*inside* a short Unit of Work and read the archive bytes from storage *after*
-that UoW (and its pooled DB connection) has been released. These tests drive the
-endpoint functions directly with a tracking ``uow_factory`` to pin that ordering.
+The app archive downloads must resolve + authorize the archive location *inside*
+a short Unit of Work and read the archive bytes from storage *after* that UoW
+(and its pooled DB connection) has been released. These tests drive
+``AppUseCases`` (the owner of the saga) with a tracking ``uow_factory`` to pin
+that ordering.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.modules.apps.api.controllers import app_controller
+from app.modules.apps.application.app_use_cases import AppUseCases
 
 
 class _TrackingUowFactory:
@@ -57,52 +58,44 @@ class _FakeAppService:
         return self._content
 
 
-@pytest.mark.asyncio
-async def test_source_archive_resolves_in_uow_then_reads_after_release(monkeypatch):
-    factory = _TrackingUowFactory()
-    service = _FakeAppService(factory.state, b"SOURCE-ZIP")
-    monkeypatch.setattr(app_controller, "build_app_service", lambda uow: service)
+@pytest.fixture(autouse=True)
+def _stub_pod_context(monkeypatch):
     monkeypatch.setattr(
-        app_controller, "resolve_pod_context", AsyncMock(return_value=object())
+        "app.core.authorization.scope.resolve_pod_context",
+        AsyncMock(return_value=object()),
     )
 
-    response = await app_controller.download_app_source_archive(
-        uuid4(),
-        "dashboard",
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
-        uow_factory=factory,
+
+def _use_cases(factory, service):
+    return AppUseCases(factory, lambda uow: service)
+
+
+@pytest.mark.asyncio
+async def test_source_archive_resolves_in_uow_then_reads_after_release():
+    factory = _TrackingUowFactory()
+    service = _FakeAppService(factory.state, b"SOURCE-ZIP")
+
+    archive = await _use_cases(factory, service).download_source_archive(
+        pod_id=uuid4(), app_name="dashboard", request=SimpleNamespace(), user_id=uuid4()
     )
 
     assert service.resolved_while_open is True
     assert service.read_while_open is False
     assert factory.state["open"] is False
     assert factory.state["opens"] == 1
-
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    assert body == b"SOURCE-ZIP"
+    assert archive == b"SOURCE-ZIP"
 
 
 @pytest.mark.asyncio
-async def test_dist_archive_resolves_in_uow_then_reads_after_release(monkeypatch):
+async def test_dist_archive_resolves_in_uow_then_reads_after_release():
     factory = _TrackingUowFactory()
     service = _FakeAppService(factory.state, b"DIST-ZIP")
-    monkeypatch.setattr(app_controller, "build_app_service", lambda uow: service)
-    monkeypatch.setattr(
-        app_controller, "resolve_pod_context", AsyncMock(return_value=object())
-    )
 
-    response = await app_controller.download_app_dist_archive(
-        uuid4(),
-        "dashboard",
-        SimpleNamespace(id=uuid4()),
-        SimpleNamespace(),  # request
-        uow_factory=factory,
+    archive = await _use_cases(factory, service).download_dist_archive(
+        pod_id=uuid4(), app_name="dashboard", request=SimpleNamespace(), user_id=uuid4()
     )
 
     assert service.resolved_while_open is True
     assert service.read_while_open is False
     assert factory.state["open"] is False
-
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    assert body == b"DIST-ZIP"
+    assert archive == b"DIST-ZIP"

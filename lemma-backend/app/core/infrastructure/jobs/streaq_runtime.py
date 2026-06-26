@@ -85,29 +85,13 @@ class AppWorkerContext:
             authorization_service=create_authorization_service(uow),
         )
 
-    def build_function_service_with_factory(self):
-        """Build a FunctionService that uses uow_factory for scoped DB sessions.
+    def build_function_use_cases(self):
+        """Build the function use-case layer for the worker (same object the API
+        builds). Used to execute queued runs without holding a pooled connection
+        across the sandbox round-trip."""
+        from app.modules.function.api.dependencies import build_function_use_cases
 
-        Unlike ``build_function_service(uow)``, this does not hold a DB session
-        for the service's entire lifetime. The service opens short UoWs around
-        each DB operation, releasing connections between them — critical for
-        long-running tasks (e.g. function execution) that must not hold pooled
-        connections idle during external I/O.
-        """
-        from app.modules.function.services.function_service import FunctionService
-        from app.modules.workspace.services.workspace_tool_runtime import (
-            get_function_workspace_runtime,
-        )
-
-        return FunctionService(
-            function_repository=None,
-            run_repository=None,
-            workspace_service=get_function_workspace_runtime(),
-            storage_factory=self.build_function_storage_factory(),
-            job_queue=self.job_queue,
-            authorization_service=None,
-            uow_factory=self.uow_factory,
-        )
+        return build_function_use_cases(self.uow_factory)
 
     def build_surface_event_handler(self, uow: SqlAlchemyUnitOfWork):
         from app.modules.agent.api.dependencies import get_conversation_service

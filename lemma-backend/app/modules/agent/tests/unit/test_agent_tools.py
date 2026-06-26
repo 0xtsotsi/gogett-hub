@@ -855,7 +855,9 @@ async def test_callable_function_tool_passes_flat_model_args_as_input(
     )
 
     factory = AgentCallableToolFactory(uow_factory=lambda: _FakeUow())
-    monkeypatch.setattr(factory, "_build_function_service", lambda uow: _FakeService())
+    monkeypatch.setattr(
+        factory, "_build_function_service_with_factory", lambda: _FakeService()
+    )
     tool = factory._build_function_tool(function, parent_agent=parent_agent)
 
     user_id = uuid4()

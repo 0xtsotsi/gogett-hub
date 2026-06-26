@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from app.core.api.dependencies import UoWDep
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.authorization.context import ResourceType
 from app.core.authorization.dependencies import (
     pod_from_path,
@@ -53,6 +54,31 @@ def get_function_service(uow: UoWDep) -> FunctionService:
         job_queue=get_streaq_job_queue(),
         icon_service=IconService(),
         authorization_service=create_authorization_service(uow),
+    )
+
+
+def build_function_service_with_factory(
+    uow_factory: UnitOfWorkFactory,
+) -> FunctionService:
+    """Build a FunctionService in factory mode (scopes its own short UoWs).
+
+    Used by the sandbox-touching API paths (create/update/execute) and the
+    agent-as-tool function caller so the pooled DB connection is released during
+    the multi-second sandbox round-trip (schema extraction / function execution)
+    instead of being held for the whole request. Mirrors the worker's
+    ``AppWorkerContext.build_function_service_with_factory()``. Authorization on
+    these paths flows through the request ``Context`` (``ctx.require``), so no
+    session-bound ``authorization_service`` is needed.
+    """
+    return FunctionService(
+        function_repository=None,
+        run_repository=None,
+        workspace_service=get_function_workspace_runtime(),
+        storage_factory=_get_function_storage_factory(),
+        job_queue=get_streaq_job_queue(),
+        icon_service=IconService(),
+        authorization_service=None,
+        uow_factory=uow_factory,
     )
 
 

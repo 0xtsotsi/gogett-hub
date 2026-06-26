@@ -210,6 +210,70 @@ class FunctionService:
     async def _validate_resources(self, function: FunctionEntity) -> None:
         _ = function
 
+    # -- Factory-aware DB helpers -----------------------------------------
+    #
+    # In factory mode (worker tasks + the sandbox-touching API endpoints) every
+    # DB op runs in its own SHORT UoW whose pooled connection is released on exit,
+    # so creation/execution never hold a connection across a sandbox round-trip.
+    # Without a factory the bound request-scoped repositories are used unchanged.
+
+    @contextlib.asynccontextmanager
+    async def _repos(self):
+        """Yield ``(function_repository, run_repository)`` for one DB step.
+
+        Callers MUST keep sandbox/external I/O OUTSIDE this block — in factory
+        mode the connection is returned to the pool when the block exits.
+        """
+        if self._uow_factory is not None:
+            from app.core.infrastructure.events.message_bus import get_message_bus
+            from app.modules.function.infrastructure.repositories import (
+                FunctionRepository,
+                FunctionRunRepository,
+            )
+
+            message_bus = get_message_bus()
+            async with self._uow_factory() as uow:
+                yield (
+                    FunctionRepository(uow, message_bus=message_bus),
+                    FunctionRunRepository(uow, message_bus=message_bus),
+                )
+        else:
+            yield self.repository, self.run_repository
+
+    async def _run_status_update(self, run_id: UUID, **kwargs) -> None:
+        """Persist a non-terminal run-status update in its own short UoW so no
+        pooled connection is held across the surrounding sandbox I/O."""
+        async with self._repos() as (_function_repository, run_repository):
+            await run_repository.update_run(run_id, **kwargs)
+
+    async def _load_function_by_name(
+        self, pod_id: UUID, name: str, *, ctx: Context | None = None
+    ) -> FunctionEntity | None:
+        async with self._repos() as (function_repository, _run_repository):
+            return await function_repository.get_by_name(pod_id, name, ctx=ctx)
+
+    async def _create_run(self, run_entity: FunctionRunEntity) -> FunctionRunEntity:
+        async with self._repos() as (_function_repository, run_repository):
+            return await run_repository.create_run(run_entity)
+
+    async def _create_function_checked(self, entity: FunctionEntity) -> FunctionEntity:
+        async with self._repos() as (function_repository, _run_repository):
+            existing = await function_repository.get_by_name(entity.pod_id, entity.name)
+            if existing:
+                raise FunctionConflictError(
+                    f"Function with name '{entity.name}' already exists "
+                    f"in pod {entity.pod_id}"
+                )
+            return await function_repository.create(entity)
+
+    async def _update_function_row(self, function: FunctionEntity) -> FunctionEntity:
+        async with self._repos() as (function_repository, _run_repository):
+            return await function_repository.update(function)
+
+    async def _delete_function_row(self, function_id: UUID) -> bool:
+        async with self._repos() as (function_repository, _run_repository):
+            return await function_repository.delete(function_id)
+
     async def create_function(
         self,
         entity: FunctionEntity,
@@ -222,21 +286,20 @@ class FunctionService:
         else:
             raise RuntimeError("Context is required for function authorization")
 
-        existing = await self.repository.get_by_name(entity.pod_id, entity.name)
-        if existing:
-            raise FunctionConflictError(
-                f"Function with name '{entity.name}' already exists in pod {entity.pod_id}"
-            )
-
         entity.user_id = user_id
         entity.visibility = _normalize_function_visibility(entity.visibility)
         await self._validate_resources(entity)
-        created = await self.repository.create(entity)
+        # Conflict check + insert in one short UoW (released before schema work).
+        created = await self._create_function_checked(entity)
         assert created.id is not None
 
         if not code:
             return created
 
+        # storage write + schema extraction provision/run a sandbox — keep them
+        # OUT of any DB session so a pooled connection is not held for the
+        # (multi-second) round-trip. Persist the extracted schemas in a fresh
+        # short UoW afterwards.
         path = f"{slugify(created.name)}.py"
         storage = self.storage_factory(created.id)
         await storage.write_file(path, code)
@@ -252,7 +315,7 @@ class FunctionService:
         created.code_path = path
         created.code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
         created.status = FunctionStatus.READY
-        return await self.repository.update(created)
+        return await self._update_function_row(created)
 
     async def get_function_by_name(
         self,
@@ -264,7 +327,8 @@ class FunctionService:
         include_code: bool = True,
         ctx: Context | None = None,
     ) -> FunctionEntity | None:
-        function = await self.repository.get_by_name(pod_id, name, ctx=ctx)
+        async with self._repos() as (function_repository, _run_repository):
+            function = await function_repository.get_by_name(pod_id, name, ctx=ctx)
         if not function:
             if raise_not_found:
                 raise FunctionNotFoundError(f"Function {name} not found")
@@ -338,11 +402,12 @@ class FunctionService:
         if update_entity.type is not None:
             function.type = update_entity.type
 
-        updated = await self.repository.update(function)
+        updated = await self._update_function_row(function)
         if self.icon_service and old_icon_url != updated.icon_url:
             await self.icon_service.delete_by_url(old_icon_url)
         if ctx is not None:
-            refreshed = await self.repository.get_by_name(pod_id, name, ctx=ctx)
+            async with self._repos() as (function_repository, _run_repository):
+                refreshed = await function_repository.get_by_name(pod_id, name, ctx=ctx)
             return refreshed or updated
         return updated
 
@@ -353,7 +418,7 @@ class FunctionService:
         user_id: UUID,
         ctx: Context | None = None,
     ) -> bool:
-        function = await self.repository.get_by_name(pod_id, name, ctx=ctx)
+        function = await self._load_function_by_name(pod_id, name, ctx=ctx)
         if function is None:
             raise FunctionNotFoundError(f"Function {name} not found")
         assert function.id is not None
@@ -376,9 +441,11 @@ class FunctionService:
                 function_id=function.id,
             )
 
-        deleted = await self.repository.delete(function.id)
+        deleted = await self._delete_function_row(function.id)
         if not deleted:
             raise FunctionNotFoundError(f"Function {name} not found")
+        # Icon cleanup is a storage call — run it after the DB session closes so
+        # no pooled connection is held across it.
         if self.icon_service:
             await self.icon_service.delete_by_url(function.icon_url)
         return True
@@ -631,7 +698,7 @@ class FunctionService:
 
         run.started_at = datetime.now()
         run.status = FunctionRunStatus.RUNNING
-        await self.run_repository.update_run(
+        await self._run_status_update(
             run.id,
             status=run.status,
             started_at=run.started_at,
@@ -657,7 +724,7 @@ class FunctionService:
             )
             try:
                 run.workspace_session_id = session.session_id
-                await self.run_repository.update_run(
+                await self._run_status_update(
                     run.id,
                     workspace_session_id=session.session_id,
                     workspace_process_id=None,
@@ -698,7 +765,7 @@ class FunctionService:
         # the entity directly here instead of via get_function_by_name, which would
         # additionally enforce the viewer/read permission. (Inspecting a function
         # through the read API still requires function.read.)
-        function = await self.repository.get_by_name(pod_id, name, ctx=ctx)
+        function = await self._load_function_by_name(pod_id, name, ctx=ctx)
         if function is None:
             raise FunctionNotFoundError(f"Function {name} not found")
         assert function.id is not None
@@ -729,7 +796,7 @@ class FunctionService:
                 )
             )
 
-        run = await self.run_repository.create_run(run_entity)
+        run = await self._create_run(run_entity)
         assert run.id is not None
 
         if function.type == FunctionType.JOB:
@@ -848,18 +915,7 @@ class FunctionService:
             run.started_at = started_at
 
         async def _update_run_status(**kwargs):
-            if self._uow_factory is not None:
-                async with self._uow_factory() as uow:
-                    from app.modules.function.infrastructure.repositories import (
-                        FunctionRunRepository,
-                    )
-                    from app.core.infrastructure.events.message_bus import get_message_bus
-
-                    await FunctionRunRepository(
-                        uow, message_bus=get_message_bus()
-                    ).update_run(run.id, **kwargs)
-            else:
-                await self.run_repository.update_run(run.id, **kwargs)
+            await self._run_status_update(run.id, **kwargs)
 
         async def _attempt() -> FunctionInvokeResponse:
             session = await self.workspace_service.get_session(

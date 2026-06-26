@@ -2,9 +2,10 @@
 
 from uuid import UUID
 from typing import Optional
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
-from app.core.api.dependencies import UoWDep
+from app.core.api.dependencies import UoWDep, get_uow_factory
+from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.authorization.grants import (
     list_grantee_resource_grants,
     normalize_pod_resource_grants,
@@ -36,11 +37,11 @@ from app.modules.function.api.schemas.function_schemas import (
 )
 from app.modules.function.domain.entities import (
     FunctionEntity,
-    FunctionRunStatus,
     FunctionUpdateEntity,
 )
 from app.modules.function.api.dependencies import (
     FunctionServiceDep,
+    build_function_service_with_factory,
     FunctionViewerDep,
     FunctionResourceDeleteDep,
     FunctionResourceEditorDep,
@@ -95,10 +96,14 @@ async def create_function(
     request: Request,
     pod_id: UUID,
     data: CreateFunctionRequest,
-    function_service: FunctionServiceDep,
     ctx: PodContextDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FunctionActionResponse:
     """Create a new function in a pod."""
+    # Factory-mode service: schema extraction provisions/runs a sandbox, so the
+    # service scopes its DB writes in short UoWs and holds no pooled connection
+    # during that round-trip.
+    function_service = build_function_service_with_factory(uow_factory)
     user: UserEntity = request.state.user
     user_id = user.id
     entity_data = {
@@ -299,10 +304,13 @@ async def update_function(
     pod_id: UUID,
     function_name: str,
     data: UpdateFunctionRequest,
-    function_service: FunctionServiceDep,
     ctx: PodContextDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FunctionActionResponse:
     """Update a function."""
+    # Factory mode: re-deriving schemas runs the code in a sandbox, so no pooled
+    # connection is held across that round-trip.
+    function_service = build_function_service_with_factory(uow_factory)
     user: UserEntity = request.state.user
     user_id = user.id
 
@@ -333,10 +341,13 @@ async def delete_function(
     request: Request,
     pod_id: UUID,
     function_name: str,
-    function_service: FunctionServiceDep,
     ctx: PodContextDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FunctionMessageResponse:
     """Delete a function."""
+    # Factory mode: icon cleanup is a storage call, so the DB ops run in short
+    # UoWs and no pooled connection is held across it.
+    function_service = build_function_service_with_factory(uow_factory)
     user: UserEntity = request.state.user
     user_id = user.id
 
@@ -361,18 +372,24 @@ async def execute_function(
     pod_id: UUID,
     function_name: str,
     data: ExecuteFunctionRequest,
-    function_service: FunctionServiceDep,
-    uow: UoWDep,
     ctx: PodContextDep,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
 ) -> FunctionRunResponse:
     """Execute a function."""
     user: UserEntity = request.state.user
     user_id = user.id
     user_email = getattr(user, "email", None)
     if user_email is None:
-        resolved_user = await UserRepository(uow).get(user_id)
+        async with uow_factory() as uow:
+            resolved_user = await UserRepository(uow).get(user_id)
         user_email = str(resolved_user.email) if resolved_user is not None else None
 
+    # Factory-mode service: a synchronous (API-type) function runs in a sandbox
+    # for up to _API_FUNCTION_TIMEOUT_SECONDS; scoping the run-status writes in
+    # short UoWs keeps a pooled connection from being held for the whole run. The
+    # run row (and the JOB enqueue event) commit inside the service's own short
+    # UoW, so no controller-level commit is needed.
+    function_service = build_function_service_with_factory(uow_factory)
     run = await function_service.execute_function(
         pod_id,
         function_name,
@@ -381,8 +398,6 @@ async def execute_function(
         user_email,
         ctx=ctx,
     )
-    if run.status in {FunctionRunStatus.PENDING, FunctionRunStatus.RUNNING}:
-        await uow.commit()
 
     return FunctionRunResponse.model_validate(run)
 

@@ -28,7 +28,6 @@ from app.modules.agent.infrastructure.repositories import (
     AgentRepository,
 )
 from app.modules.agent.tools.context import BaseAgentContext
-from app.modules.pod.services.authorization_factory import create_authorization_service
 from app.modules.function.domain.entities import (
     FunctionEntity,
     FunctionRunEntity,
@@ -198,12 +197,15 @@ class AgentCallableToolFactory:
             ctx: RunContext[BaseAgentContext],
             **request: Any,
         ) -> dict[str, Any]:
+            # Build a delegated-workload context so execute_function authorizes
+            # the call as the agent (which holds the function.execute grant),
+            # acting on behalf of the user. Execution needs only function.execute
+            # — the agent need not also be granted function.read. Build it in a
+            # SHORT UoW and release the connection before executing: a synchronous
+            # (API-type) function runs in a sandbox for up to
+            # _API_FUNCTION_TIMEOUT_SECONDS and must not pin a pooled worker
+            # connection for that whole round-trip.
             async with self.uow_factory() as uow:
-                # Build a delegated-workload context so execute_function authorizes
-                # the call as the agent (which holds the function.execute grant),
-                # acting on behalf of the user. Execution needs only
-                # function.execute — the agent need not also be granted
-                # function.read.
                 auth_ctx = await AuthorizationDataService(
                     uow.session
                 ).build_delegated_workload_context(
@@ -214,23 +216,26 @@ class AgentCallableToolFactory:
                     delegation_scope=frozenset([Permissions.FUNCTION_EXECUTE]),
                     delegation_actor_name=parent_agent_name,
                 )
-                # Reuse the agent's cached workspace token instead of minting a
-                # separate function-workload token.
-                run_as_workload = RunAsWorkload(
-                    workload_type=ctx.deps.workload_type or "agent",
-                    workload_id=parent_agent_id,
-                    workload_name=parent_agent_name,
-                )
-                service = self._build_function_service(uow)
-                run = await service.execute_function(
-                    pod_id=function.pod_id,
-                    name=function.name,
-                    input_data=dict(request),
-                    user_id=ctx.deps.user_id,
-                    ctx=auth_ctx,
-                    run_as_workload=run_as_workload,
-                )
-                await uow.commit()
+
+            # Reuse the agent's cached workspace token instead of minting a
+            # separate function-workload token.
+            run_as_workload = RunAsWorkload(
+                workload_type=ctx.deps.workload_type or "agent",
+                workload_id=parent_agent_id,
+                workload_name=parent_agent_name,
+            )
+            # Factory-mode service: scopes its run-row writes in short UoWs, so no
+            # connection is held during the sandbox execution. The run row (and
+            # the JOB enqueue event) commit inside the service's own short UoW.
+            service = self._build_function_service_with_factory()
+            run = await service.execute_function(
+                pod_id=function.pod_id,
+                name=function.name,
+                input_data=dict(request),
+                user_id=ctx.deps.user_id,
+                ctx=auth_ctx,
+                run_as_workload=run_as_workload,
+            )
 
             # JOB functions enqueue a background run and return PENDING; await it.
             if function.type == FunctionType.JOB and run.status in (
@@ -390,27 +395,36 @@ class AgentCallableToolFactory:
             f"Output schema: {_schema_preview(agent.output_schema)}"
         )
 
-    def _build_function_service(self, uow) -> FunctionService:
+    def _function_storage_factory(self):
         if settings.effective_storage_backend() == "gcs":
             if not settings.gcs_storage_bucket:
                 raise ValueError("GCS storage requires GCS_STORAGE_BUCKET")
-            function_storage_factory = partial(
+            return partial(
                 FunctionFileManager,
                 bucket_name=settings.gcs_storage_bucket,
             )
-        else:
-            function_storage_factory = partial(
-                FunctionFileManager,
-                root_path=Path(settings.local_file_storage_root) / "common",
-            )
+        return partial(
+            FunctionFileManager,
+            root_path=Path(settings.local_file_storage_root) / "common",
+        )
+
+    def _build_function_service_with_factory(self) -> FunctionService:
+        """Factory-mode FunctionService for executing a function as an agent tool.
+
+        Scopes its own short UoWs, so a synchronous (API-type) function's sandbox
+        round-trip does not hold a pooled DB connection in the worker.
+        Authorization is carried by the delegated ``ctx`` passed to
+        ``execute_function``.
+        """
         return FunctionService(
-            function_repository=FunctionRepository(uow),
-            run_repository=FunctionRunRepository(uow),
+            function_repository=None,
+            run_repository=None,
             workspace_service=self._build_workspace_service(),
-            storage_factory=function_storage_factory,
+            storage_factory=self._function_storage_factory(),
             job_queue=get_streaq_job_queue(),
             icon_service=IconService(),
-            authorization_service=create_authorization_service(uow),
+            authorization_service=None,
+            uow_factory=self.uow_factory,
         )
 
     def _build_workspace_service(self) -> WorkspaceToolRuntime:

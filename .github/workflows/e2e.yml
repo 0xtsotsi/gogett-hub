@@ -1,8 +1,10 @@
 name: Backend E2E (mocked)
 
-# The mocked backend e2e suite — mock LLM (deterministic FunctionModel) +
+# The fast mocked backend e2e suite — mock LLM (deterministic FunctionModel) +
 # in-process fake AgentBox, so it needs NO model API keys and NO Docker workspace
 # image (Postgres / Redis / SuperTokens come from testcontainers on the runner).
+# Runs the parallel API suite (excludes slow/worker/workspace/provider, which need
+# the real-worker runtime and are run separately in real mode).
 #
 # It is intentionally NOT part of the per-commit CI (it spins up containers and
 # is slower). Run it once before merging a PR, two ways:
@@ -41,4 +43,4 @@ jobs:
       - name: Sync deps
         run: uv sync
       - name: E2E tests (mocked LLM + fake AgentBox)
-        run: make test-e2e
+        run: make test-e2e-fast E2E_WORKERS=2

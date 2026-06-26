@@ -52,7 +52,11 @@ from app.modules.datastore.infrastructure.models.datastore_models import (
 from app.modules.pod.infrastructure.models.pod_models import Pod
 from app.modules.workflow.infrastructure.models import FlowModel
 
-pytestmark = pytest.mark.e2e
+# `slow`: this is a multi-volume latency *benchmark* (creates rows, runs EXPLAIN
+# ANALYZE, times list endpoints). It only asserts basic correctness (200s) and is
+# load-sensitive, so it must not run in the parallel fast gate where contention
+# makes it flaky. It still runs in the full/runtime suites.
+pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 # Volume sweep: number of rows in the pod (or pods in the org). Picked to show
 # where latency starts to bend. 1000 is the API max page size for datastore.

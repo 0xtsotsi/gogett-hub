@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -123,7 +124,15 @@ def provider_environment(*, harness_kind: str, mcp: dict[str, Any]) -> dict[str,
     if harness_kind == "CODEX":
         env.update(_mcp_auth_env(mcp))
     if harness_kind == "OPENCODE":
-        env["XDG_DATA_HOME"] = _opencode_data_home()
+        data_home = _opencode_data_home()
+        env["XDG_DATA_HOME"] = data_home
+        # opencode reads provider credentials from $XDG_DATA_HOME/opencode/
+        # auth.json. We point XDG_DATA_HOME at an isolated daemon dir (so daemon
+        # sessions don't collide with the user's interactive opencode), which
+        # means the user's `opencode auth login` credentials aren't visible --
+        # every provider model then fails with "Model not found". Mirror the
+        # user's auth into the daemon data home so configured providers work.
+        _seed_opencode_auth(data_home)
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
             merged_opencode_config(env.get("OPENCODE_CONFIG_CONTENT"), mcp),
             separators=(",", ":"),
@@ -387,6 +396,30 @@ def _opencode_data_home() -> str:
     if configured:
         return configured
     return str(Path(tempfile.gettempdir()) / "lemma-opencode-daemon-data")
+
+
+def _seed_opencode_auth(data_home: str) -> None:
+    """Mirror the user's opencode auth into the daemon's isolated data home.
+
+    opencode stores provider credentials at
+    ``$XDG_DATA_HOME/opencode/auth.json``. Because the daemon runs opencode under
+    an isolated ``XDG_DATA_HOME``, the user's ``opencode auth login`` credentials
+    (kept under their real data home) aren't visible, so every provider model
+    fails with "Model not found". Copy the user's auth.json across on each run
+    (best-effort; cheap, and stays fresh if the user re-auths) so configured
+    providers resolve. Never raises: missing/unreadable auth just means the
+    daemon falls back to whatever credentials already exist there.
+    """
+    source_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    source = Path(source_home) / "opencode" / "auth.json"
+    destination = Path(data_home) / "opencode" / "auth.json"
+    try:
+        if not source.is_file() or source.resolve() == destination.resolve():
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    except OSError:
+        pass
 
 
 def _is_provider_scoped_lemma_tool_name(value: str) -> bool:

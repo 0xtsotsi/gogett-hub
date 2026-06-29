@@ -1607,6 +1607,53 @@ def test_discover_harness_models_allows_explicit_override(monkeypatch):
     )
 
 
+def test_order_opencode_models_pushes_free_tier_last():
+    from lemma_cli.daemon.catalog import _order_opencode_models
+
+    ordered = _order_opencode_models(
+        [
+            "opencode/deepseek-v4-flash-free",
+            "fireworks-ai/accounts/fireworks/models/deepseek-v4-flash",
+            "opencode/mimo-v2.5-free",
+            "fireworks-ai/accounts/fireworks/models/glm-5p1",
+        ]
+    )
+    # Reliable provider models first (stable order), flaky *-free tier last, so
+    # the default selection (first model) doesn't land on a rate-limited model.
+    assert ordered == [
+        "fireworks-ai/accounts/fireworks/models/deepseek-v4-flash",
+        "fireworks-ai/accounts/fireworks/models/glm-5p1",
+        "opencode/deepseek-v4-flash-free",
+        "opencode/mimo-v2.5-free",
+    ]
+
+
+def test_seed_opencode_auth_copies_user_credentials(tmp_path, monkeypatch):
+    from lemma_cli.daemon.mcp import _seed_opencode_auth
+
+    source_home = tmp_path / "user-share"
+    (source_home / "opencode").mkdir(parents=True)
+    (source_home / "opencode" / "auth.json").write_text('{"fireworks-ai":"creds"}', encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(source_home))
+
+    data_home = tmp_path / "daemon-data"
+    _seed_opencode_auth(str(data_home))
+
+    seeded = data_home / "opencode" / "auth.json"
+    assert seeded.is_file()
+    assert seeded.read_text(encoding="utf-8") == '{"fireworks-ai":"creds"}'
+
+
+def test_seed_opencode_auth_noop_without_source(tmp_path, monkeypatch):
+    from lemma_cli.daemon.mcp import _seed_opencode_auth
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "empty-home"))
+    data_home = tmp_path / "daemon-data"
+    # No source auth.json -> no-op, and must never raise.
+    _seed_opencode_auth(str(data_home))
+    assert not (data_home / "opencode" / "auth.json").exists()
+
+
 def test_normalize_provider_model_name_maps_claude_aliases():
     # Bare aliases resolve to standard-context full ids.
     assert daemon.normalize_provider_model_name("CLAUDE_CODE", "sonnet") == "claude-sonnet-4-6"

@@ -516,6 +516,7 @@ async def db_manager(e2e_settings) -> AsyncGenerator[DatabaseManager, None]:
     from app.modules.usage.infrastructure import models as usage_models
     from app.modules.agent_surfaces.infrastructure import models as agent_surface_models
     from app.modules.pod.infrastructure import models as pod_role_models
+    from app.modules.pod_import.infrastructure import models as pod_import_models
     _ = (
         user_models,
         organization_models,
@@ -530,6 +531,7 @@ async def db_manager(e2e_settings) -> AsyncGenerator[DatabaseManager, None]:
         usage_models,
         agent_surface_models,
         pod_role_models,
+        pod_import_models,
     )
 
     import asyncio as _asyncio

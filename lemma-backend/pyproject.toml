@@ -51,6 +51,9 @@ dependencies = [
     "fastembed>=0.7.4",
     "agentbox-client",
     "pypdfium2>=5.10.1",
+    # Shared pod-bundle logic (requirements/capabilities, table diff, JSONC) —
+    # one source of truth with the CLI for the pod_import plan builder.
+    "lemma-pod-bundle",
 ]
 
 [project.optional-dependencies]
@@ -95,3 +98,4 @@ allow-direct-references = true
 [tool.uv.sources]
 lemma-connectors = { path = "lemma-connectors", editable = true }
 agentbox-client = { path = "../agentbox-client", editable = true }
+lemma-pod-bundle = { path = "../lemma-pod-bundle", editable = true }

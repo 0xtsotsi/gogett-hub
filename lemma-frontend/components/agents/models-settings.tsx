@@ -96,7 +96,7 @@ export function ModelsSettings({
                             type="button"
                             onClick={() => setScope(option.value)}
                             className={cn(
-                                'rounded px-3 py-1.5 text-sm font-medium transition-colors',
+                                'models-settings-scope-button rounded px-3 py-1.5 text-sm font-medium transition-colors',
                                 scope === option.value
                                     ? 'bg-[var(--surface-2)] text-[var(--text-primary)] shadow-xs'
                                     : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]',
@@ -212,7 +212,7 @@ function ProvidersSection({
                                     key={preset.id}
                                     type="button"
                                     onClick={() => setConnect({ kind: preset.kind, name: preset.name, baseUrl: preset.baseUrl })}
-                                    className="rounded-md border border-[var(--border-subtle)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--field-border-hover)] hover:text-[var(--text-primary)]"
+                                    className="models-settings-provider-button rounded-md border border-[var(--border-subtle)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--field-border-hover)] hover:text-[var(--text-primary)]"
                                 >
                                     {preset.name}
                                 </button>
@@ -222,7 +222,7 @@ function ProvidersSection({
                                     key={option.kind}
                                     type="button"
                                     onClick={() => setConnect({ kind: option.kind, name: '', baseUrl: option.defaultBaseUrl })}
-                                    className="flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border-strong)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--field-border-hover)] hover:text-[var(--text-primary)]"
+                                    className="models-settings-provider-button flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border-strong)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--field-border-hover)] hover:text-[var(--text-primary)]"
                                 >
                                     <Plus className="size-3.5" />
                                     {option.kind === 'openai' ? 'Custom (OpenAI)' : 'Custom (Anthropic)'}

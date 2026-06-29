@@ -111,20 +111,24 @@ export const useExportPod = () =>
         },
     });
 
-/** Apply (or resume) an import. Re-callable: completed steps are skipped. */
+/** Apply (or resume) an import. Re-callable: completed steps are skipped.
+ * `variables` resolves the bundle's ${var} placeholders (connector accounts);
+ * pod-member assignees default to the importing user. */
 export const useApplyImport = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async ({
             podId,
             importId,
+            variables,
         }: {
             podId: string;
             importId: string;
+            variables?: Record<string, string>;
         }): Promise<PodImport> => {
             const res = await lemmaFetch(`/pods/${podId}/imports/${importId}/apply`, {
                 method: 'POST',
-                body: JSON.stringify({}),
+                body: JSON.stringify({ variables: variables ?? {} }),
             });
             if (!res.ok) throw new Error(await readError(res));
             return res.json();

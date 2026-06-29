@@ -19,7 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID
 
-from lemma_pod_bundle import extract_requirements
+from lemma_pod_bundle import extract_portable_variables, extract_requirements
 
 from app.core.authorization.context import Context
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
@@ -67,7 +67,10 @@ class BundleExporter:
             await self._export_surfaces(root, pod_id, ctx)
             await self._export_apps(root, pod_id, user_id, ctx)
 
-            # Same derivation the import side reads — symmetry in one line.
+            # Template non-portable ids (account/member) into ${var} placeholders
+            # and record them under pod.json -> variables, THEN derive the
+            # requirements that read those variables. Order matters.
+            extract_portable_variables(root)
             extract_requirements(root)
             return pod_name, _zip_dir(root)
 

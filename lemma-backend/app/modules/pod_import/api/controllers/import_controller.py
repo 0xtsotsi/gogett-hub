@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from app.core.api.dependencies import CurrentUser, UoWDep
 from app.core.authorization.dependencies import PodContextDep
 from app.modules.pod_import.api.dependencies import ImportAppServiceDep
-from app.modules.pod_import.api.schemas import PodImportResponse
+from app.modules.pod_import.api.schemas import ApplyImportRequest, PodImportResponse
 
 router = APIRouter(prefix="/pods/{pod_id}/imports", tags=["imports"])
 
@@ -65,10 +65,15 @@ async def apply_import(
     service: ImportAppServiceDep,
     uow: UoWDep,
     ctx: PodContextDep,
+    body: ApplyImportRequest | None = None,
 ) -> PodImportResponse:
     """Apply the import, or resume a previously failed one. Re-callable: already
-    completed steps are skipped. Reads the bundle staged at create time."""
-    entity = await service.apply(import_id=import_id, ctx=ctx)
+    completed steps are skipped. Reads the bundle staged at create time.
+    ``variables`` resolves the bundle's ${var} placeholders (connector accounts;
+    pod-member assignees default to the importing user)."""
+    entity = await service.apply(
+        import_id=import_id, ctx=ctx, variables=(body.variables if body else None)
+    )
     if entity is None or entity.pod_id != pod_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
     async with uow:

@@ -103,6 +103,46 @@ function RequirementsList({ requirements }: { requirements: Record<string, unkno
     );
 }
 
+/** Editable inputs for the variables a bundle needs resolved (connector
+ * accounts + free variables). Members default to the importing user server-side,
+ * so they're not asked for here. */
+function ResolveInputs({
+    requirements,
+    values,
+    onChange,
+}: {
+    requirements: Record<string, unknown>;
+    values: Record<string, string>;
+    onChange: (key: string, value: string) => void;
+}) {
+    const connectors = (requirements.connectors as { key: string; resolution?: { var?: string } }[]) ?? [];
+    const variables = (requirements.variables as { key: string; purpose?: string }[]) ?? [];
+    const fields = [
+        ...connectors
+            .map((c) => ({ key: c.resolution?.var, label: `connector · ${c.key}`, hint: 'account id' }))
+            .filter((f): f is { key: string; label: string; hint: string } => !!f.key),
+        ...variables.map((v) => ({ key: v.key, label: `variable · ${v.key}`, hint: v.purpose ?? '' })),
+    ];
+    if (!fields.length) return null;
+    return (
+        <Section title="Resolve">
+            <div className="space-y-2">
+                {fields.map((f) => (
+                    <label key={f.key} className="flex items-center gap-3 text-sm">
+                        <span className="w-44 shrink-0 text-[var(--text-secondary)]">{f.label}</span>
+                        <input
+                            className="form-field-control flex-1 rounded-[8px] border border-[var(--border-subtle)] bg-transparent px-2 py-1"
+                            placeholder={f.hint}
+                            value={values[f.key] ?? ''}
+                            onChange={(e) => onChange(f.key, e.target.value)}
+                        />
+                    </label>
+                ))}
+            </div>
+        </Section>
+    );
+}
+
 function StepRow({ step }: { step: ImportStep }) {
     const icon =
         step.status === 'COMPLETED' ? (
@@ -153,6 +193,7 @@ export function ImportPodBundleWizard({ podId }: { podId: string }) {
     const [phase, setPhase] = useState<Phase>('upload');
     const [file, setFile] = useState<File | null>(null);
     const [imp, setImp] = useState<PodImport | null>(null);
+    const [vars, setVars] = useState<Record<string, string>>({});
 
     const createImport = useCreateImport();
     const applyImport = useApplyImport();
@@ -176,7 +217,7 @@ export function ImportPodBundleWizard({ podId }: { podId: string }) {
     const onApply = async () => {
         if (!imp) return;
         try {
-            const result = await applyImport.mutateAsync({ podId, importId: imp.id });
+            const result = await applyImport.mutateAsync({ podId, importId: imp.id, variables: vars });
             setImp(result);
             setPhase('result');
             if (result.status === 'COMPLETED') toast.success('Import complete');
@@ -225,6 +266,11 @@ export function ImportPodBundleWizard({ podId }: { podId: string }) {
                     <>
                         <CapabilityList capabilities={imp.capabilities} />
                         <RequirementsList requirements={imp.requirements} />
+                        <ResolveInputs
+                            requirements={imp.requirements}
+                            values={vars}
+                            onChange={(key, value) => setVars((prev) => ({ ...prev, [key]: value }))}
+                        />
                         <PlanList imp={imp} />
                         {destructiveCount > 0 && (
                             <div className="mb-5 flex items-start gap-2 rounded-[10px] border border-[var(--state-error)] bg-[color-mix(in_srgb,var(--state-error)_8%,transparent)] px-3 py-2.5">

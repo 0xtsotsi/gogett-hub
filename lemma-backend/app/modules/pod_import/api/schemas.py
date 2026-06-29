@@ -14,6 +14,13 @@ from pydantic import BaseModel, ConfigDict
 from app.modules.pod_import.domain.entities import PodImportEntity
 
 
+class ApplyImportRequest(BaseModel):
+    """Values resolving the bundle's ${var} placeholders — connector accounts
+    keyed by variable name. Pod-member assignees default to the importing user."""
+
+    variables: dict[str, str] = {}
+
+
 class ImportStepResponse(BaseModel):
     resource_type: str
     resource_name: str

@@ -66,7 +66,13 @@ class ImportAppService:
     async def get(self, import_id: UUID) -> PodImportEntity | None:
         return await self._repo.get(import_id)
 
-    async def apply(self, *, import_id: UUID, ctx: Context) -> PodImportEntity | None:
+    async def apply(
+        self,
+        *,
+        import_id: UUID,
+        ctx: Context,
+        variables: dict[str, str] | None = None,
+    ) -> PodImportEntity | None:
         entity = await self._repo.get(import_id)
         if entity is None:
             return None
@@ -75,10 +81,38 @@ class ImportAppService:
             raise FileNotFoundError(
                 f"Staged bundle for import {import_id} not found — re-upload to re-plan."
             )
+        replacements = await self._build_replacements(entity, bundle_root, variables or {})
         apply_ctx = ImportApplyContext(
             pod_id=entity.pod_id,
             user_id=entity.user_id,
             bundle_path=bundle_root,
             ctx=ctx,
+            variables=replacements,
         )
         return await self._engine.apply(entity, ctx=apply_ctx)
+
+    async def _build_replacements(
+        self, entity: PodImportEntity, bundle_root, supplied: dict[str, str]
+    ) -> dict[str, str]:
+        """Map the bundle's ${var} placeholders to concrete values: supplied
+        connector accounts win; pod-member assignees default to the importing
+        user's membership in the target pod."""
+        from lemma_pod_bundle import build_replacements, declared_variables
+
+        member_default = await self._importing_member_id(entity.pod_id, entity.user_id)
+        return build_replacements(
+            declared_variables(bundle_root),
+            supplied=supplied,
+            pod_member_default=member_default,
+        )
+
+    async def _importing_member_id(self, pod_id: UUID, user_id: UUID) -> str | None:
+        from app.modules.pod.api.dependencies import get_pod_member_service
+
+        try:
+            member = await get_pod_member_service(self.uow).get_pod_member_by_user_id(
+                pod_id, user_id, requester_user_id=user_id
+            )
+            return str(member.id)
+        except Exception:
+            return None

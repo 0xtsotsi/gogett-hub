@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
-from lemma_pod_bundle import read_manifest, read_table_data
+from lemma_pod_bundle import read_manifest, read_table_data, resolve_placeholders
 
 from app.core.authorization.context import Context
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
@@ -32,11 +32,21 @@ _RESERVED_COLUMNS = frozenset({"created_at", "updated_at", "user_id"})
 class ImportApplyContext:
     """Per-apply context handed to the applier (satisfies the engine's port)."""
 
-    def __init__(self, *, pod_id: UUID, user_id: UUID, bundle_path: Path, ctx: Context):
+    def __init__(
+        self,
+        *,
+        pod_id: UUID,
+        user_id: UUID,
+        bundle_path: Path,
+        ctx: Context,
+        variables: dict[str, str] | None = None,
+    ):
         self.pod_id = pod_id
         self.user_id = user_id
         self.bundle_path = bundle_path
         self.ctx = ctx
+        # ${var} -> value map: portable account/member ids resolved at apply time.
+        self.variables = variables or {}
 
 
 class ResourceApplyNotWired(NotImplementedError):
@@ -63,6 +73,9 @@ class BackendResourceApplier:
 
     async def apply_step(self, step: ImportStep, ctx: ImportApplyContext) -> None:
         manifest = read_manifest(ctx.bundle_path, step.resource_type, step.resource_name)
+        # Resolve ${var} placeholders (account/member ids) before the handler
+        # constructs entities; unsupplied ones drop their field.
+        manifest = resolve_placeholders(manifest, ctx.variables)
         handler = self._handlers.get(step.resource_type)
         if handler is None:
             raise ResourceApplyNotWired(

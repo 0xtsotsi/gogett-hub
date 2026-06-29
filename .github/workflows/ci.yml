@@ -32,10 +32,12 @@ jobs:
           filters: |
             backend:
               - 'lemma-backend/**'
+              - 'lemma-pod-bundle/**'
               - '.github/workflows/ci.yml'
             python_sdk:
               - 'lemma-python/**'
               - 'lemma-cli/**'
+              - 'lemma-pod-bundle/**'
               - 'lemma-skills/**'
               - 'lemma-stack/**'
               - 'install.sh'
@@ -97,6 +99,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ./lemma-python
+          pip install -e ./lemma-pod-bundle
           pip install -e ./lemma-cli
           pip install pytest pytest-asyncio
       - name: Test (CLI + Python SDK, offline only)

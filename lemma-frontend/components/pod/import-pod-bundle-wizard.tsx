@@ -12,6 +12,7 @@ import {
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
     type Capability,
     type ImportStep,
@@ -32,7 +33,7 @@ const TIER_LABEL: Record<string, string> = {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
     return (
         <div className="mb-5">
-            <p className="mb-2 text-[13px] font-medium text-[var(--text-secondary)]">{title}</p>
+            <p className="mb-2 text-sm font-medium text-[var(--text-secondary)]">{title}</p>
             {children}
         </div>
     );
@@ -130,8 +131,8 @@ function ResolveInputs({
                 {fields.map((f) => (
                     <label key={f.key} className="flex items-center gap-3 text-sm">
                         <span className="w-44 shrink-0 text-[var(--text-secondary)]">{f.label}</span>
-                        <input
-                            className="form-field-control flex-1 rounded-[8px] border border-[var(--border-subtle)] bg-transparent px-2 py-1"
+                        <Input
+                            className="flex-1"
                             placeholder={f.hint}
                             value={values[f.key] ?? ''}
                             onChange={(e) => onChange(f.key, e.target.value)}
@@ -180,7 +181,7 @@ function StepRow({ step }: { step: ImportStep }) {
 function PlanList({ imp }: { imp: PodImport }) {
     return (
         <Section title={`Plan · ${imp.progress_done}/${imp.progress_total}`}>
-            <ul className="rounded-[10px] border border-[var(--border-subtle)] bg-[var(--surface-panel)] px-3">
+            <ul className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3">
                 {imp.plan.map((step) => (
                     <StepRow key={`${step.resource_type}/${step.resource_name}`} step={step} />
                 ))}
@@ -235,14 +236,14 @@ export function ImportPodBundleWizard({ podId }: { podId: string }) {
 
     return (
         <div className="mx-auto w-full max-w-2xl">
-            <div className="surface-panel rounded-[12px] p-6">
+            <div className="surface-panel p-6">
                 {phase === 'upload' && (
                     <>
                         <p className="mb-4 text-sm text-[var(--text-secondary)]">
                             Upload a pod bundle archive (.zip or .tar.gz). We&apos;ll show you exactly
                             what it does and what it needs before anything is applied.
                         </p>
-                        <label className="flex cursor-pointer flex-col items-center gap-2 rounded-[10px] border border-dashed border-[var(--border-strong)] px-4 py-8 text-center hover:bg-[var(--surface-2)]">
+                        <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--border-strong)] px-4 py-8 text-center hover:bg-[var(--surface-2)]">
                             <Upload className="h-5 w-5 text-[var(--text-tertiary)]" />
                             <span className="text-sm text-[var(--text-secondary)]">
                                 {file ? file.name : 'Choose a bundle archive'}
@@ -273,7 +274,7 @@ export function ImportPodBundleWizard({ podId }: { podId: string }) {
                         />
                         <PlanList imp={imp} />
                         {destructiveCount > 0 && (
-                            <div className="mb-5 flex items-start gap-2 rounded-[10px] border border-[var(--state-error)] bg-[color-mix(in_srgb,var(--state-error)_8%,transparent)] px-3 py-2.5">
+                            <div className="mb-5 flex items-start gap-2 rounded-lg border border-[var(--state-error)] px-3 py-2.5">
                                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--state-error)]" />
                                 <p className="text-sm text-[var(--text-primary)]">
                                     {destructiveCount} table change(s) will drop or rebuild columns —

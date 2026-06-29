@@ -63,3 +63,17 @@ export function getLemmaAuthUrl(): string {
 export async function getLemmaRequestHeaders(initial?: HeadersInit): Promise<HeadersInit> {
     return { ...(initial || {}) };
 }
+
+/**
+ * Authenticated fetch for backend endpoints not yet in the generated SDK.
+ * Reuses the SDK's AuthManager to build credentials/headers exactly as the
+ * typed methods do (Bearer token or SuperTokens cookie), so anti-CSRF and
+ * session refresh continue to work via the global SuperTokens fetch interceptor.
+ */
+export async function lemmaFetch(path: string, init: RequestInit = {}): Promise<Response> {
+    const authedInit = getLemmaClient().auth.getRequestInit(init);
+    const headers = new Headers(authedInit.headers as HeadersInit);
+    // For multipart uploads let the browser set the boundary Content-Type.
+    if (init.body instanceof FormData) headers.delete('Content-Type');
+    return fetch(`${getLemmaApiBaseUrl()}${path}`, { ...authedInit, headers });
+}

@@ -21,6 +21,11 @@ export function PodSettingsNav({ podId }: { podId: string }) {
             description: 'Spend, limits, and model activity for this pod.',
             href: `/pod/${podId}/settings/usage`,
         },
+        {
+            label: 'Import',
+            description: 'Bring a pod bundle into this pod.',
+            href: `/pod/${podId}/import`,
+        },
     ];
 
     return (

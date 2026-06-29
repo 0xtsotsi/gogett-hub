@@ -5,6 +5,7 @@ import type {
     AgentRuntimeConfig,
     AgentRuntimeProfileListResponse,
     AgentRuntimeProfileResponse,
+    AvailableModelInfo,
     RuntimeModelCatalogEntry,
 } from 'lemma-sdk';
 
@@ -13,6 +14,7 @@ export const HARNESS_LOGOS: Partial<Record<string, string>> = {
     ANTIGRAVITY: '/harnesslogos/antigravity.png',
     CLAUDE_CODE: '/harnesslogos/claudecode.png',
     CODEX: '/harnesslogos/codex.png',
+    CURSOR: '/harnesslogos/cursor.png',
     OPENCODE: '/harnesslogos/opencode.png',
 };
 export const LOCAL_RUNTIME_SETUP_COMMANDS = ['lemma auth login', 'lemma daemon start --background'];
@@ -23,6 +25,8 @@ export const LOCAL_RUNTIME_SETUP_OPTIONS: Array<{
     { harnessKind: HarnessKind.CODEX, title: 'Codex' },
     { harnessKind: HarnessKind.CLAUDE_CODE, title: 'Claude Code' },
     { harnessKind: HarnessKind.OPENCODE, title: 'OpenCode' },
+    { harnessKind: HarnessKind.CURSOR, title: 'Cursor' },
+    { harnessKind: HarnessKind.ANTIGRAVITY, title: 'Antigravity' },
 ];
 
 export function runtimeKey(runtime: AgentRuntimeConfig): string {
@@ -245,6 +249,33 @@ export function runtimeAvailabilityLabel(profile: AgentRuntimeProfileResponse): 
                 ? profile.daemon_status
                 : null;
     }
+}
+
+// Flatten the runtime-profile catalog into the flat, plain-language model list
+// the ModelPicker consumes. Every pickable model across every saved profile
+// (Lemma built-in, BYO providers, coding agents) becomes one row, tagged with
+// its profile so the picker can group by provider. Provider/daemon *creation*
+// is intentionally not represented here — that lives in the manage surface.
+export function runtimeCatalogToModelOptions(
+    catalog?: AgentRuntimeProfileListResponse,
+    availableHarnesses?: AgentHarnessListResponse,
+): AvailableModelInfo[] {
+    if (!catalog?.items?.length) return [];
+    const options: AvailableModelInfo[] = [];
+    for (const profile of catalog.items) {
+        for (const model of runtimeModels(profile, availableHarnesses)) {
+            options.push({
+                id: model.name as AvailableModelInfo['id'],
+                name: model.display_name ?? model.name,
+                runtime: { profile_id: profile.id, model_name: model.name },
+                profile,
+                profile_id: profile.id,
+                harness_kind: profile.derived_harness_kind ?? undefined,
+                description: modelAdvisory(model),
+            });
+        }
+    }
+    return options;
 }
 
 export function splitModelNames(value: string): string[] {

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from .catalog import normalize_provider_model_name
+
 
 LEMMA_MCP_SERVER_NAME = "lemma_tools"
 LEMMA_MCP_TOKEN_ENV = "LEMMA_MCP_TOKEN"
@@ -31,18 +33,22 @@ DEFAULT_CWD_DIRS = {
     "OPENCODE": "lemma-opencode",
 }
 
+# Claude Code's own (non-MCP) tools, passed via --disallowedTools so the agent
+# uses the pod's MCP tools instead of the harness's local file/shell tools.
+# Each name must match a tool that the installed Claude Code actually exposes:
+# an unknown name makes Claude Code print
+#   Permission deny rule "<name>" matches no known tool — check for typos.
+# on every run. LS, MultiEdit, NotebookRead, and TodoRead were removed in
+# Claude Code 2.x (folded into Glob/Bash, Edit, Read, and TodoWrite), so they
+# are intentionally absent here — keep this list in sync as Claude Code evolves.
 CLAUDE_CODE_NATIVE_TOOLS = (
     "Agent",
     "Bash",
     "Edit",
     "Glob",
     "Grep",
-    "LS",
-    "MultiEdit",
     "NotebookEdit",
-    "NotebookRead",
     "Read",
-    "TodoRead",
     "TodoWrite",
     "Write",
 )
@@ -75,6 +81,10 @@ def provider_command(
 ) -> list[str]:
     template = provider_command_template(harness_kind)
     mcp_config_args = provider_mcp_command_args(harness_kind=harness_kind, mcp=mcp)
+    # Rewrite bare aliases (e.g. Claude Code's "sonnet") to the standard-context
+    # model id before they reach the CLI, so profiles saved with the raw alias
+    # don't opt into the paid 1M-context variant.
+    model_name = normalize_provider_model_name(harness_kind, model_name)
     values = {
         "model": shlex.quote(model_name),
         "prompt": shlex.quote(prompt_text),

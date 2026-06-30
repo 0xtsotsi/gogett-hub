@@ -285,6 +285,14 @@ def _human_oauth_enabled() -> bool:
     return bool(os.getenv("RUN_HUMAN_OAUTH"))
 
 
+# Read-only "smoke" operations per OAuth app, to prove the connected account
+# actually works for real execution. (slug, payload).
+_SMOKE_OPS: dict[str, tuple[str, dict]] = {
+    "google_calendar": ("GOOGLECALENDAR_LIST_CALENDARS", {}),
+    "gmail": ("GMAIL_GET_PROFILE", {}),
+}
+
+
 def _wait_for_active_connection(composio: Composio, connection_id: str, timeout: float = 300.0):
     deadline = time.time() + timeout
     last_status = None
@@ -304,6 +312,7 @@ def _wait_for_active_connection(composio: Composio, connection_id: str, timeout:
 
 @pytest.mark.provider
 @pytest.mark.human
+@pytest.mark.timeout(900)
 @pytest.mark.asyncio
 async def test_composio_oauth_connect_and_reconnect_human(
     authenticated_client: AsyncClient,
@@ -316,33 +325,36 @@ async def test_composio_oauth_connect_and_reconnect_human(
     composio = _composio_client()
 
     org_id = fixed_test_org["id"]
-    app = os.getenv("TEST_OAUTH_APP", "canva")
+    app = os.getenv("TEST_OAUTH_APP", "google_calendar")
     await _reseed_composio_app(db_session, app)
     auth_config = await _seed_composio_auth_config(db_session, app, org_id)
     cr_url = f"/organizations/{org_id}/connectors/connect-requests"
     callback_url = "/connectors/connect-requests/oauth/callback"
 
-    async def _consent_and_complete() -> dict:
+    async def _run_smoke_op(account_id: str) -> None:
+        smoke = _SMOKE_OPS.get(app)
+        if not smoke:
+            return
+        op_name, payload = smoke
+        exec_resp = await authenticated_client.post(
+            f"/organizations/{org_id}/connectors/{auth_config.name}/operations/"
+            f"{op_name}/execute",
+            json={"payload": payload, "account_id": account_id},
+        )
+        assert exec_resp.status_code == 200, exec_resp.text
+        print(f"\n=== {op_name} succeeded: {json.dumps(exec_resp.json())[:300]} ===\n")
+
+    async def _initiate() -> tuple[str, str, str]:
+        """POST a connect request; return (state, connection_id, authorization_url)."""
         resp = await authenticated_client.post(
             cr_url, json={"auth_config_id": str(auth_config.id)}
         )
         assert resp.status_code == 200, resp.text
-        connect_request = resp.json()
-        authorization_url = connect_request["authorization_url"]
-        attributes = connect_request["attributes"] or {}
-        state = attributes["state"]
-        connection_id = attributes["provider_state"]
+        body = resp.json()
+        attributes = body["attributes"] or {}
+        return attributes["state"], attributes["provider_state"], body["authorization_url"]
 
-        print(f"\n\n=== HUMAN ACTION REQUIRED: authorize {app} in your browser ===")
-        print(authorization_url)
-        print("Waiting for you to complete consent...\n")
-        try:
-            webbrowser.open(authorization_url)
-        except Exception:
-            pass
-
-        _wait_for_active_connection(composio, connection_id)
-
+    async def _complete(state: str, connection_id: str) -> dict:
         # Drive our real callback in-process (the e2e app is ASGI, not on a
         # reachable port) — this exercises exchange_code_for_credentials for real.
         cb = await authenticated_client.get(
@@ -353,22 +365,41 @@ async def test_composio_oauth_connect_and_reconnect_human(
         return cb.json()
 
     try:
-        # First connect — the Canva fix: succeeds even when no raw access_token
-        # is surfaced (the connection_id is the authoritative credential).
-        account = await _consent_and_complete()
+        # --- First connect (the only human consent needed) ------------------
+        state, connection_id, authorization_url = await _initiate()
+        print(f"\n\n=== HUMAN ACTION REQUIRED: authorize {app} in your browser ===")
+        print(authorization_url)
+        print("Waiting for you to complete consent...\n")
+        try:
+            webbrowser.open(authorization_url)
+        except Exception:
+            pass
+
+        _wait_for_active_connection(composio, connection_id)
+        account = await _complete(state, connection_id)
+        # The Canva fix: succeeds even when no raw access_token is surfaced.
         assert account["status"] == AccountStatus.CONNECTED.value
         original_account_id = account["id"]
 
-        # Simulate the account becoming unusable.
+        # The connected account works for a real operation.
+        await _run_smoke_op(original_account_id)
+
+        # --- Reconnect on the same account_id (no second consent) -----------
+        # Mark the account unusable, then re-initiate: this must be ALLOWED
+        # (no 409). We complete the callback by reusing the still-active first
+        # connection, so no second browser consent is required.
         row = await db_session.get(Account, original_account_id)
         row.status = AccountStatus.REAUTH_REQUIRED.value
         await db_session.commit()
 
-        # Reconnect must be allowed (no 409) for an unusable account...
-        reconnect = await _consent_and_complete()
-        # ...and must reuse the SAME account_id (preserving downstream references).
+        reconnect_state, _new_connection_id, _ = await _initiate()  # 200 == allowed
+        reconnect = await _complete(reconnect_state, connection_id)
+        # Must reuse the SAME account_id (preserving downstream references).
         assert reconnect["id"] == original_account_id
         assert reconnect["status"] == AccountStatus.CONNECTED.value
+
+        # The reconnected account still works.
+        await _run_smoke_op(original_account_id)
     finally:
         _cleanup_user_accounts(fixed_test_user["id"])
 

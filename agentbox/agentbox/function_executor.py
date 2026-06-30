@@ -284,13 +284,18 @@ class LemmaFunctionApiClient:
         return payload
 
 
-# Retention for the run_id idempotency cache. Comfortably longer than the
-# backend's full retry window for a single run (≈12 execute attempts + 3
+# Retention for the run_id idempotency cache. The TTL is comfortably longer than
+# the backend's full retry window for a single run (≈12 execute attempts + 3
 # sandbox-recovery attempts with backoff), after which a duplicate /execute can
-# no longer arrive for that run_id. The size cap bounds memory over a long-lived
-# sandbox that serves many runs.
+# no longer arrive for that run_id. The size cap keeps only the most-recent few
+# completed results so a long-lived sandbox never accumulates many cached
+# FunctionInvokeResponse objects (which carry logs/output) -- bounding RAM.
+# Retries arrive within seconds of the original, so the original is always among
+# the most-recent entries; if a result is evicted before a (much) later
+# duplicate, that duplicate simply re-runs (the pod-side guard still prevents a
+# duplicate side effect).
 _RESULT_TTL_SECONDS = 600.0
-_MAX_COMPLETED_RESULTS = 1024
+_MAX_COMPLETED_RESULTS = 32
 
 
 class FunctionExecutor:

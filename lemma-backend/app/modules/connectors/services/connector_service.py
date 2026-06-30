@@ -1223,6 +1223,11 @@ class ConnectorService:
     def _to_oauth_credentials(self, credentials: object) -> OAuthCredentials:
         if isinstance(credentials, OAuthCredentials):
             return credentials
+        # Coerce any other pydantic credential model (e.g. ComposioCredentials)
+        # to a dict so its fields — crucially connection_id — are preserved.
+        if not isinstance(credentials, dict):
+            model_dump = getattr(credentials, "model_dump", None)
+            credentials = model_dump() if callable(model_dump) else {}
         if isinstance(credentials, dict):
             return OAuthCredentials(
                 access_token=credentials.get("access_token", ""),

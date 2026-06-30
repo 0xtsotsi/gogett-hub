@@ -201,6 +201,44 @@ async def test_connect_with_credentials_initiates_api_key_connection():
 
 
 @pytest.mark.asyncio
+async def test_connect_with_credentials_creates_custom_auth_config():
+    # No pre-existing auth config id -> must create a use_custom_auth config
+    # (API-key toolkits have no Composio-managed credentials).
+    connector = ConnectorEntity(
+        id="tavily",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="tavily",
+                auth_scheme=AuthScheme.API_KEY,
+            )
+        ],
+    )
+    create = MagicMock(return_value=SimpleNamespace(id="ac_created"))
+    initiate = MagicMock(return_value=SimpleNamespace(id="ca_created"))
+    composio = SimpleNamespace(
+        auth_configs=SimpleNamespace(create=create),
+        connected_accounts=SimpleNamespace(initiate=initiate),
+    )
+    provider = ComposioAuthProvider(
+        connector_repository=AsyncMock(),
+        composio_client_factory=lambda: composio,
+    )
+
+    creds = await provider.connect_with_credentials(
+        connector=connector,
+        user_id=uuid4(),
+        credentials={"generic_api_key": "k"},
+    )
+
+    assert creds.connection_id == "ca_created"
+    create.assert_called_once()
+    _, kwargs = create.call_args
+    assert kwargs["options"]["type"] == "use_custom_auth"
+    assert kwargs["options"]["auth_scheme"] == "API_KEY"
+    assert initiate.call_args.kwargs["auth_config_id"] == "ac_created"
+
+
+@pytest.mark.asyncio
 async def test_connect_with_credentials_rejects_oauth_apps():
     provider = ComposioAuthProvider(
         connector_repository=AsyncMock(),

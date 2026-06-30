@@ -153,19 +153,40 @@ class ComposioAuthProvider(AuthProviderInterface):
             return AuthScheme.OAUTH2
         return getattr(capability, "auth_scheme", AuthScheme.OAUTH2)
 
+    # Maps our auth scheme to the Composio custom-auth scheme string used when a
+    # toolkit has no Composio-managed credentials (bring-your-own API key, etc.).
+    _CUSTOM_AUTH_SCHEME = {
+        AuthScheme.API_KEY: "API_KEY",
+        AuthScheme.NOAUTH: "NO_AUTH",
+    }
+
     def _resolve_auth_config_id(
         self,
         connector: ConnectorEntity,
         composio: Any,
+        *,
+        custom_auth_scheme: str | None = None,
     ) -> str:
+        """Reuse the connector's Composio auth config, else create one.
+
+        OAuth apps use Composio-managed credentials (``use_composio_managed_auth``).
+        Credential-managed apps (API key / no-auth) have no managed credentials, so
+        they need ``use_custom_auth`` with the explicit scheme; the per-account key
+        is supplied at ``initiate`` time.
+        """
         auth_config_id = connector.composio_auth_config_id
         if auth_config_id:
             return auth_config_id
+        if custom_auth_scheme is not None:
+            options: dict[str, Any] = {
+                "type": "use_custom_auth",
+                "auth_scheme": custom_auth_scheme,
+            }
+        else:
+            options = {"type": "use_composio_managed_auth"}
         auth_config = composio.auth_configs.create(
             toolkit=self._toolkit_slug(connector),
-            options={
-                "type": "use_composio_managed_auth",
-            },
+            options=options,
         )
         logger.info(
             "Created Composio auth config ID: %s for app %s",
@@ -193,7 +214,11 @@ class ComposioAuthProvider(AuthProviderInterface):
             )
 
         composio = self._composio_client_factory()
-        auth_config_id = self._resolve_auth_config_id(connector, composio)
+        auth_config_id = self._resolve_auth_config_id(
+            connector,
+            composio,
+            custom_auth_scheme=self._CUSTOM_AUTH_SCHEME.get(scheme, "API_KEY"),
+        )
 
         if scheme == AuthScheme.NOAUTH:
             config = composio_auth_scheme.no_auth(credentials)

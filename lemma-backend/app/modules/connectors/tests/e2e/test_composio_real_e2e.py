@@ -210,7 +210,7 @@ async def test_composio_api_key_connect_and_execute(
             f"{accounts_url}/{account_id}/credentials"
         )
         assert creds_resp.status_code == 200, creds_resp.text
-        assert creds_resp.json().get("connection_id")
+        assert creds_resp.json()["data"].get("connection_id")
 
         ops_url = (
             f"/organizations/{org_id}/connectors/{auth_config.name}/operations/"

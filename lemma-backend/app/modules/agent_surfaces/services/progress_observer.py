@@ -18,6 +18,9 @@ from app.modules.agent.domain.value_objects import (
 )
 from app.modules.agent.tools.context import ConversationContext
 from app.modules.agent_surfaces.domain.entities import SurfacePlatform
+from app.modules.agent_surfaces.platforms.platform_capabilities import (
+    PLATFORM_CAPABILITIES,
+)
 from app.modules.agent_surfaces.platforms.rendering import (
     sanitize_user_visible_text,
     strip_thinking_tokens,
@@ -48,8 +51,18 @@ _MAX_PROGRESS_TEXT_LENGTH = 120
 # Email recipients should get one composed reply, not a stream of chat
 # messages. Agents reply via the platform reply tools; the observer only
 # falls back to emailing the final assistant text if no reply was sent.
-_EMAIL_PLATFORMS = {SurfacePlatform.GMAIL.value, SurfacePlatform.OUTLOOK.value}
-_EMAIL_REPLY_TOOL_NAMES = {"gmail_reply_email", "outlook_reply_email"}
+#
+# Derived from the platform-capability registry (not hand-maintained) so a
+# newly added email platform is automatically covered here too — a hardcoded
+# set previously let Resend fall through both checks even after it shipped as
+# a full `is_email=True` platform, causing a duplicate auto-echoed send via
+# broken fallback credentials on every real Resend reply.
+_EMAIL_PLATFORMS = {
+    caps.platform for caps in PLATFORM_CAPABILITIES.values() if caps.is_email
+}
+_EMAIL_REPLY_TOOL_NAMES = {
+    caps.reply_tool for caps in PLATFORM_CAPABILITIES.values() if caps.reply_tool
+}
 
 
 class SurfaceAgentRunProgressObserver:

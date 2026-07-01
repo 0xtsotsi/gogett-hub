@@ -29,7 +29,12 @@ from app.modules.connectors.services.connector_service import ConnectorService
 logger = get_logger(__name__)
 
 # Connectors that manage service-level credentials (no OAuth refresh flow).
-_SELF_MANAGED_CREDENTIAL_APPS = frozenset({"teams", "whatsapp", "telegram"})
+# Resend uses a static API key, not a 3-legged OAuth token — routing it through
+# the OAuth refresh flow would silently drop `api_key` (ConnectorService's
+# `_to_oauth_credentials` only carries access_token/refresh_token/token_type/
+# expires_at/raw_response/connection_id; `api_key` isn't one of them, and it
+# isn't in `_CONTEXT_KEYS` below either, so nothing rescues it afterward).
+_SELF_MANAGED_CREDENTIAL_APPS = frozenset({"teams", "whatsapp", "telegram", "resend"})
 
 # Non-secret keys platform adapters read for identity/routing context.
 _CONTEXT_KEYS = ("scope", "scopes", "api_base_url", "raw_response", "user_data")
@@ -83,15 +88,18 @@ class SurfaceCredentialResolver:
         prefer_native: bool = False,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
+        # `from_address` is a property of the surface row (its provisioned
+        # Resend address), never of the account's own credentials — inject it
+        # unconditionally, regardless of which branch below resolves the rest.
         if prefer_native and has_native_credentials(surface.surface_type):
-            return self._with_resend_from_address(
-                native_credentials(surface.surface_type), surface
+            credentials = native_credentials(surface.surface_type)
+        elif surface.account_id is None:
+            credentials = native_credentials(surface.surface_type)
+        else:
+            credentials = await self.for_account(
+                surface.account_id, force_refresh=force_refresh
             )
-        if surface.account_id is None:
-            return self._with_resend_from_address(
-                native_credentials(surface.surface_type), surface
-            )
-        return await self.for_account(surface.account_id, force_refresh=force_refresh)
+        return self._with_resend_from_address(credentials, surface)
 
     @staticmethod
     def _with_resend_from_address(

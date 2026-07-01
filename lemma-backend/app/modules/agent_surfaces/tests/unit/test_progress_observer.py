@@ -292,6 +292,38 @@ async def test_progress_observer_email_suppresses_final_text_when_reply_tool_cal
     assert service.messages == []
 
 
+async def test_progress_observer_resend_suppresses_final_text_when_reply_tool_called():
+    # Regression: RESEND was previously missing from _EMAIL_PLATFORMS /
+    # _EMAIL_REPLY_TOOL_NAMES, so this fallback never suppressed and every real
+    # Resend reply also triggered a second, duplicate send attempt.
+    service = _SurfaceService()
+    observer = _observer(service)
+    conversation = SimpleNamespace(id=uuid4(), metadata={"surface_platform": "RESEND"})
+
+    await observer.on_event(
+        AgentEvent(
+            type=AgentEventType.MESSAGE,
+            data=MessageDraft.of_tool_call(
+                tool_name="resend_reply_email",
+                tool_call_id="reply-1",
+                tool_args={"content": "Here is the report."},
+            ),
+        ),
+        conversation,
+        SimpleNamespace(),
+    )
+    await observer.on_event(
+        _assistant(MessageDraft.of_text("I emailed the report.")),
+        conversation,
+        SimpleNamespace(),
+    )
+
+    await observer.on_run_finished(conversation, SimpleNamespace())
+
+    # Reply tool handled delivery — observer sends nothing.
+    assert service.messages == []
+
+
 async def test_progress_observer_email_sends_buffered_text_when_no_reply_tool():
     # Fallback: if the agent never called the reply tool, the observer emails the
     # buffered final text so the user still gets a response.

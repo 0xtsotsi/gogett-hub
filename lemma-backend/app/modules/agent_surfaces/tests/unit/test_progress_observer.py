@@ -96,6 +96,59 @@ async def test_progress_observer_streams_slack_tool_comment_progress():
     assert service.messages == []
 
 
+async def test_progress_observer_strips_thinking_from_tool_comment():
+    """Regression: a tool-call comment containing model reasoning must never be
+    streamed to a surface as a live progress update."""
+    service = _SurfaceService()
+    observer = _observer(service)
+    conversation = SimpleNamespace(
+        id=uuid4(),
+        metadata={"surface_platform": "SLACK"},
+    )
+    event = AgentEvent(
+        type=AgentEventType.MESSAGE,
+        data=MessageDraft.of_tool_call(
+            tool_name="web_search",
+            tool_call_id="tool-1",
+            tool_args={"comment": "<think>secret reasoning</think>Reading the file"},
+        ),
+    )
+
+    await observer.on_event(event, conversation, SimpleNamespace())
+
+    assert service.progress == [
+        {
+            "conversation_id": conversation.id,
+            "progress_text": "Reading the file",
+            "progress_handle": None,
+        }
+    ]
+    for entry in service.progress:
+        assert "think" not in entry["progress_text"].lower()
+
+
+async def test_progress_observer_skips_all_reasoning_tool_comment():
+    """A comment that is entirely reasoning streams no progress at all."""
+    service = _SurfaceService()
+    observer = _observer(service)
+    conversation = SimpleNamespace(
+        id=uuid4(),
+        metadata={"surface_platform": "SLACK"},
+    )
+    event = AgentEvent(
+        type=AgentEventType.MESSAGE,
+        data=MessageDraft.of_tool_call(
+            tool_name="web_search",
+            tool_call_id="tool-1",
+            tool_args={"comment": "<think>all of it</think>"},
+        ),
+    )
+
+    await observer.on_event(event, conversation, SimpleNamespace())
+
+    assert service.progress == []
+
+
 def _assistant(draft: MessageDraft) -> AgentEvent:
     return AgentEvent(type=AgentEventType.MESSAGE, data=draft)
 

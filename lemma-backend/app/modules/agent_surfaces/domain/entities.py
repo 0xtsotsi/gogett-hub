@@ -52,6 +52,7 @@ class SurfacePlatform(StrEnum):
     TELEGRAM = "TELEGRAM"
     GMAIL = "GMAIL"
     OUTLOOK = "OUTLOOK"
+    RESEND = "RESEND"
 
     @classmethod
     def from_source(cls, source: str) -> "SurfacePlatform | None":
@@ -62,7 +63,11 @@ class SurfacePlatform(StrEnum):
 
     @property
     def is_email(self) -> bool:
-        return self in {SurfacePlatform.GMAIL, SurfacePlatform.OUTLOOK}
+        return self in {
+            SurfacePlatform.GMAIL,
+            SurfacePlatform.OUTLOOK,
+            SurfacePlatform.RESEND,
+        }
 
 
 class SurfaceIdentityPolicy(BaseModel):
@@ -108,6 +113,13 @@ class SurfaceChannelRoute(BaseModel):
         )
 
 
+class SurfaceSendPolicy(BaseModel):
+    """Controls proactive sending (``surface.send``) for a surface."""
+
+    # Expose the current-user ``surface_send_message`` tool to the agent.
+    allow_send: bool = False
+
+
 class SurfaceConfig(BaseModel):
     """User-editable surface behavior. Exactly what the API accepts and returns.
 
@@ -118,6 +130,7 @@ class SurfaceConfig(BaseModel):
     dm_conversation_reset_after_hours: int = 24
     identity: SurfaceIdentityPolicy = Field(default_factory=SurfaceIdentityPolicy)
     channels: list[SurfaceChannelRoute] = Field(default_factory=list)
+    send_policy: SurfaceSendPolicy = Field(default_factory=SurfaceSendPolicy)
 
 
 class ExternalSurfaceUserEntity(Entity):
@@ -306,7 +319,13 @@ class AgentSurfaceEntity(AggregateRoot):
     ) -> None:
         if mode is SurfaceMode.EMAIL and not surface_type.is_email:
             raise AgentSurfaceValidationError("EMAIL mode is only supported for Gmail and Outlook")
-        if mode is SurfaceMode.EMAIL and event_mode is not SurfaceEventMode.COMPOSIO_TRIGGER:
+        # Resend is an email surface delivered over a native webhook (system
+        # creds), not a Composio trigger like Gmail/Outlook.
+        if (
+            mode is SurfaceMode.EMAIL
+            and surface_type is not SurfacePlatform.RESEND
+            and event_mode is not SurfaceEventMode.COMPOSIO_TRIGGER
+        ):
             raise AgentSurfaceValidationError(
                 "EMAIL surfaces require COMPOSIO_TRIGGER event_mode"
             )
@@ -333,6 +352,9 @@ class AgentSurfaceEntity(AggregateRoot):
             return SurfaceEventMode(
                 event_mode.value if hasattr(event_mode, "value") else str(event_mode)
             )
+        # Resend uses a native inbound webhook; Gmail/Outlook use Composio triggers.
+        if surface_type is SurfacePlatform.RESEND:
+            return SurfaceEventMode.WEBHOOK
         if surface_type.is_email:
             return SurfaceEventMode.COMPOSIO_TRIGGER
         return SurfaceEventMode.WEBHOOK

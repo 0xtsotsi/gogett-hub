@@ -158,13 +158,19 @@ class AgentSurfaceService:
         external_channel_id: str | None = None,
         ctx: Context | None = None,
     ) -> AgentSurfaceEntity:
+        # A surface is keyed by (pod, platform, agent): each agent may have its
+        # own surface for a platform (e.g. different bots → different agents).
+        # Distinct bot accounts are still enforced by the credential/account
+        # conflict checks below.
         existing = await self.surface_repository.get_by_pod_and_platform(
             pod_id=pod_id,
             platform=platform.value,
+            agent_id=agent_id,
+            match_agent=True,
         )
         if isinstance(existing, AgentSurfaceEntity):
             raise AgentSurfaceValidationError(
-                f"{platform.value} surface already exists for this pod"
+                f"{platform.value} surface already exists for this agent in the pod"
             )
         (
             resolved_tenant_id,
@@ -188,6 +194,15 @@ class AgentSurfaceService:
             external_channel_id=external_channel_id,
             surface_identity_id=surface_identity_id,
         )
+        # Resend is a system-credentialed email surface: provision a unique
+        # per-pod inbound/outbound address that inbound routing matches on and
+        # outbound uses as the From. (Other email surfaces get this from their
+        # connected account.)
+        if (
+            platform is SurfacePlatform.RESEND
+            and not entity.surface_identity_email
+        ):
+            entity.surface_identity_email = self._provision_resend_address(pod_id)
         self._validate_runtime_supported(entity)
         await self._ensure_unique_org_credential_binding(entity)
         telegram_credentials: dict[str, Any] | None = None
@@ -204,6 +219,16 @@ class AgentSurfaceService:
         synced = await self._sync_email_schedule(created, previous_surface=None, ctx=ctx)
         await notify_surface_receiver_config_changed(synced.id)
         return synced
+
+    @staticmethod
+    def _provision_resend_address(pod_id: UUID) -> str:
+        """Derive a unique per-pod inbound/outbound Resend address.
+
+        Uses the pod id for uniqueness under a catch-all inbound domain
+        (``*@<domain>`` → one webhook), so no per-address API registration.
+        """
+        domain = surface_settings.resend_inbound_domain or "ops.lemma.work"
+        return f"pod-{pod_id.hex[:12]}@{domain}"
 
     async def get_surface(self, surface_id: UUID) -> AgentSurfaceEntity:
         surface = await self.surface_repository.get(surface_id)
@@ -227,10 +252,14 @@ class AgentSurfaceService:
         *,
         pod_id: UUID,
         platform: str,
+        agent_id: UUID | None = None,
+        match_agent: bool = False,
     ) -> AgentSurfaceEntity:
         surface = await self.surface_repository.get_by_pod_and_platform(
             pod_id=pod_id,
             platform=platform,
+            agent_id=agent_id,
+            match_agent=match_agent,
         )
         if surface is None:
             raise AgentSurfaceNotFoundError(str(platform))
@@ -339,11 +368,15 @@ class AgentSurfaceService:
         self,
         pod_id: UUID,
         *,
+        agent_id: UUID | None = None,
+        match_agent: bool = False,
         cursor: UUID | None = None,
         limit: int = 100,
     ) -> tuple[list[AgentSurfaceEntity], UUID | None]:
         return await self.surface_repository.list_by_pod(
             pod_id,
+            agent_id=agent_id,
+            match_agent=match_agent,
             cursor=cursor,
             limit=limit,
         )
@@ -595,7 +628,13 @@ class AgentSurfaceService:
         previous_surface: AgentSurfaceEntity | None,
         ctx: Context | None = None,
     ) -> AgentSurfaceEntity:
-        if not self._is_email_surface(surface):
+        # Only Composio-trigger email surfaces (Gmail/Outlook) get a polling
+        # schedule. Resend is an email surface but receives over a native webhook,
+        # so it has no schedule.
+        if (
+            not self._is_email_surface(surface)
+            or surface.event_mode is not SurfaceEventMode.COMPOSIO_TRIGGER
+        ):
             if previous_surface is not None:
                 await self._delete_email_schedule_if_needed(previous_surface)
             return surface

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.crypto import get_secret_cipher
@@ -61,23 +61,39 @@ class SurfaceRepository(SurfaceInstallationRepositoryPort):
         *,
         pod_id: UUID,
         platform: str,
+        agent_id: UUID | None = None,
+        match_agent: bool = False,
     ) -> AgentSurfaceEntity | None:
+        """Resolve a surface within a pod for a platform.
+
+        Multiple surfaces of the same platform may exist in a pod (one per
+        agent/account). When ``match_agent`` is set, the lookup is scoped to a
+        specific agent (``agent_id=None`` matches the default-agent surface);
+        otherwise the oldest matching surface is returned for compatibility.
+        """
         stmt = select(AgentSurface).where(
             AgentSurface.pod_id == pod_id,
             AgentSurface.surface_type == str(platform).upper(),
         )
+        if match_agent:
+            stmt = stmt.where(AgentSurface.agent_id == agent_id)
+        stmt = stmt.order_by(AgentSurface.created_at)
         result = await self.session.execute(stmt)
-        model = result.scalar_one_or_none()
+        model = result.scalars().first()
         return model.to_entity() if model else None
 
     async def list_by_pod(
         self,
         pod_id: UUID,
         *,
+        agent_id: UUID | None = None,
+        match_agent: bool = False,
         cursor: UUID | None = None,
         limit: int = 100,
     ) -> tuple[list[AgentSurfaceEntity], UUID | None]:
         stmt = select(AgentSurface).where(AgentSurface.pod_id == pod_id)
+        if match_agent:
+            stmt = stmt.where(AgentSurface.agent_id == agent_id)
         if cursor is not None:
             stmt = stmt.where(AgentSurface.id > cursor)
         stmt = stmt.order_by(AgentSurface.id).limit(limit + 1)
@@ -90,6 +106,26 @@ class SurfaceRepository(SurfaceInstallationRepositoryPort):
             models = models[:limit]
 
         return [model.to_entity() for model in models], next_cursor
+
+    async def get_active_by_address(
+        self,
+        *,
+        platform: str,
+        address: str,
+    ) -> AgentSurfaceEntity | None:
+        """Active surface whose provisioned email address matches (e.g. Resend)."""
+        stmt = (
+            select(AgentSurface)
+            .where(
+                AgentSurface.surface_type == str(platform).upper(),
+                func.lower(AgentSurface.surface_identity_email) == address.strip().lower(),
+                AgentSurface.status == AgentSurfaceStatus.ACTIVE.value,
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalars().first()
+        return model.to_entity() if model else None
 
     async def list_active_by_type(
         self, surface_type: str
@@ -319,6 +355,31 @@ class SurfaceConversationLinkRepository:
             )
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
+        return model.to_entity() if model else None
+
+    async def get_latest_by_surface_and_external_user(
+        self,
+        *,
+        surface_id: UUID,
+        external_user_id: str,
+    ) -> AgentSurfaceConversationLink | None:
+        """The member's most recent thread on a surface.
+
+        ``surface.send`` reuses this existing thread (and its valid reply
+        target) to reach a member proactively — bots can't cold-DM, so a prior
+        interaction is required.
+        """
+        stmt = (
+            select(AgentSurfaceConversationLinkModel)
+            .where(
+                AgentSurfaceConversationLinkModel.surface_id == surface_id,
+                AgentSurfaceConversationLinkModel.external_user_id == external_user_id,
+            )
+            .order_by(AgentSurfaceConversationLinkModel.updated_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalars().first()
         return model.to_entity() if model else None
 
     async def get_by_conversation_id(

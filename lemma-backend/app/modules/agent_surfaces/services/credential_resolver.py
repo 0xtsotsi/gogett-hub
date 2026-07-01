@@ -50,6 +50,13 @@ def native_credentials(platform: str | SurfacePlatform | None) -> dict[str, Any]
         return credentials
     if normalized == SurfacePlatform.TELEGRAM:
         return {"bot_token": surface_settings.telegram_bot_token or ""}
+    if normalized == SurfacePlatform.RESEND:
+        # from_address is per-surface (the provisioned pod address); the resolver
+        # injects it from surface.surface_identity_email in for_surface().
+        return {
+            "api_key": surface_settings.resend_api_key or "",
+            "from_name": surface_settings.resend_from_name or "Lemma",
+        }
     return {}
 
 
@@ -59,6 +66,8 @@ def has_native_credentials(platform: str | SurfacePlatform | None) -> bool:
         return bool(surface_settings.whatsapp_access_token and surface_settings.whatsapp_phone_number_id)
     if normalized == SurfacePlatform.TELEGRAM:
         return bool(surface_settings.telegram_bot_token)
+    if normalized == SurfacePlatform.RESEND:
+        return bool(surface_settings.resend_api_key)
     return False
 
 
@@ -75,10 +84,26 @@ class SurfaceCredentialResolver:
         force_refresh: bool = False,
     ) -> dict[str, Any]:
         if prefer_native and has_native_credentials(surface.surface_type):
-            return native_credentials(surface.surface_type)
+            return self._with_resend_from_address(
+                native_credentials(surface.surface_type), surface
+            )
         if surface.account_id is None:
-            return native_credentials(surface.surface_type)
+            return self._with_resend_from_address(
+                native_credentials(surface.surface_type), surface
+            )
         return await self.for_account(surface.account_id, force_refresh=force_refresh)
+
+    @staticmethod
+    def _with_resend_from_address(
+        credentials: dict[str, Any], surface: AgentSurfaceEntity
+    ) -> dict[str, Any]:
+        """Inject the surface's provisioned address as the Resend ``from``."""
+        if (
+            surface.surface_type is SurfacePlatform.RESEND
+            and surface.surface_identity_email
+        ):
+            return {**credentials, "from_address": surface.surface_identity_email}
+        return credentials
 
     async def for_platform(
         self,

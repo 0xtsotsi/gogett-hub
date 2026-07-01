@@ -83,6 +83,51 @@ async def test_create_surface(monkeypatch):
     enricher.resolve_binding.assert_awaited_once()
 
 
+async def test_create_surface_is_scoped_per_agent(monkeypatch):
+    """Surfaces are keyed by (pod, platform, agent): a second agent can have its
+    own surface on the same platform, but the same agent cannot have two."""
+    repo = AsyncMock()
+    enricher = AsyncMock()
+    service = AgentSurfaceService(
+        surface_repository=repo,
+        account_binding_resolver=enricher,
+    )
+    monkeypatch.setattr(
+        "app.modules.agent_surfaces.services.surface_service.settings.api_url",
+        "https://api.example.test",
+    )
+    pod_id = uuid4()
+    agent_id = uuid4()
+    repo.create.side_effect = lambda entity: entity
+    enricher.resolve_binding.return_value = (None, "T123", "U-BOT")
+
+    # No surface for this agent yet -> created, lookup scoped to the agent.
+    repo.get_by_pod_and_platform.return_value = None
+    await service.create_surface(
+        platform=SurfacePlatform.SLACK,
+        pod_id=pod_id,
+        agent_id=agent_id,
+        config=SurfaceConfig(),
+        account_id=uuid4(),
+    )
+    repo.get_by_pod_and_platform.assert_awaited_with(
+        pod_id=pod_id, platform="SLACK", agent_id=agent_id, match_agent=True
+    )
+
+    # A surface already bound to this agent on the platform -> rejected.
+    repo.get_by_pod_and_platform.return_value = _surface_entity(
+        pod_id=pod_id, agent_id=agent_id
+    )
+    with pytest.raises(AgentSurfaceValidationError, match="already exists for this agent"):
+        await service.create_surface(
+            platform=SurfacePlatform.SLACK,
+            pod_id=pod_id,
+            agent_id=agent_id,
+            config=SurfaceConfig(),
+            account_id=uuid4(),
+        )
+
+
 async def test_create_telegram_surface_uses_built_in_credentials_without_account(monkeypatch):
     repo = AsyncMock()
     enricher = AsyncMock()
@@ -799,7 +844,9 @@ async def test_list_surfaces_by_pod():
     assert len(surfaces) == 1
     assert surfaces[0].pod_id == pod_id
     assert next_cursor is None
-    repo.list_by_pod.assert_awaited_once_with(pod_id, cursor=None, limit=100)
+    repo.list_by_pod.assert_awaited_once_with(
+        pod_id, agent_id=None, match_agent=False, cursor=None, limit=100
+    )
 
 
 async def test_delete_all_surfaces_for_pod_paginates_and_deletes():

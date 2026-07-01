@@ -271,6 +271,7 @@ async def test_surface_config_round_trips_and_supports_partial_updates(
         "identity",
         "channels",
         "dm_conversation_reset_after_hours",
+        "send_policy",
     }
     assert config["dm_conversation_reset_after_hours"] == 6
     # Identity values are normalized on write.
@@ -299,11 +300,13 @@ async def test_surface_config_round_trips_and_supports_partial_updates(
         "identity",
         "channels",
         "dm_conversation_reset_after_hours",
+        "send_policy",
     }
     assert set(schemas["SurfaceBehaviorConfigInput"]["properties"]) == {
         "identity",
         "channels",
         "dm_conversation_reset_after_hours",
+        "send_policy",
     }
 
 
@@ -624,3 +627,87 @@ async def test_surface_setup_actions_depend_on_auth_config_source(
     assert action["steps"]
     assert action["link"] == "https://api.slack.com/apps"
     assert any(field["value"].endswith("/surfaces/webhooks/slack") for field in action["fields"])
+
+
+async def test_surface_send_endpoint_and_send_policy_config(
+    authenticated_client: AsyncClient,
+    db_session: AsyncSession,
+    test_pod,
+    fixed_test_user,
+    fake_slack,
+    monkeypatch,
+):
+    from app.core.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "api_url", "https://api.example.test")
+    pod_id = test_pod["id"]
+    account = await _ensure_connector_account(
+        db_session,
+        user_id=fixed_test_user["id"],
+        connector_id="slack",
+        credentials={
+            "access_token": "xoxb-surface-send",
+            "scope": "chat:write",
+            "api_base_url": fake_slack.base_url,
+            "raw_response": {"bot_user_id": "U0BOT", "team_id": "T0123456"},
+        },
+    )
+    agent = await _create_agent(authenticated_client, pod_id)
+    created = await authenticated_client.put(
+        f"/pods/{pod_id}/surfaces/slack",
+        json={
+            "default_agent_name": agent["name"],
+            "account_id": str(account.id),
+            "config": {"send_policy": {"allow_send": True}},
+        },
+    )
+    assert created.status_code == 200, created.text
+    # send_policy round-trips through the config.
+    assert created.json()["config"]["send_policy"]["allow_send"] is True
+
+    # The member is a pod member but has no thread on this surface yet -> 404.
+    resp = await authenticated_client.post(
+        f"/pods/{pod_id}/surfaces/slack/send",
+        json={"user_id": fixed_test_user["id"], "message": "ping"},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+async def test_create_resend_email_surface_provisions_address(
+    authenticated_client: AsyncClient,
+    db_session: AsyncSession,
+    test_pod,
+    fixed_test_user,
+    monkeypatch,
+):
+    from app.core.config import settings as app_settings
+    from app.modules.agent_surfaces.infrastructure.models import AgentSurface
+    from sqlalchemy import select
+
+    monkeypatch.setattr(app_settings, "api_url", "https://api.example.test")
+    pod_id = test_pod["id"]
+    agent = await _create_agent(authenticated_client, pod_id)
+
+    # Resend is a system-credentialed email surface: no account_id needed, and
+    # it must not require a Composio polling schedule.
+    created = await authenticated_client.put(
+        f"/pods/{pod_id}/surfaces/resend",
+        json={"default_agent_name": agent["name"]},
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["platform"] == "RESEND"
+    assert body["agent_name"] == agent["name"]
+
+    # The per-pod inbound/outbound address is provisioned on creation.
+    row = (
+        await db_session.execute(
+            select(AgentSurface).where(
+                AgentSurface.pod_id == pod_id,
+                AgentSurface.surface_type == "RESEND",
+            )
+        )
+    ).scalar_one()
+    assert row.surface_identity_email and row.surface_identity_email.endswith(
+        "@ops.lemma.work"
+    )

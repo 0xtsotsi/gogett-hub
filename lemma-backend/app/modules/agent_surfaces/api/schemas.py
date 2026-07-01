@@ -11,6 +11,7 @@ from app.modules.agent_surfaces.domain.entities import (
     SurfaceCredentialMode,
     SurfaceIdentityPolicy,
     SurfacePlatform,
+    SurfaceSendPolicy,
 )
 from app.modules.agent_surfaces.domain.setup_guides import (
     SurfaceSetupAction,
@@ -39,10 +40,17 @@ class SurfaceChannelRouteInput(BaseModel):
         return self
 
 
+class SurfaceSendPolicyConfig(BaseModel):
+    """Proactive-send controls. Mirrored across request and response."""
+
+    allow_send: bool = False
+
+
 class SurfaceBehaviorConfigInput(BaseModel):
     identity: SurfaceIdentityConfigInput = Field(default_factory=SurfaceIdentityConfigInput)
     channels: list[SurfaceChannelRouteInput] = Field(default_factory=list)
     dm_conversation_reset_after_hours: int = 24
+    send_policy: SurfaceSendPolicyConfig = Field(default_factory=SurfaceSendPolicyConfig)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -78,6 +86,7 @@ class SurfaceConfigResponse(BaseModel):
     )
     channels: list[SurfaceChannelRouteResponse] = Field(default_factory=list)
     dm_conversation_reset_after_hours: int = 24
+    send_policy: SurfaceSendPolicyConfig = Field(default_factory=SurfaceSendPolicyConfig)
 
     @classmethod
     def from_domain(cls, config: SurfaceConfig) -> "SurfaceConfigResponse":
@@ -98,6 +107,7 @@ def surface_config_from_input(
             allowed_email_addresses=config_input.identity.allowed_email_addresses,
         ),
         channels=channel_routes,
+        send_policy=SurfaceSendPolicy(allow_send=config_input.send_policy.allow_send),
     )
 
 
@@ -141,6 +151,17 @@ class AgentSurfaceListResponse(BaseModel):
     items: list[AgentSurfaceResponse]
     limit: int
     next_page_token: str | None = None
+
+
+class SurfaceSendRequest(BaseModel):
+    """Send a proactive message to a pod member on this surface."""
+
+    user_id: UUID = Field(..., description="Target pod member (Lemma user id).")
+    message: str = Field(..., min_length=1, description="Message text to deliver.")
+
+
+class SurfaceSendResponse(BaseModel):
+    sent: bool
 
 
 class SurfaceAdminConsentInfo(BaseModel):

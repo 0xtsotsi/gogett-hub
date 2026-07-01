@@ -638,6 +638,51 @@ async def test_run_event_sink_buffer_overflow_sets_flag_and_drops_oldest():
     ]
 
 
+@pytest.mark.asyncio
+async def test_run_event_sink_self_buffers_on_live_send_failure():
+    """If a live send fails -- e.g. the peer closed the socket while this
+    daemon process was itself frozen/unresponsive (SIGSTOP) and never got a
+    chance to run _serve_connection's own disconnect handling first -- the
+    event must be buffered, not silently dropped. Found via a real SIGSTOP
+    e2e test where the daemon resumed and the assistant's final reply never
+    included the tool-call message, because it had been dropped by
+    `_send_json`'s swallow-all-exceptions behavior on a still-"live" sink.
+    """
+    ws = _FakeWS()
+    ws.send_should_fail = True
+    sink = runner._RunEventSink(ws, "run-1", asyncio.Lock())
+
+    await sink("token", "lost-without-the-fix")
+
+    assert sink._buffer is not None
+    assert list(sink._buffer) == [{"type": "token", "data": "lost-without-the-fix"}]
+
+
+@pytest.mark.asyncio
+async def test_go_buffered_preserves_events_already_self_buffered():
+    """_serve_connection's disconnect handling always allocates a fresh
+    buffer and calls go_buffered() with it -- that must not clobber events a
+    sink already self-buffered after a live send failure (see previous
+    test).
+    """
+    ws = _FakeWS()
+    ws.send_should_fail = True
+    sink = runner._RunEventSink(ws, "run-1", asyncio.Lock())
+    await sink("token", "already-buffered")
+
+    fresh_buffer = collections.deque(maxlen=runner.max_buffered_events_per_run())
+    buffer = sink.go_buffered(fresh_buffer)
+
+    assert buffer is not fresh_buffer
+    assert list(buffer) == [{"type": "token", "data": "already-buffered"}]
+
+    await sink("token", "buffered-after-reconnect-handling-too")
+    assert list(buffer) == [
+        {"type": "token", "data": "already-buffered"},
+        {"type": "token", "data": "buffered-after-reconnect-handling-too"},
+    ]
+
+
 def test_max_concurrent_runs_defaults(monkeypatch):
     from lemma_cli.daemon import config as daemon_config
 

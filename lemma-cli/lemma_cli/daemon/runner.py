@@ -101,9 +101,25 @@ class _RunEventSink:
         self._buffer: collections.deque[dict[str, Any]] | None = None
         self.overflowed = False
 
-    def go_buffered(self, buffer: "collections.deque[dict[str, Any]]") -> None:
+    def go_buffered(
+        self, buffer: "collections.deque[dict[str, Any]]"
+    ) -> "collections.deque[dict[str, Any]]":
+        """Switch to buffered mode; returns the buffer actually in use.
+
+        If a live send already failed and self-buffered (see ``__call__``),
+        that buffer -- and whatever it already accumulated while this daemon
+        process couldn't run _serve_connection's own disconnect handling
+        (e.g. it was SIGSTOP-frozen when the peer closed the socket) -- is
+        kept as-is; the freshly allocated ``buffer`` argument is only used if
+        this sink was still live. Callers must use the returned buffer (not
+        necessarily the one passed in) for anything that reads buffered
+        events later (e.g. a _HeldRun's own ``buffer`` field).
+        """
+        if self._buffer is not None:
+            return self._buffer
         self._buffer = buffer
         self.overflowed = False
+        return self._buffer
 
     def go_live(self, websocket: Any, send_lock: asyncio.Lock) -> None:
         self._websocket = websocket
@@ -116,9 +132,30 @@ class _RunEventSink:
                 self.overflowed = True
             self._buffer.append({"type": event_type, "data": data})
             return
-        await send_run_event(
-            self._websocket, self._agent_run_id, event_type, data, lock=self._send_lock
-        )
+        try:
+            await send_run_event(
+                self._websocket,
+                self._agent_run_id,
+                event_type,
+                data,
+                lock=self._send_lock,
+                reraise=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - transport guard
+            # The live send failed -- most likely the peer closed the socket
+            # while this daemon process was itself unresponsive (SIGSTOP),
+            # so _serve_connection's own disconnect handling never got a
+            # chance to redirect this sink to buffered mode first. Buffer
+            # this event now rather than losing it; _serve_connection's
+            # later disconnect handling reuses this same buffer via
+            # go_buffered() instead of overwriting it with an empty one.
+            if self._buffer is None:
+                self._buffer = collections.deque(maxlen=max_buffered_events_per_run())
+            if len(self._buffer) == self._buffer.maxlen:
+                self.overflowed = True
+            self._buffer.append({"type": event_type, "data": data})
 
 
 @dataclass
@@ -564,10 +601,10 @@ async def _serve_connection(
                 # cancel-on-disconnect behavior rather than holding it blind.
                 task.cancel()
                 continue
-            buffer: "collections.deque[dict[str, Any]]" = collections.deque(
+            fresh_buffer: "collections.deque[dict[str, Any]]" = collections.deque(
                 maxlen=max_buffered_events_per_run()
             )
-            sink.go_buffered(buffer)
+            buffer = sink.go_buffered(fresh_buffer)
             held_runs[agent_run_id] = _HeldRun(
                 task=task, sink=sink, buffer=buffer, disconnected_at=disconnected_at
             )
@@ -747,6 +784,7 @@ async def send_run_event(
     data: Any,
     *,
     lock: asyncio.Lock | None = None,
+    reraise: bool = False,
 ) -> None:
     daemon_log("send run event", {"agent_run_id": agent_run_id, "event_type": event_type, "data": data})
     await _send_json(
@@ -757,6 +795,7 @@ async def send_run_event(
             "event": {"type": event_type, "data": data},
         },
         lock=lock,
+        reraise=reraise,
     )
 
 
@@ -765,11 +804,21 @@ async def _send_json(
     payload: dict[str, Any],
     *,
     lock: asyncio.Lock | None = None,
+    reraise: bool = False,
 ) -> None:
-    """Send a JSON message, tolerating a dropped socket.
+    """Send a JSON message, by default tolerating a dropped socket.
 
     A failed send (e.g. the connection dropped mid-run) must not crash the daemon —
     the reconnect loop re-establishes the connection; the dropped event is logged.
+    This is the right default for fire-and-forget sends (heartbeat pings,
+    handshake messages) with no buffering fallback available.
+
+    ``reraise=True`` lets a caller that DOES have a buffering fallback (a run's
+    ``_RunEventSink``) find out the send failed instead of the event being
+    silently lost -- this matters specifically because ``_serve_connection``'s
+    own disconnect handling (which normally redirects a sink to buffered mode)
+    can't run at all while the daemon process itself is unresponsive (e.g.
+    SIGSTOP) at the moment the peer closes the socket.
 
     ``lock`` serializes concurrent senders on one websocket (the heartbeat task
     and N run tasks can all be sending at once) — ``websockets``' ``send()`` is
@@ -785,9 +834,11 @@ async def _send_json(
         raise
     except Exception as exc:  # noqa: BLE001 - transport guard
         daemon_log(
-            "websocket send failed; dropping message",
-            {"type": payload.get("type"), "error": str(exc)},
+            "websocket send failed",
+            {"type": payload.get("type"), "error": str(exc), "reraise": reraise},
         )
+        if reraise:
+            raise
 
 
 def _prompt_parts(

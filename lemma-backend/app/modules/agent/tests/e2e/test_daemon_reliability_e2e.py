@@ -23,6 +23,14 @@ real-daemon e2e tests -- they need the real local AgentBox
 it deliberately avoids any tool call, since restarting the backend also
 severs any live MCP tool-call session regardless of timing -- see
 _long_text_reply_prompt for why.
+
+All four tests carry a generous 300s timeout even though each one's own
+logic runs in well under a minute: the shared `workspace_image` fixture
+(module-scoped, but keyed off a content-addressed Docker tag that persists
+across separate pytest invocations too) builds the AgentBox runtime image
+from scratch the first time any test needs it in a given environment --
+whichever test runs first in a fresh checkout/CI run pays that cold-build
+cost, which can take a few minutes.
 """
 
 from __future__ import annotations
@@ -149,7 +157,7 @@ def _long_text_reply_prompt(*, marker: str) -> str:
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(300)
 async def test_concurrent_runs_across_claude_code_and_codex_harnesses(
     authenticated_client,
     fixed_test_org,
@@ -255,7 +263,7 @@ async def test_concurrent_runs_across_claude_code_and_codex_harnesses(
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(300)
 async def test_daemon_reconnects_after_backend_restart_mid_run(
     test_app,
     authenticated_client,
@@ -364,7 +372,7 @@ async def test_daemon_reconnects_after_backend_restart_mid_run(
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)
 async def test_daemon_survives_client_network_loss_and_resumes_without_duplicate_tool_execution(
     monkeypatch,
     authenticated_client,
@@ -498,7 +506,7 @@ async def test_daemon_survives_client_network_loss_and_resumes_without_duplicate
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)
 async def test_concurrent_runs_beyond_daemon_capacity_are_rejected(
     monkeypatch,
     authenticated_client,

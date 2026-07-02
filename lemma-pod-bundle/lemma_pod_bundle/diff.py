@@ -81,8 +81,15 @@ def diff_table_columns(existing: dict[str, Any], desired: dict[str, Any]) -> Tab
         if name and name != primary_key
     )
 
+    # The primary key is immutable, same as in to_remove above: an applier
+    # acting on "incompatible" drops and re-adds the column, and dropping the
+    # pk is rejected at the table layer — a pk whose manifest shape merely
+    # drifted (e.g. a UI-materialized required/unique id vs a bare bundle id)
+    # must not turn into a failing rebuild step.
     incompatible: list[str] = []
     for name in sorted(existing_columns.keys() & desired_columns.keys()):
+        if name == primary_key:
+            continue
         if existing_columns[name] != desired_columns[name]:
             incompatible.append(name)
 

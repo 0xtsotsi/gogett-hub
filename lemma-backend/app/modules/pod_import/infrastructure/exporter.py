@@ -36,11 +36,26 @@ def _write_json(path: Path, data: object) -> None:
 class BundleExporter:
     def __init__(self, uow: SqlAlchemyUnitOfWork) -> None:
         self.uow = uow
+        # One AccountRepository (and cipher) per exporter, one lookup per
+        # distinct account: several grants typically reference the same
+        # connector account, and each used to rebuild the repo and re-query.
+        self._account_repo = None
+        self._account_providers: dict[UUID, str | None] = {}
 
     async def export(
-        self, *, pod_id: UUID, user_id: UUID, ctx: Context, with_data: bool = True
+        self,
+        *,
+        pod_id: UUID,
+        user_id: UUID,
+        ctx: Context,
+        with_data: bool = True,
+        with_assets: bool = True,
     ) -> tuple[str, bytes]:
-        """Return ``(pod_name, zip_bytes)`` for the pod's bundle."""
+        """Return ``(pod_name, zip_bytes)`` for the pod's bundle.
+
+        ``with_assets=False`` skips downloading app archives (dist.zip /
+        source.zip) — the app manifests still ship, so a README preview sees
+        every resource without paying for asset downloads it throws away."""
         from app.modules.pod.infrastructure.pod_repositories import PodRepository
 
         pod = await PodRepository(self.uow).get(pod_id)
@@ -65,7 +80,7 @@ class BundleExporter:
             await self._export_workflows(root, pod_id, user_id, ctx)
             await self._export_schedules(root, pod_id, ctx)
             await self._export_surfaces(root, pod_id, ctx)
-            await self._export_apps(root, pod_id, user_id, ctx)
+            await self._export_apps(root, pod_id, user_id, ctx, with_assets)
 
             # Template non-portable ids (account/member) into ${var} placeholders
             # and record them under pod.json -> variables, THEN derive the
@@ -185,18 +200,21 @@ class BundleExporter:
         """Map a connector_account grant's account UUID to its provider slug."""
         from uuid import UUID as _UUID
 
-        from app.core.crypto import get_secret_cipher
-        from app.modules.connectors.infrastructure.repositories.account_repository import (
-            AccountRepository,
-        )
-
         try:
             account_id = _UUID(str(account_name))
         except (ValueError, TypeError):
             return None
-        repo = AccountRepository(self.uow, encryption=get_secret_cipher())
-        account = await repo.get(account_id)
-        return account.connector_id if account else None
+        if account_id not in self._account_providers:
+            if self._account_repo is None:
+                from app.core.crypto import get_secret_cipher
+                from app.modules.connectors.infrastructure.repositories.account_repository import (
+                    AccountRepository,
+                )
+
+                self._account_repo = AccountRepository(self.uow, encryption=get_secret_cipher())
+            account = await self._account_repo.get(account_id)
+            self._account_providers[account_id] = account.connector_id if account else None
+        return self._account_providers[account_id]
 
     async def _export_functions(self, root, pod_id, user_id, ctx) -> None:
         from app.modules.function.api.dependencies import build_function_service
@@ -204,7 +222,10 @@ class BundleExporter:
         service = build_function_service(self.uow)
         functions, _ = await service.list_functions(pod_id, user_id, limit=1000, ctx=ctx)
         for summary in functions:
-            # Re-fetch with code so the bundle is runnable on re-import.
+            # Re-fetch with code so the bundle is runnable on re-import. This
+            # stays per-function: code lives in per-function object storage
+            # (FunctionModel only carries code_path), so list_functions can't
+            # return it in one call.
             function = await service.get_function_by_name(
                 pod_id, summary.name, user_id, include_code=True, ctx=ctx
             )
@@ -259,7 +280,10 @@ class BundleExporter:
             _write_json(
                 root / "schedules" / name / f"{name}.json",
                 {
-                    "name": schedule.name,
+                    # The effective name, not the raw (possibly null) one: the
+                    # manifest must address the same schedule its directory
+                    # names, or re-imports plan duplicates instead of updates.
+                    "name": name,
                     "schedule_type": str(getattr(schedule.schedule_type, "value", schedule.schedule_type)),
                     "agent_name": schedule.agent_name,
                     "workflow_name": schedule.workflow_name,
@@ -291,7 +315,7 @@ class BundleExporter:
                 },
             )
 
-    async def _export_apps(self, root, pod_id, user_id, ctx) -> None:
+    async def _export_apps(self, root, pod_id, user_id, ctx, with_assets) -> None:
         from app.modules.apps.api.dependencies import build_app_service
 
         service = build_app_service(self.uow)
@@ -307,7 +331,8 @@ class BundleExporter:
                     "visibility": app.visibility,
                 },
             )
-            await self._export_app_archive(service, pod_id, user_id, app.name, ctx, app_dir)
+            if with_assets:
+                await self._export_app_archive(service, pod_id, user_id, app.name, ctx, app_dir)
 
     async def _export_app_archive(self, service, pod_id, user_id, name, ctx, app_dir) -> None:
         """Download the prebuilt dist (and source, if any) so the app re-imports

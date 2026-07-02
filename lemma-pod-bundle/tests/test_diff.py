@@ -44,3 +44,16 @@ def test_system_and_primary_key_columns_are_ignored():
     # Dropping the system column is not flagged; id (pk) never removed.
     assert diff.to_remove == []
     assert diff.is_destructive is False
+
+
+def test_a_drifted_primary_key_is_never_marked_incompatible():
+    # A UI-materialized pk carries required/unique flags a bare bundle pk
+    # doesn't — the pk is immutable, so drift must not become a rebuild step.
+    existing = {"primary_key_column": "id", "columns": [
+        {"name": "id", "type": "uuid", "required": True, "unique": True},
+        {"name": "name", "type": "text"}]}
+    desired = {"primary_key_column": "id", "columns": [
+        {"name": "id", "type": "uuid"}, {"name": "name", "type": "text"}]}
+    diff = diff_table_columns(existing, desired)
+    assert diff.incompatible == []
+    assert diff.is_destructive is False

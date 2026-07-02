@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Failure reasons are stored to be actionable, not full tracebacks.
 MAX_ERROR_LENGTH = 2000

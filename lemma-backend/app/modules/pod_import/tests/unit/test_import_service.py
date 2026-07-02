@@ -23,12 +23,33 @@ class FakeRepo:
     """Records every save so we can assert a checkpoint lands after each step."""
 
     saves: int = 0
+    rollbacks: int = 0
 
     async def save(self, entity: PodImportEntity) -> None:
         self.saves += 1
 
     async def get(self, import_id: UUID):  # pragma: no cover - unused here
         return None
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+@dataclass
+class PoisonableRepo(FakeRepo):
+    """Models the real session's failure mode: once a step's DB error aborts
+    the transaction, every save raises until rollback() clears it."""
+
+    poisoned: bool = False
+
+    async def save(self, entity: PodImportEntity) -> None:
+        if self.poisoned:
+            raise RuntimeError("current transaction is aborted")
+        await super().save(entity)
+
+    async def rollback(self) -> None:
+        self.poisoned = False
+        await super().rollback()
 
 
 @dataclass
@@ -127,3 +148,70 @@ async def test_apply_on_fully_done_plan_just_completes():
 
     assert result.status is ImportStatus.COMPLETED
     assert applier.applied == []  # nothing re-run
+
+
+@pytest.mark.asyncio
+async def test_failed_step_rolls_back_before_the_failed_checkpoint_is_saved():
+    # A step handler that dies mid-transaction (flush happened, then a DB error)
+    # leaves the shared session aborted. Without a rollback first, saving the
+    # FAILED checkpoint raises too and the import is stuck APPLYING forever.
+    imp = _import("a", "b", "c")
+    repo = PoisonableRepo()
+
+    class PoisoningApplier:
+        applied: list[str] = []
+
+        async def apply_step(self, step: ImportStep, ctx) -> None:
+            if step.resource_name == "b":
+                repo.poisoned = True
+                raise RuntimeError("duplicate key value violates unique constraint")
+            self.applied.append(step.resource_name)
+
+    service = ImportService(repository=repo, applier=PoisoningApplier())
+
+    result = await service.apply(imp, ctx=_ctx())  # must not raise
+
+    assert result.status is ImportStatus.FAILED
+    assert result.is_resumable is True
+    assert "duplicate key" in result.error
+    failed = next(s for s in result.plan if s.resource_name == "b")
+    assert failed.status is ImportStepStatus.FAILED
+    assert "duplicate key" in failed.error
+    assert repo.rollbacks == 1
+    assert repo.poisoned is False  # the FAILED checkpoint landed on a clean txn
+
+
+def _applying_import(*, updated_seconds_ago: float) -> PodImportEntity:
+    from datetime import datetime, timedelta, timezone
+
+    entity = PodImportEntity(
+        pod_id=uuid7(),
+        user_id=uuid7(),
+        status=ImportStatus.APPLYING,
+        plan=[
+            ImportStep(
+                resource_type="tables", resource_name="t", action=ImportAction.CREATE
+            )
+        ],
+    )
+    entity.updated_at = datetime.now(timezone.utc) - timedelta(
+        seconds=updated_seconds_ago
+    )
+    return entity
+
+
+def test_a_live_apply_cannot_be_joined_by_a_second_request():
+    """Two concurrent loops would double-run the current step (e.g. both pass a
+    table's empty check and double-seed it) — a fresh APPLYING must 409."""
+    from app.modules.pod_import.domain.entities import ImportInProgressError
+
+    with pytest.raises(ImportInProgressError):
+        _applying_import(updated_seconds_ago=5).begin_apply()
+
+
+def test_a_stale_applying_import_is_resumable():
+    """A crashed worker's leftover stops checkpointing; once its updated_at is
+    stale the import must be resumable, not locked forever."""
+    entity = _applying_import(updated_seconds_ago=600)
+    entity.begin_apply()
+    assert entity.status is ImportStatus.APPLYING

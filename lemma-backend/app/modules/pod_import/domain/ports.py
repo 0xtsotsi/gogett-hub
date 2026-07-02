@@ -24,6 +24,12 @@ class ImportRepository(Protocol):
 
     async def get(self, import_id: UUID) -> PodImportEntity | None: ...
 
+    async def rollback(self) -> None:
+        """Discard the current transaction's uncommitted work. Called before a
+        FAILED checkpoint is saved: a failed step can poison the shared session,
+        and the checkpoint must persist on a clean transaction."""
+        ...
+
 
 class ResourceApplier(Protocol):
     """Realizes a single import step against the target pod (create/update one

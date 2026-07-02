@@ -31,16 +31,16 @@ class FakeExisting:
         self._present = present
         self._schemas = schemas
 
-    def has(self, resource_type: str, name: str) -> bool:
+    async def has(self, resource_type: str, name: str) -> bool:
         return (resource_type, name) in self._present
 
-    def table_schema(self, name: str):
+    async def table_schema(self, name: str):
         return self._schemas.get(name)
 
 
-def test_plan_orders_by_dependency_and_marks_creates(tmp_path):
+async def test_plan_orders_by_dependency_and_marks_creates(tmp_path):
     root = _bundle(tmp_path)
-    steps, requirements, capabilities = build_plan(root, FakeExisting(set(), {}))
+    steps, requirements, capabilities = await build_plan(root, FakeExisting(set(), {}))
 
     # tables before agents (dependency order), all creates on an empty pod.
     assert [(s.resource_type, s.resource_name) for s in steps] == [
@@ -54,18 +54,18 @@ def test_plan_orders_by_dependency_and_marks_creates(tmp_path):
     assert {"data", "ai"} <= tiers
 
 
-def test_existing_resource_becomes_update(tmp_path):
+async def test_existing_resource_becomes_update(tmp_path):
     root = _bundle(tmp_path)
     existing = FakeExisting(
         present={("agents", "triage")},
         schemas={},
     )
-    steps = {s.resource_name: s for s in build_plan(root, existing)[0]}
+    steps = {s.resource_name: s for s in (await build_plan(root, existing))[0]}
     assert steps["triage"].action is ImportAction.UPDATE
     assert steps["contacts"].action is ImportAction.CREATE
 
 
-def test_table_update_dropping_a_column_is_destructive(tmp_path):
+async def test_table_update_dropping_a_column_is_destructive(tmp_path):
     root = _bundle(tmp_path)
     # Pod already has contacts with an extra `phone` column the bundle drops.
     existing = FakeExisting(
@@ -81,12 +81,12 @@ def test_table_update_dropping_a_column_is_destructive(tmp_path):
             }
         },
     )
-    contacts = {s.resource_name: s for s in build_plan(root, existing)[0]}["contacts"]
+    contacts = {s.resource_name: s for s in (await build_plan(root, existing))[0]}["contacts"]
     assert contacts.action is ImportAction.UPDATE
     assert contacts.destructive is True
 
 
-def test_tables_ordered_after_their_foreign_key_targets(tmp_path):
+async def test_tables_ordered_after_their_foreign_key_targets(tmp_path):
     # `aaa` references `zzz`, but sorts first alphabetically — the plan must put
     # `zzz` before `aaa` so the FK target exists at create time.
     root = tmp_path / "fk"
@@ -96,12 +96,12 @@ def test_tables_ordered_after_their_foreign_key_targets(tmp_path):
     })
     _write(root / "tables" / "zzz" / "zzz.json", {"columns": [{"name": "id", "type": "UUID"}]})
 
-    steps, _, _ = build_plan(root, FakeExisting(set(), {}))
+    steps, _, _ = await build_plan(root, FakeExisting(set(), {}))
     table_order = [s.resource_name for s in steps if s.resource_type == "tables"]
     assert table_order.index("zzz") < table_order.index("aaa")
 
 
-def test_grants_become_a_deferred_step_after_all_resources(tmp_path):
+async def test_grants_become_a_deferred_step_after_all_resources(tmp_path):
     # An agent that grants access to a function gets its grants applied in a
     # final pass — emitted as an `agent_grants` step ordered after every
     # resource step, so the grant target exists when it runs.
@@ -115,7 +115,7 @@ def test_grants_become_a_deferred_step_after_all_resources(tmp_path):
         ]},
     })
 
-    steps, _, _ = build_plan(root, FakeExisting(set(), {}))
+    steps, _, _ = await build_plan(root, FakeExisting(set(), {}))
     keys = [(s.resource_type, s.resource_name) for s in steps]
 
     assert ("agent_grants", "triage") in keys
@@ -125,18 +125,18 @@ def test_grants_become_a_deferred_step_after_all_resources(tmp_path):
     assert ("function_grants", "foo") not in keys
 
 
-def test_no_grant_steps_when_no_grants(tmp_path):
+async def test_no_grant_steps_when_no_grants(tmp_path):
     root = _bundle(tmp_path)  # contacts table + triage agent, neither has grants
-    steps, _, _ = build_plan(root, FakeExisting(set(), {}))
+    steps, _, _ = await build_plan(root, FakeExisting(set(), {}))
     assert not any(s.resource_type.endswith("_grants") for s in steps)
 
 
-def test_additive_table_update_is_not_destructive(tmp_path):
+async def test_additive_table_update_is_not_destructive(tmp_path):
     root = _bundle(tmp_path)
     # Pod's contacts has only id; the bundle adds email — additive, safe.
     existing = FakeExisting(
         present={("tables", "contacts")},
         schemas={"contacts": {"primary_key_column": "id", "columns": [{"name": "id", "type": "UUID"}]}},
     )
-    contacts = {s.resource_name: s for s in build_plan(root, existing)[0]}["contacts"]
+    contacts = {s.resource_name: s for s in (await build_plan(root, existing))[0]}["contacts"]
     assert contacts.destructive is False

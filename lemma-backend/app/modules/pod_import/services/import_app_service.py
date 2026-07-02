@@ -7,6 +7,7 @@ step-by-step apply itself lives in :class:`ImportService`.
 
 from __future__ import annotations
 
+from typing import Callable
 from uuid import UUID
 
 from app.core.authorization.context import Context
@@ -21,18 +22,23 @@ from app.modules.pod_import.infrastructure.staging import BundleStaging
 from app.modules.pod_import.services.import_service import ImportService
 from app.modules.pod_import.services.plan_builder import ExistingResources, build_plan
 
+# The target pod is only known at plan time ("create a new pod" flows create it
+# mid-request), so existence checks are bound per pod through a factory rather
+# than a pre-built adapter.
+ExistingResourcesFactory = Callable[[UUID], ExistingResources]
+
 
 class ImportAppService:
     def __init__(
         self,
         *,
         uow: SqlAlchemyUnitOfWork,
-        existing: ExistingResources,
+        existing_factory: ExistingResourcesFactory,
         staging: BundleStaging,
     ) -> None:
         self.uow = uow
         self._repo = PodImportRepository(uow)
-        self._existing = existing
+        self._existing_factory = existing_factory
         self._staging = staging
         self._engine = ImportService(
             repository=self._repo,
@@ -56,7 +62,9 @@ class ImportAppService:
             source_name=source_name,
         )
         bundle_root = self._staging.stage(entity.id, archive, filename)
-        steps, requirements, capabilities = build_plan(bundle_root, self._existing)
+        steps, requirements, capabilities = await build_plan(
+            bundle_root, self._existing_factory(pod_id)
+        )
         entity.plan = steps
         entity.requirements = requirements
         entity.capabilities = capabilities

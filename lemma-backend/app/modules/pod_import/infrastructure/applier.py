@@ -5,25 +5,33 @@ backend's own resource services. The engine hands it a step; it reads that
 resource's manifest from the staged bundle and dispatches to the matching
 service (TableService, AgentService, …) by resource type.
 
-Every resource type has a handler. e2e round-trip-verified: tables (schema +
-seed data), agents (toolsets, schemas, grants), functions (code), workflows.
-Wired but not exercisable in the e2e harness because their create path calls an
-external service: schedules (scheduler API), surfaces (connector account), apps
+Every resource type has a CREATE and an UPDATE handler, dispatched on
+``step.action``. e2e round-trip-verified: tables (schema + seed data), agents
+(toolsets, schemas, grants), functions (code), workflows. Wired but not
+exercisable in the e2e harness because their create path calls an external
+service: schedules (scheduler API), surfaces (connector account), apps
 (asset build) — app asset upload itself is still deferred (metadata only). An
 unwired/failed step is recorded as a resumable failure, never a half-built pod.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
-from lemma_pod_bundle import read_manifest, read_table_data, resolve_placeholders
+from lemma_pod_bundle import (
+    GRANT_STEP_KINDS,
+    diff_table_columns,
+    read_manifest,
+    read_table_data,
+    resolve_placeholders,
+)
 
 from app.core.authorization.context import Context
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
-from app.modules.pod_import.domain.value_objects import ImportStep
+from app.modules.pod_import.domain.value_objects import ImportAction, ImportStep
 
 # Audit columns Lemma materializes itself — a bundle must not declare them.
 _RESERVED_COLUMNS = frozenset({"created_at", "updated_at", "user_id"})
@@ -31,11 +39,13 @@ _RESERVED_COLUMNS = frozenset({"created_at", "updated_at", "user_id"})
 # Grants are applied in a final pass, AFTER every resource exists, because a
 # grant can target a resource created later (an agent granted a workflow, or a
 # peer agent) — applying them inline would fail to resolve the target. Each
-# entry maps a grant-step type to (manifest dir, grantee_type). The plan appends
-# one such step per grantee that carries grants.
+# entry maps a grant-step type to (manifest dir, grantee_type): the step types
+# and manifest dirs come from the shared GRANT_STEP_KINDS mapping the plan
+# emits from, so plan and applier can't drift; only the backend grantee-type
+# names are local.
+_GRANTEE_TYPES = {"agents": "AGENT", "functions": "FUNCTION"}
 _GRANT_STEP_KINDS: dict[str, tuple[str, str]] = {
-    "agent_grants": ("agents", "AGENT"),
-    "function_grants": ("functions", "FUNCTION"),
+    step_kind: (kind, _GRANTEE_TYPES[kind]) for kind, step_kind in GRANT_STEP_KINDS.items()
 }
 
 
@@ -71,7 +81,7 @@ class BackendResourceApplier:
 
     def __init__(self, uow: SqlAlchemyUnitOfWork) -> None:
         self.uow = uow
-        self._handlers: dict[str, ResourceHandler] = {
+        self._create_handlers: dict[str, ResourceHandler] = {
             "tables": self._apply_table,
             "agents": self._apply_agent,
             "functions": self._apply_function,
@@ -80,6 +90,15 @@ class BackendResourceApplier:
             "surfaces": self._apply_surface,
             "apps": self._apply_app,
         }
+        self._update_handlers: dict[str, ResourceHandler] = {
+            "tables": self._update_table,
+            "agents": self._update_agent,
+            "functions": self._update_function,
+            "workflows": self._update_workflow,
+            "schedules": self._update_schedule,
+            "surfaces": self._update_surface,
+            "apps": self._update_app,
+        }
 
     async def apply_step(self, step: ImportStep, ctx: ImportApplyContext) -> None:
         # A grant step replays a grantee's grants; its manifest is the
@@ -87,32 +106,34 @@ class BackendResourceApplier:
         grant_spec = _GRANT_STEP_KINDS.get(step.resource_type)
         read_kind = grant_spec[0] if grant_spec else step.resource_type
         manifest = read_manifest(ctx.bundle_path, read_kind, step.resource_name)
-        # The resource name is the directory name; a manifest may omit it, so
+        # The resource name is the directory name; a manifest may omit it OR
+        # carry an explicit null (an unnamed schedule exports as "name": null
+        # under a uuid directory) — setdefault alone won't fix the latter, so
         # make it canonical before any handler reads manifest["name"].
-        manifest.setdefault("name", step.resource_name)
+        if not manifest.get("name"):
+            manifest["name"] = step.resource_name
         # Resolve ${var} placeholders (account/member ids) before the handler
         # constructs entities; unsupplied ones drop their field.
         manifest = resolve_placeholders(manifest, ctx.variables)
-        try:
-            if grant_spec is not None:
-                await self._apply_grants_phase(grant_spec[1], step.resource_name, manifest, ctx)
-                return
-            handler = self._handlers.get(step.resource_type)
-            if handler is None:
-                raise ResourceApplyNotWired(
-                    f"Applying '{step.resource_type}' is not wired to a backend service yet "
-                    f"(resource '{step.resource_name}')."
-                )
-            await handler(manifest, ctx)
-        except Exception as exc:
-            # Idempotent apply: a resource that already exists (from a prior or
-            # partial import) is treated as done, not a failure — so re-imports
-            # and resumes don't break on what's already there.
-            if _is_already_exists(exc):
-                return
-            raise
+        if grant_spec is not None:
+            await self._apply_grants_phase(grant_spec[1], step.resource_name, manifest, ctx)
+            return
+        if step.action is ImportAction.SKIP:
+            return
+        handlers = (
+            self._update_handlers
+            if step.action is ImportAction.UPDATE
+            else self._create_handlers
+        )
+        handler = handlers.get(step.resource_type)
+        if handler is None:
+            raise ResourceApplyNotWired(
+                f"Applying '{step.resource_type}' ({step.action.value}) is not wired "
+                f"to a backend service yet (resource '{step.resource_name}')."
+            )
+        await handler(manifest, ctx)
 
-    # -- handlers -------------------------------------------------------------
+    # -- create handlers --------------------------------------------------------
 
     async def _apply_table(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
         from app.modules.datastore.api.dependencies import build_table_service
@@ -126,16 +147,17 @@ class BackendResourceApplier:
         ]
         table_name = str(manifest["name"])
         service = build_table_service(self.uow)
-        await service.create_table(
-            pod_id=ctx.pod_id,
-            table_name=table_name,
-            primary_key_column=str(manifest.get("primary_key_column") or "id"),
-            columns=columns,
-            config=manifest.get("config"),
-            enable_rls=bool(manifest.get("enable_rls", False)),
-            visibility=manifest.get("visibility"),
-            ctx=ctx.ctx,
-        )
+        with _already_exists_is_done():
+            await service.create_table(
+                pod_id=ctx.pod_id,
+                table_name=table_name,
+                primary_key_column=str(manifest.get("primary_key_column") or "id"),
+                columns=columns,
+                config=manifest.get("config"),
+                enable_rls=bool(manifest.get("enable_rls", False)),
+                visibility=manifest.get("visibility"),
+                ctx=ctx.ctx,
+            )
         await self._seed_table(table_name, service, ctx)
 
     async def _seed_table(self, table_name, table_service, ctx: ImportApplyContext) -> None:
@@ -151,6 +173,14 @@ class BackendResourceApplier:
         schema_name = table_service.schema_manager.get_schema_name(ctx.pod_id)
         table_ctx = TableContext.from_table_entity(table, schema_name, events_enabled=True)
         record_service = build_record_service(self.uow)
+        # Seed only an empty table: re-running (a resume after the table was
+        # created but before its rows landed, or an UPDATE of a table already
+        # holding live data) must not duplicate or clobber existing rows.
+        existing_rows, _ = await record_service.list_records(
+            table_ctx, ctx.user_id, limit=1, offset=0, admin_mode=True
+        )
+        if existing_rows:
+            return
         await record_service.bulk_create_records(
             table_ctx, rows, ctx.user_id, upsert=True
         )
@@ -174,21 +204,22 @@ class BackendResourceApplier:
             agent_repository=AgentRepository(self.uow),
             authorization_service=create_authorization_service(self.uow),
         )
-        await service.create_agent(
-            pod_id=ctx.pod_id,
-            user_id=ctx.user_id,
-            name=str(manifest["name"]),
-            instruction=instruction,
-            description=manifest.get("description"),
-            icon_url=manifest.get("icon_url"),
-            agent_runtime=_agent_runtime_config(manifest.get("agent_runtime")),
-            toolsets=manifest.get("toolsets") or None,
-            input_schema=manifest.get("input_schema"),
-            output_schema=manifest.get("output_schema"),
-            visibility=manifest.get("visibility"),
-            metadata=manifest.get("metadata"),
-            ctx=ctx.ctx,
-        )
+        with _already_exists_is_done():
+            await service.create_agent(
+                pod_id=ctx.pod_id,
+                user_id=ctx.user_id,
+                name=str(manifest["name"]),
+                instruction=instruction,
+                description=manifest.get("description"),
+                icon_url=manifest.get("icon_url"),
+                agent_runtime=_agent_runtime_config(manifest.get("agent_runtime")),
+                toolsets=manifest.get("toolsets") or None,
+                input_schema=manifest.get("input_schema"),
+                output_schema=manifest.get("output_schema"),
+                visibility=manifest.get("visibility"),
+                metadata=manifest.get("metadata"),
+                ctx=ctx.ctx,
+            )
         # Grants are replayed in the deferred grant pass (see _GRANT_STEP_KINDS),
         # after every resource the grants might target has been created.
 
@@ -219,7 +250,8 @@ class BackendResourceApplier:
             python_packages=list(manifest.get("python_packages") or []),
         )
         service = build_function_service(self.uow)
-        await service.create_function(entity, ctx.user_id, code=code, ctx=ctx.ctx)
+        with _already_exists_is_done():
+            await service.create_function(entity, ctx.user_id, code=code, ctx=ctx.ctx)
         # Grants are replayed in the deferred grant pass (see _GRANT_STEP_KINDS),
         # after every resource the grants might target has been created.
 
@@ -351,18 +383,19 @@ class BackendResourceApplier:
         edges = [WorkflowEdge.model_validate(e) for e in manifest.get("edges") or []]
         start = FlowStart.model_validate(manifest["start"]) if manifest.get("start") else None
         service = FlowService(self.uow, icon_service=IconService())
-        await service.create_flow(
-            ctx.pod_id,
-            str(manifest["name"]),
-            manifest.get("description"),
-            manifest.get("icon_url"),
-            start,
-            nodes=nodes,
-            edges=edges,
-            visibility=manifest.get("visibility"),
-            requester_user_id=ctx.user_id,
-            ctx=ctx.ctx,
-        )
+        with _already_exists_is_done():
+            await service.create_flow(
+                ctx.pod_id,
+                str(manifest["name"]),
+                manifest.get("description"),
+                manifest.get("icon_url"),
+                start,
+                nodes=nodes,
+                edges=edges,
+                visibility=manifest.get("visibility"),
+                requester_user_id=ctx.user_id,
+                ctx=ctx.ctx,
+            )
 
     async def _resolve_agent_id(self, agent_name: str | None, ctx: ImportApplyContext):
         if not agent_name:
@@ -400,15 +433,16 @@ class BackendResourceApplier:
             else None
         )
         account_id = manifest.get("account_id")
-        await get_surface_service(self.uow).create_surface(
-            pod_id=ctx.pod_id,
-            agent_id=agent_id,
-            platform=SurfacePlatform(str(manifest["platform"]).upper()),
-            config=config,
-            credential_mode=credential_mode,
-            account_id=UUID(account_id) if isinstance(account_id, str) else account_id,
-            ctx=ctx.ctx,
-        )
+        with _already_exists_is_done():
+            await get_surface_service(self.uow).create_surface(
+                pod_id=ctx.pod_id,
+                agent_id=agent_id,
+                platform=SurfacePlatform(str(manifest["platform"]).upper()),
+                config=config,
+                credential_mode=credential_mode,
+                account_id=UUID(account_id) if isinstance(account_id, str) else account_id,
+                ctx=ctx.ctx,
+            )
 
     async def _apply_app(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
         from app.core.helpers.slug import normalize_public_slug
@@ -436,16 +470,23 @@ class BackendResourceApplier:
             description=manifest.get("description"),
             visibility=manifest.get("visibility") or "POD",
         )
-        await service.create_app_with_context(entity, ctx.user_id, ctx=ctx.ctx)
+        with _already_exists_is_done():
+            await service.create_app_with_context(entity, ctx.user_id, ctx=ctx.ctx)
         # Upload the prebuilt assets if the bundle carries them (no build needed —
-        # a dist archive uploads straight to READY).
-        app_dir = ctx.bundle_path / "apps" / entity.name
+        # a dist archive uploads straight to READY). Runs even when the app row
+        # already existed: a resume after a partial create must still land them.
+        await self._upload_app_assets(service, entity.name, ctx)
+
+    async def _upload_app_assets(
+        self, service, app_name: str, ctx: ImportApplyContext
+    ) -> None:
+        app_dir = ctx.bundle_path / "apps" / app_name
         source_bytes = _read_bytes(app_dir / "source.zip")
         dist_bytes = _read_bytes(app_dir / "dist.zip")
         if source_bytes or dist_bytes:
             await service.upload_bundle(
                 ctx.pod_id,
-                entity.name,
+                app_name,
                 ctx.user_id,
                 source_archive_bytes=source_bytes,
                 dist_archive_bytes=dist_bytes,
@@ -470,7 +511,245 @@ class BackendResourceApplier:
             filter_output_schema=manifest.get("filter_output_schema"),
             visibility=manifest.get("visibility"),
         )
-        await ScheduleService(uow=self.uow).create_schedule(create, ctx=ctx.ctx)
+        with _already_exists_is_done():
+            await ScheduleService(uow=self.uow).create_schedule(create, ctx=ctx.ctx)
+
+    # -- update handlers ----------------------------------------------------------
+    # An UPDATE step means the plan found the resource in the target pod; the
+    # bundle is the source of truth, so each handler makes the live resource
+    # match the manifest through that kind's own update path.
+
+    async def _update_table(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.datastore.api.dependencies import build_table_service
+        from app.modules.datastore.domain.datastore_entities import ColumnSchema
+
+        table_name = str(manifest["name"])
+        service = build_table_service(self.uow)
+        table = await service.get_table(ctx.pod_id, table_name, ctx.ctx)
+        current = {
+            "primary_key_column": table.primary_key_column,
+            "columns": [column.model_dump(exclude_none=True) for column in table.columns],
+        }
+        # The same classifier the plan used to mark this step destructive, so
+        # what gets applied is exactly what the importer consented to.
+        diff = diff_table_columns(current, manifest)
+        desired_by_name = {
+            str(column.get("name")): column for column in manifest.get("columns") or []
+        }
+        # Drops first (removals + incompatible rebuilds), then adds. An
+        # incompatible column (type/required/unique changed) can't be migrated
+        # in place — it is dropped and re-added, losing its data; that is the
+        # data loss the plan's destructive flag warned about.
+        for name in [*diff.to_remove, *diff.incompatible]:
+            await service.remove_column(ctx.pod_id, table_name, name, ctx.ctx)
+        for column in [*diff.to_add, *(desired_by_name[name] for name in diff.incompatible)]:
+            await service.add_column(
+                ctx.pod_id, table_name, ColumnSchema(**_column_kwargs(column)), ctx.ctx
+            )
+        # Metadata the column diff doesn't cover follows the bundle too.
+        await service.update_table(
+            ctx.pod_id,
+            table_name,
+            config=manifest.get("config"),
+            ctx=ctx.ctx,
+            visibility=manifest.get("visibility"),
+            enable_rls=bool(manifest["enable_rls"]) if "enable_rls" in manifest else None,
+        )
+        await self._seed_table(table_name, service, ctx)
+
+    async def _update_agent(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.agent.infrastructure.repositories import AgentRepository
+        from app.modules.agent.services.agent_service import AgentService
+        from app.modules.pod.services.authorization_factory import (
+            create_authorization_service,
+        )
+
+        instruction = manifest.get("instruction")
+        if not isinstance(instruction, str):
+            # Same sidecar limitation as the create path — fail clearly.
+            raise ResourceApplyNotWired(
+                f"Agent '{manifest.get('name')}' has a non-inline instruction "
+                "(sidecar file); $file resolution isn't wired yet."
+            )
+        service = AgentService(
+            agent_repository=AgentRepository(self.uow),
+            authorization_service=create_authorization_service(self.uow),
+        )
+        await service.update_agent(
+            pod_id=ctx.pod_id,
+            name=str(manifest["name"]),
+            instruction=instruction,
+            description=manifest.get("description"),
+            icon_url=manifest.get("icon_url"),
+            agent_runtime=_agent_runtime_config(manifest.get("agent_runtime")),
+            toolsets=manifest.get("toolsets") or None,
+            input_schema=manifest.get("input_schema"),
+            output_schema=manifest.get("output_schema"),
+            visibility=manifest.get("visibility"),
+            metadata=manifest.get("metadata"),
+            requester_user_id=ctx.user_id,
+            ctx=ctx.ctx,
+        )
+
+    async def _update_function(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.function.api.dependencies import build_function_service
+        from app.modules.function.domain.entities import FunctionType, FunctionUpdateEntity
+
+        code = manifest.get("code")
+        if code is not None and not isinstance(code, str):
+            raise ResourceApplyNotWired(
+                f"Function '{manifest.get('name')}' has an unresolved code reference."
+            )
+        # A code update re-extracts input/output/config schemas server-side —
+        # the same derivation create runs, so the bundle's schemas are never
+        # trusted over the code they came from.
+        update = FunctionUpdateEntity(
+            description=manifest.get("description"),
+            icon_url=manifest.get("icon_url"),
+            code=code,
+            config=manifest.get("config"),
+            type=FunctionType(manifest["type"]) if manifest.get("type") else None,
+            visibility=manifest.get("visibility"),
+        )
+        service = build_function_service(self.uow)
+        await service.update_function(
+            ctx.pod_id, str(manifest["name"]), update, ctx.user_id, ctx=ctx.ctx
+        )
+
+    async def _update_workflow(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.icon.services.icon_service import IconService
+        from app.modules.workflow.domain.flow import FlowUpdateEntity
+        from app.modules.workflow.domain.graph import WorkflowEdge
+        from app.modules.workflow.domain.nodes import WORKFLOW_NODE_ADAPTER
+        from app.modules.workflow.domain.start import FlowStart
+        from app.modules.workflow.services.flow_service import FlowService
+
+        name = str(manifest["name"])
+        service = FlowService(self.uow, icon_service=IconService())
+        flow = await service.get_flow_by_name(
+            ctx.pod_id, name, requester_user_id=ctx.user_id, ctx=ctx.ctx
+        )
+        if flow is None:
+            raise ValueError(f"Workflow '{name}' was planned as an update but no longer exists")
+        nodes = [WORKFLOW_NODE_ADAPTER.validate_python(n) for n in manifest.get("nodes") or []]
+        edges = [WorkflowEdge.model_validate(e) for e in manifest.get("edges") or []]
+        start = FlowStart.model_validate(manifest["start"]) if manifest.get("start") else None
+        await service.update_flow(
+            flow.id,
+            FlowUpdateEntity(
+                description=manifest.get("description"),
+                icon_url=manifest.get("icon_url"),
+                start=start,
+                visibility=manifest.get("visibility"),
+            ),
+            requester_user_id=ctx.user_id,
+            ctx=ctx.ctx,
+        )
+        await service.update_flow_graph(
+            flow.id, nodes, edges, start, requester_user_id=ctx.user_id, ctx=ctx.ctx
+        )
+
+    async def _update_schedule(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.schedule.domain.schedule import ScheduleUpdateEntity
+        from app.modules.schedule.services.schedule_service import ScheduleService
+
+        name = str(manifest["name"])
+        service = ScheduleService(uow=self.uow)
+        existing = await service.schedule_repository.get_by_name(
+            pod_id=ctx.pod_id, name=name
+        )
+        if existing is None:
+            # Legacy unnamed schedules are addressable only by id — their
+            # bundle name IS the uuid (the plan's existence check matched this
+            # step the same way).
+            from app.modules.pod_import.infrastructure.existing_resources import (
+                schedule_by_uuid_name,
+            )
+
+            existing = await schedule_by_uuid_name(
+                service.schedule_repository, ctx.pod_id, name
+            )
+        if existing is None:
+            raise ValueError(f"Schedule '{name}' was planned as an update but no longer exists")
+        # agent/workflow targets stay name-based; the service resolves them.
+        update = ScheduleUpdateEntity(
+            config=manifest.get("config"),
+            agent_name=manifest.get("agent_name"),
+            workflow_name=manifest.get("workflow_name"),
+            filter_instruction=manifest.get("filter_instruction"),
+            filter_output_schema=manifest.get("filter_output_schema"),
+            visibility=manifest.get("visibility"),
+        )
+        await service.update_schedule(existing.id, update, ctx=ctx.ctx)
+
+    async def _update_surface(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.agent_surfaces.api.dependencies import get_surface_service
+        from app.modules.agent_surfaces.domain.entities import (
+            SurfaceConfig,
+            SurfaceCredentialMode,
+        )
+
+        service = get_surface_service(self.uow)
+        surface = await service.get_surface_by_platform_in_pod(
+            pod_id=ctx.pod_id, platform=str(manifest["platform"]).upper()
+        )
+        agent_id = await self._resolve_agent_id(
+            manifest.get("default_agent_name") or manifest.get("agent_name"), ctx
+        )
+        config = SurfaceConfig.model_validate(manifest["config"]) if manifest.get("config") else None
+        credential_mode = (
+            SurfaceCredentialMode(manifest["credential_mode"])
+            if manifest.get("credential_mode")
+            else None
+        )
+        account_id = manifest.get("account_id")
+        await service.update_surface(
+            surface_id=surface.id,
+            agent_id=agent_id,
+            # Re-point the default agent only when the bundle names one — an
+            # absent name must not detach the live surface's agent.
+            update_agent_id=agent_id is not None,
+            config=config,
+            credential_mode=credential_mode,
+            account_id=UUID(account_id) if isinstance(account_id, str) else account_id,
+            ctx=ctx.ctx,
+        )
+
+    async def _update_app(self, manifest: dict[str, Any], ctx: ImportApplyContext) -> None:
+        from app.modules.apps.api.dependencies import build_app_service
+        from app.modules.apps.domain.entities import AppUpdateEntity
+
+        name = str(manifest["name"])
+        service = build_app_service(self.uow)
+        # public_slug is left alone on update: it's globally unique and already
+        # bound to this app's live URL — an import must not re-point it.
+        await service.update_app(
+            ctx.pod_id,
+            name,
+            AppUpdateEntity(
+                description=manifest.get("description"),
+                visibility=manifest.get("visibility"),
+            ),
+            ctx.user_id,
+            ctx=ctx.ctx,
+        )
+        # Re-upload the bundle's prebuilt assets onto the existing app — the
+        # bundle's build replaces the current release, no build step needed.
+        await self._upload_app_assets(service, name, ctx)
+
+
+@contextmanager
+def _already_exists_is_done():
+    """Idempotence for the one call in a create handler that can collide on a
+    re-run: a resource left behind by a prior partial apply means the create is
+    done, not failed. Only the create call is guarded — everything after it
+    (table seeding, app asset upload) still runs, which the old handler-wide
+    catch used to skip."""
+    try:
+        yield
+    except Exception as exc:
+        if not _is_already_exists(exc):
+            raise
 
 
 def _is_already_exists(exc: BaseException) -> bool:

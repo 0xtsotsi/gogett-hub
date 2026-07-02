@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from lemma_pod_bundle import (
+    GRANT_STEP_KINDS,
     RESOURCE_KINDS,
     diff_table_columns,
     list_resource_names,
@@ -31,27 +32,28 @@ from app.modules.pod_import.domain.value_objects import (
 
 
 class ExistingResources(Protocol):
-    """What the target pod already contains — queried while planning."""
+    """What the target pod already contains — queried while planning.
+    Async because production answers from the pod's repositories."""
 
-    def has(self, resource_type: str, name: str) -> bool: ...
+    async def has(self, resource_type: str, name: str) -> bool: ...
 
-    def table_schema(self, name: str) -> dict[str, Any] | None:
+    async def table_schema(self, name: str) -> dict[str, Any] | None:
         """Current columns/primary key for a table, or None if it doesn't exist.
         Used to classify a table update as additive vs destructive."""
         ...
 
 
-def _is_destructive_table_update(
+async def _is_destructive_table_update(
     bundle_root: Path, name: str, existing: ExistingResources
 ) -> bool:
-    current = existing.table_schema(name)
+    current = await existing.table_schema(name)
     if current is None:
         return False
     desired = read_manifest(bundle_root, "tables", name)
     return diff_table_columns(current, desired).is_destructive
 
 
-def build_plan(
+async def build_plan(
     bundle_root: Path, existing: ExistingResources
 ) -> tuple[list[ImportStep], dict[str, Any], list[dict[str, Any]]]:
     """Return ``(steps, requirements, capabilities)`` for the bundle.
@@ -71,12 +73,12 @@ def build_plan(
             # references, or the FK target won't exist yet.
             names = order_tables_by_fk(bundle_root, names)
         for name in names:
-            exists = existing.has(kind, name)
+            exists = await existing.has(kind, name)
             action = ImportAction.UPDATE if exists else ImportAction.CREATE
             destructive = (
                 exists
                 and kind == "tables"
-                and _is_destructive_table_update(bundle_root, name, existing)
+                and await _is_destructive_table_update(bundle_root, name, existing)
             )
             steps.append(
                 ImportStep(
@@ -91,7 +93,7 @@ def build_plan(
     # granted a workflow, a peer agent, or a connector connected during consent),
     # so grants are replayed only after every resource exists. Emit one grant
     # step per agent/function that actually carries grants.
-    for kind, grant_kind in (("agents", "agent_grants"), ("functions", "function_grants")):
+    for kind, grant_kind in GRANT_STEP_KINDS.items():
         for name in list_resource_names(bundle_root, kind):
             manifest = read_manifest(bundle_root, kind, name)
             if (manifest.get("permissions") or {}).get("grants"):

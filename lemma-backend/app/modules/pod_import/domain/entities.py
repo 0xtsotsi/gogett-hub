@@ -25,6 +25,16 @@ from app.modules.pod_import.domain.value_objects import (
     summarize_error,
 )
 
+# A live apply checkpoints (touch + commit) after every step, so an APPLYING
+# import whose updated_at is fresher than this is being driven by another
+# request right now. Older than this = a crashed worker's leftover, safe to
+# resume.
+_STALE_APPLY_SECONDS = 120.0
+
+
+class ImportInProgressError(Exception):
+    """A second apply arrived while a live one is still checkpointing."""
+
 
 class PodImportEntity(AggregateRoot):
     """An import of a bundle into a pod, applied step by step and resumable."""
@@ -113,9 +123,23 @@ class PodImportEntity(AggregateRoot):
 
     def begin_apply(self) -> None:
         """Enter the apply loop. Idempotent across resumes: a FAILED import can
-        re-enter APPLYING, but a terminal one cannot."""
+        re-enter APPLYING, but a terminal one cannot — and a concurrently LIVE
+        apply cannot be joined: two loops would double-run the current step
+        (e.g. both pass a table's empty check and double-seed it)."""
         if self.status in TERMINAL_STATUSES:
             raise ValueError(f"Cannot apply import in {self.status.value} state")
+        if self.status is ImportStatus.APPLYING and self.updated_at is not None:
+            updated_at = (
+                self.updated_at
+                if self.updated_at.tzinfo is not None
+                else self.updated_at.replace(tzinfo=timezone.utc)
+            )
+            age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+            if age < _STALE_APPLY_SECONDS:
+                raise ImportInProgressError(
+                    "This import is already being applied — watch its progress "
+                    "instead of starting it again."
+                )
         self.status = ImportStatus.APPLYING
         if self.started_at is None:
             self.started_at = datetime.now(timezone.utc)

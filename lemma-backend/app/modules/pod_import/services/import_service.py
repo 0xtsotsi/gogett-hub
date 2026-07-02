@@ -58,6 +58,11 @@ class ImportService:
                     resource_name=step.resource_name,
                     error=str(exc),
                 )
+                # A step that died mid-transaction (e.g. a DB error) leaves the
+                # shared session unusable; discard its partial work so the
+                # FAILED checkpoint below persists on a clean transaction
+                # instead of raising and stranding the import in APPLYING.
+                await self._repo.rollback()
                 entity.fail(step, str(exc))
                 await self._repo.save(entity)
                 return entity

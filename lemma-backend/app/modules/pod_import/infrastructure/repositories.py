@@ -37,3 +37,11 @@ class PodImportRepository:
     async def get(self, import_id: UUID) -> PodImportEntity | None:
         model = await self.session.get(PodImportModel, import_id)
         return model.to_entity() if model else None
+
+    async def rollback(self) -> None:
+        # A failed step can leave the session in a failed transaction that
+        # rejects every further statement — the FAILED-checkpoint save() would
+        # itself raise and strand the import in APPLYING. Rolling back discards
+        # the step's partial writes (per-step commits keep earlier checkpoints
+        # durable) so the failure lands on a clean transaction.
+        await self.uow.rollback()

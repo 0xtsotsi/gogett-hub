@@ -15,7 +15,11 @@ from app.modules.pod_bundle.domain.errors import (
     BundleJobExpiredError,
     BundleTooLargeError,
 )
-from app.modules.pod_bundle.domain.state import ImportState, ImportStatus
+from app.modules.pod_bundle.domain.state import (
+    BundleSource,
+    ImportState,
+    ImportStatus,
+)
 
 
 class FakeStore:
@@ -29,6 +33,9 @@ class FakeStore:
     async def get_import(self, import_id):
         return self.imports.get(import_id)
 
+    async def delete_import(self, import_id):
+        self.imports.pop(import_id, None)
+
 
 class FakeStaging:
     def __init__(self):
@@ -37,6 +44,9 @@ class FakeStaging:
     async def put_archive(self, kind, job_id, data):
         self.puts.append((kind, job_id, len(data)))
         return f"{kind}/{job_id}/bundle.zip"
+
+    async def delete_archive(self, kind, job_id):
+        return None
 
 
 class FakeQueue:
@@ -47,6 +57,9 @@ class FakeQueue:
     async def enqueue(self, name, *, context, _job_id):
         self.calls.append((name, context, _job_id))
         return None if self._duplicate else object()
+
+    async def abort(self, job_id, **kw):
+        return True
 
 
 class FakeUow:
@@ -153,3 +166,129 @@ async def test_duplicate_enqueue_raises_conflict():
         await uc.start_upload_import(
             pod_id=uuid4(), user_id=uuid4(), filename="crm.zip", data=_zip_bytes()
         )
+
+
+# --- apply -------------------------------------------------------------------
+
+
+def _awaiting_state(pod_id, user_id, *, steps=None, variables=None):
+    from app.modules.pod_bundle.domain.state import (
+        ImportPlan,
+        PlanStep,
+        StepAction,
+        StepKind,
+    )
+
+    plan = ImportPlan(
+        format_version=2,
+        steps=steps
+        or [PlanStep(index=0, kind=StepKind.TABLE, name="leads", action=StepAction.CREATE)],
+        variables=variables or [],
+    )
+    return ImportState(
+        import_id=uuid4(),
+        pod_id=pod_id,
+        user_id=user_id,
+        source=BundleSource(kind="upload"),
+        status=ImportStatus.AWAITING_CONFIRMATION,
+        plan=plan,
+    )
+
+
+async def test_apply_enqueues_with_dedup_id():
+    from app.modules.pod_bundle.application.import_use_cases import import_apply_job_id
+
+    uc, store, _, queue = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    state = _awaiting_state(pod_id, user_id)
+    await store.save_import(state)
+
+    result = await uc.apply_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
+
+    assert result.status == ImportStatus.APPLYING
+    assert queue.calls[0][0] == "apply_pod_import"
+    assert queue.calls[0][2] == import_apply_job_id(state.import_id)
+
+
+async def test_apply_wrong_status_conflicts():
+    from app.modules.pod_bundle.domain.errors import BundleJobConflictError
+
+    uc, store, _, _ = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    state = _awaiting_state(pod_id, user_id)
+    state.status = ImportStatus.PLANNING
+    await store.save_import(state)
+    with pytest.raises(BundleJobConflictError):
+        await uc.apply_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
+
+
+async def test_apply_destructive_requires_confirmation():
+    from app.modules.pod_bundle.domain.errors import BundleConfirmationRequiredError
+    from app.modules.pod_bundle.domain.state import PlanStep, StepAction, StepKind
+
+    uc, store, _, _ = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    state = _awaiting_state(
+        pod_id,
+        user_id,
+        steps=[
+            PlanStep(
+                index=0,
+                kind=StepKind.TABLE,
+                name="leads",
+                action=StepAction.UPDATE,
+                destructive=True,
+            )
+        ],
+    )
+    await store.save_import(state)
+    with pytest.raises(BundleConfirmationRequiredError):
+        await uc.apply_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
+    # With confirmation it proceeds.
+    ok = await uc.apply_import(
+        pod_id=pod_id, import_id=state.import_id, user_id=user_id, confirm_destructive=True
+    )
+    assert ok.status == ImportStatus.APPLYING
+
+
+async def test_apply_missing_required_variable():
+    from app.modules.pod_bundle.domain.errors import BundleConfirmationRequiredError
+    from app.modules.pod_bundle.domain.state import VariableSpec
+
+    uc, store, _, _ = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    state = _awaiting_state(
+        pod_id, user_id, variables=[VariableSpec(name="region", kind="free", required=True)]
+    )
+    await store.save_import(state)
+    with pytest.raises(BundleConfirmationRequiredError):
+        await uc.apply_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
+
+
+async def test_cancel_aborts_and_deletes():
+    uc, store, staging, queue = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    state = _awaiting_state(pod_id, user_id)
+    await store.save_import(state)
+
+    # FakeQueue has no abort; give it one that records calls.
+    aborted = []
+    queue.abort = lambda job_id, **kw: aborted.append(job_id) or True
+
+    async def _abort(job_id, **kw):
+        aborted.append(job_id)
+        return True
+
+    queue.abort = _abort
+    staging.delete_archive = _noop_delete = _make_async_noop()
+
+    await uc.cancel_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
+    assert await store.get_import(state.import_id) is None
+    assert len(aborted) == 2  # plan + apply dedup ids
+
+
+def _make_async_noop():
+    async def _noop(*a, **k):
+        return None
+
+    return _noop

@@ -29,7 +29,7 @@ from app.core.infrastructure.channels.channel_service import (
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.pod.api.dependencies import PodEditorDep, PodViewerDep
 from app.modules.pod_bundle.api.dependencies import ImportUseCasesDep
-from app.modules.pod_bundle.api.schemas import ImportStatusResponse
+from app.modules.pod_bundle.api.schemas import ApplyImportRequest, ImportStatusResponse
 from app.modules.pod_bundle.domain.state import IMPORT_TERMINAL_STATUSES
 from app.modules.pod_bundle.infrastructure.realtime import bundle_job_channel
 from app.modules.pod_bundle.infrastructure.state_store import (
@@ -88,6 +88,74 @@ async def get_import(
         pod_id=pod_id, import_id=import_id, user_id=user.id
     )
     return ImportStatusResponse.from_state(state)
+
+
+@router.post(
+    "/{pod_id}/bundle/imports/{import_id}/apply",
+    response_model=ImportStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="pod.bundle.import.apply",
+    summary="Apply Pod Import",
+    description=(
+        "Apply a planned import. Requires confirm_destructive when the plan drops "
+        "or alters columns, and resolved values for any required variables. "
+        "Returns 202; poll the status endpoint for per-step progress."
+    ),
+    dependencies=[PodEditorDep],
+)
+async def apply_import(
+    pod_id: UUID,
+    import_id: UUID,
+    data: ApplyImportRequest,
+    user: CurrentUser,
+    use_cases: ImportUseCasesDep,
+) -> ImportStatusResponse:
+    state = await use_cases.apply_import(
+        pod_id=pod_id,
+        import_id=import_id,
+        user_id=user.id,
+        variables=data.variables,
+        confirm_destructive=data.confirm_destructive,
+    )
+    return ImportStatusResponse.from_state(state)
+
+
+@router.post(
+    "/{pod_id}/bundle/imports/{import_id}/replan",
+    response_model=ImportStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="pod.bundle.import.replan",
+    summary="Re-plan Pod Import",
+    description="Re-run planning against the still-staged bundle (410 if swept).",
+    dependencies=[PodEditorDep],
+)
+async def replan_import(
+    pod_id: UUID,
+    import_id: UUID,
+    user: CurrentUser,
+    use_cases: ImportUseCasesDep,
+) -> ImportStatusResponse:
+    state = await use_cases.replan_import(
+        pod_id=pod_id, import_id=import_id, user_id=user.id
+    )
+    return ImportStatusResponse.from_state(state)
+
+
+@router.delete(
+    "/{pod_id}/bundle/imports/{import_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="pod.bundle.import.cancel",
+    summary="Cancel Pod Import",
+    description="Abort a running import and delete its state + staged archive.",
+    dependencies=[PodEditorDep],
+)
+async def cancel_import(
+    pod_id: UUID,
+    import_id: UUID,
+    user: CurrentUser,
+    use_cases: ImportUseCasesDep,
+) -> None:
+    await use_cases.cancel_import(pod_id=pod_id, import_id=import_id, user_id=user.id)
 
 
 @router.get(

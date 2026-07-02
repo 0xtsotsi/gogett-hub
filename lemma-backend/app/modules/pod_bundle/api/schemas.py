@@ -134,6 +134,19 @@ class ImportPlanResponse(BaseModel):
         )
 
 
+class ApplyImportRequest(BaseModel):
+    """Body for applying a planned import."""
+
+    variables: dict[str, str] = Field(
+        default_factory=dict,
+        description="Resolved values for the plan's ${var} placeholders.",
+    )
+    confirm_destructive: bool = Field(
+        default=False,
+        description="Required to proceed when the plan has destructive steps.",
+    )
+
+
 class ImportStatusResponse(BaseModel):
     """Status of a pod import job (pure Redis read)."""
 

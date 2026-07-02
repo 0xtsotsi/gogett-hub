@@ -46,6 +46,7 @@ from app.modules.pod_bundle.infrastructure.realtime import (
     progress_payload,
     publish_bundle_event,
     status_payload,
+    step_payload,
 )
 from app.modules.pod_bundle.infrastructure.staging import BundleStagingStorage
 from app.modules.pod_bundle.infrastructure.state_store import (
@@ -232,6 +233,171 @@ async def plan_pod_import(context: dict[str, str | None]) -> None:
         await _fail_import(store, state, "Planning failed due to a transient error.")
         logger.error("Pod bundle plan %s failed (retryable): %s", import_id, exc)
         raise
+
+
+@streaq_task(name="apply_pod_import")
+async def apply_pod_import(context: dict[str, str | None]) -> None:
+    """Apply an approved plan step by step: each step runs in its own short UoW
+    (commit) then a Redis checkpoint, so a crash resumes from the first pending
+    step and the idempotent upserts converge. Records a recipe on the pod when
+    every step lands."""
+    worker_ctx: AppWorkerContext = streaq_worker.context
+    import_id = UUID(str(context["import_id"]))
+    pod_id = UUID(str(context["pod_id"]))
+    user_id = UUID(str(context["user_id"]))
+
+    store = get_pod_bundle_state_store()
+    staging = BundleStagingStorage()
+
+    state = await store.get_import(import_id)
+    if state is None or state.plan is None:
+        logger.info("Import %s has no plan; skipping apply", import_id)
+        return
+    if state.status == ImportStatus.COMPLETED:
+        return
+
+    from app.modules.pod_bundle.infrastructure.applier import (
+        BundleApplier,
+        StepNotApplicableError,
+    )
+    from app.modules.pod_bundle.domain.state import StepStatus
+
+    try:
+        state.status = ImportStatus.APPLYING
+        await store.save_import(state)
+        await publish_bundle_event(import_id, status_payload(state.status.value, state.seq))
+
+        archive = await staging.get_archive("pod-imports", import_id)
+        if archive is None:
+            raise BundleStagingMissingError()
+
+        replacements = dict(state.variables_provided or {})
+
+        with tempfile.TemporaryDirectory(prefix="lemma-pod-apply-") as tmp:
+            from lemma_pod_bundle import extract_bundle
+
+            try:
+                bundle_root = extract_bundle(
+                    archive,
+                    Path(tmp),
+                    max_uncompressed_bytes=pod_bundle_settings.pod_bundle_max_uncompressed_bytes,
+                )
+            except ValueError as exc:
+                raise BundleInvalidError(str(exc)) from exc
+
+            while (step := state.plan.next_pending_step()) is not None:
+                step.status = StepStatus.RUNNING
+                try:
+                    async with uow_scope(worker_ctx.uow_factory) as uow:
+                        ctx = await AuthorizationDataService(
+                            uow.session
+                        ).build_user_context(user_id=user_id, pod_id=pod_id)
+                        async with context_scope(ctx):
+                            applier = BundleApplier(
+                                uow=uow,
+                                ctx=ctx,
+                                pod_id=pod_id,
+                                user_id=user_id,
+                                bundle_root=bundle_root,
+                                replacements=replacements,
+                            )
+                            await applier.apply_step(step)
+                    step.status = StepStatus.DONE
+                except StepNotApplicableError as exc:
+                    # Deferred kind (app/surface/grants) — skip, don't fail.
+                    step.status = StepStatus.SKIPPED
+                    step.error = str(exc)
+                except DomainError as exc:
+                    step.status = StepStatus.FAILED
+                    step.error = str(exc)
+                    await _checkpoint(store, state, step)
+                    await _fail_import(
+                        store, state, f"Step '{step.name}' failed: {exc}"
+                    )
+                    logger.warning("Import %s step %s failed: %s", import_id, step.name, exc)
+                    return
+                await _checkpoint(store, state, step)
+
+        await _record_recipe(worker_ctx, state)
+        state.status = ImportStatus.COMPLETED
+        state.completed_at = _now()
+        await store.save_import(state)
+        await publish_bundle_event(
+            import_id, completed_payload(state.status.value, state.seq)
+        )
+        # Best-effort cleanup; the sweep cron backstops.
+        try:
+            await staging.delete_archive("pod-imports", import_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to delete staged import %s: %s", import_id, exc)
+    except DomainError as exc:
+        await _fail_import(store, state, str(exc))
+        logger.warning("Pod bundle apply %s failed (terminal): %s", import_id, exc)
+    except Exception as exc:
+        await _fail_import(store, state, "Apply failed due to a transient error.")
+        logger.error("Pod bundle apply %s failed (retryable): %s", import_id, exc)
+        raise
+
+
+async def _checkpoint(store, state: ImportState, step) -> None:
+    done = sum(1 for s in state.plan.steps if s.status.value in ("DONE", "SKIPPED"))
+    state.progress.done = done
+    state.progress.total = len(state.plan.steps)
+    await store.save_import(state)
+    await publish_bundle_event(
+        state.import_id,
+        step_payload(
+            {
+                "index": step.index,
+                "kind": step.kind.value,
+                "name": step.name,
+                "action": step.action.value,
+                "status": step.status.value,
+                "error": step.error,
+            },
+            state.seq,
+        ),
+    )
+
+
+async def _record_recipe(worker_ctx: AppWorkerContext, state: ImportState) -> None:
+    """Append a durable :class:`PodRecipe` to the pod's config in a short UoW.
+
+    Copies the existing typed config and overrides only ``recipes`` so the
+    shallow config merge in ``PodService.update_pod`` cannot reset unrelated
+    fields (join_policy, default_runtime) to their defaults."""
+    from datetime import datetime, timezone
+
+    from app.modules.pod.api.dependencies import get_pod_service
+    from app.modules.pod.domain.pod_entities import (
+        PodRecipe,
+        PodUpdateEntity,
+    )
+
+    recipe = PodRecipe(
+        kind=state.source.kind,
+        name=(state.plan.bundle_name if state.plan else None),
+        repo_url=state.source.repo_url,
+        format_version=(state.plan.format_version if state.plan else None),
+        imported_at=datetime.now(timezone.utc),
+        imported_by=state.user_id,
+    )
+    async with uow_scope(worker_ctx.uow_factory) as uow:
+        ctx = await AuthorizationDataService(uow.session).build_user_context(
+            user_id=state.user_id, pod_id=state.pod_id
+        )
+        async with context_scope(ctx):
+            pod_service = get_pod_service(uow)
+            pod = await pod_service.get_pod(state.pod_id, state.user_id)
+            new_config = pod.config.model_copy(
+                update={"recipes": [*pod.config.recipes, recipe]}
+            )
+            await pod_service.update_pod(
+                state.pod_id,
+                PodUpdateEntity(config=new_config),
+                requester_user_id=state.user_id,
+                ctx=ctx,
+            )
 
 
 async def _fail_import(store, state: ImportState, message: str) -> None:

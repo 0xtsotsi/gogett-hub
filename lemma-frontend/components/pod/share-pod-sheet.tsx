@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
     Check,
     Download,
@@ -22,6 +22,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useAccounts } from '@/lib/hooks/use-connectors';
 import { usePod } from '@/lib/hooks/use-pods';
+import { formatResourceCounts } from '@/lib/pod-bundle';
 import {
     type GithubPublishProgress,
     type GithubPublishResult,
@@ -30,28 +31,33 @@ import {
     useGithubPublishPreview,
 } from '@/lib/hooks/use-pod-imports';
 
-/** A visibility switch, but readably labeled on both sides — "Private repo"
- * with a bare toggle next to it doesn't say what the *other* state is. */
-function VisibilityToggle({
-    isPrivate,
+/** The chip-track two-state control both toggles here share (visibility,
+ * README preview/edit) — one segment per option, the active one lifted onto a
+ * surface. */
+function SegmentedToggle<T extends string | boolean>({
+    options,
+    value,
     onChange,
+    size = 'md',
 }: {
-    isPrivate: boolean;
-    onChange: (isPrivate: boolean) => void;
+    options: readonly { label: string; value: T; disabled?: boolean }[];
+    value: T;
+    onChange: (value: T) => void;
+    size?: 'sm' | 'md';
 }) {
     return (
         <div className="inline-flex rounded-md border border-[color:var(--chip-border)] bg-[var(--chip-bg)] p-1">
-            {([
-                { label: 'Public', value: false },
-                { label: 'Private', value: true },
-            ] as const).map((option) => (
+            {options.map((option) => (
                 <button
                     key={option.label}
                     type="button"
-                    aria-pressed={isPrivate === option.value}
+                    aria-pressed={value === option.value}
+                    disabled={option.disabled}
                     onClick={() => onChange(option.value)}
-                    className={`rounded-sm px-3 py-1 text-sm font-medium transition-gentle ${
-                        isPrivate === option.value
+                    className={`rounded-sm font-medium transition-gentle disabled:cursor-not-allowed disabled:opacity-50 ${
+                        size === 'sm' ? 'px-2.5 py-0.5 text-xs' : 'px-3 py-1 text-sm'
+                    } ${
+                        value === option.value
                             ? 'bg-[var(--surface-1)] text-[var(--text-primary)] shadow-[var(--shadow-xs)]'
                             : 'text-[var(--text-tertiary)]'
                     }`}
@@ -63,31 +69,33 @@ function VisibilityToggle({
     );
 }
 
+/** A visibility switch, but readably labeled on both sides — "Private repo"
+ * with a bare toggle next to it doesn't say what the *other* state is. */
+function VisibilityToggle({
+    isPrivate,
+    onChange,
+}: {
+    isPrivate: boolean;
+    onChange: (isPrivate: boolean) => void;
+}) {
+    return (
+        <SegmentedToggle
+            options={[
+                { label: 'Public', value: false },
+                { label: 'Private', value: true },
+            ]}
+            value={isPrivate}
+            onChange={onChange}
+        />
+    );
+}
+
 function suggestRepoName(name: string | undefined): string {
     const slug = (name ?? '')
         .trim()
         .replace(/[^A-Za-z0-9._-]+/g, '-')
         .replace(/^-+|-+$/g, '');
     return slug || 'lemma-pod';
-}
-
-/** Bundle resource kinds in display order, with singular forms for count = 1. */
-const RESOURCE_KINDS = [
-    ['tables', 'table'],
-    ['functions', 'function'],
-    ['agents', 'agent'],
-    ['workflows', 'workflow'],
-    ['schedules', 'schedule'],
-    ['surfaces', 'surface'],
-    ['apps', 'app'],
-] as const;
-
-/** "5 tables · 4 functions · 1 agent · 1 app" from the preview's non-zero
- * resource counts; empty string when there's nothing to say. */
-function formatResourceCounts(counts: Record<string, number>): string {
-    return RESOURCE_KINDS.filter(([plural]) => (counts[plural] ?? 0) > 0)
-        .map(([plural, singular]) => `${counts[plural]} ${counts[plural] === 1 ? singular : plural}`)
-        .join(' · ');
 }
 
 const PUBLISH_STAGES = [
@@ -179,6 +187,12 @@ function PublishStageChecklist({
                                 {progress.path ? (
                                     <p className="mt-1 truncate text-xs text-[var(--text-tertiary)]">
                                         {progress.path}
+                                        {/* Chunked files upload one piece per
+                                            commit — show which piece, or a big
+                                            file reads as a stalled row. */}
+                                        {progress.part && progress.parts
+                                            ? ` · part ${progress.part}/${progress.parts}`
+                                            : ''}
                                     </p>
                                 ) : null}
                             </div>
@@ -199,13 +213,21 @@ function PublishStageChecklist({
 export function SharePodSheet({ podId, podName }: { podId: string; podName?: string }) {
     const [open, setOpen] = useState(false);
     const [showGithubForm, setShowGithubForm] = useState(false);
-    const [repoName, setRepoName] = useState(() => suggestRepoName(podName));
+    // The user's repo name once they type; null means the suggestion tracks
+    // the pod name (usePod can resolve after mount) — a late query must not
+    // clobber input.
+    const [repoNameOverride, setRepoNameOverride] = useState<string | null>(null);
     const [debouncedRepoName, setDebouncedRepoName] = useState(() => suggestRepoName(podName));
     const [isPrivate, setIsPrivate] = useState(false);
     const [githubResult, setGithubResult] = useState<GithubPublishResult | null>(null);
     const [publishProgress, setPublishProgress] = useState<GithubPublishProgress | null>(null);
-    const [readmeText, setReadmeText] = useState('');
-    const [readmeEdited, setReadmeEdited] = useState(false);
+    // The user's pinned README edit; null means the panel tracks the generated
+    // draft (and, after a publish, what actually landed on GitHub).
+    const [readmeOverride, setReadmeOverride] = useState<string | null>(null);
+    // The preview repo slug whose badge URL is embedded in the pinned edit —
+    // sent with publish so a repo rename after editing still gets the badge
+    // rewritten to the final slug.
+    const readmeSourceSlug = useRef<string | null>(null);
     const [readmeTab, setReadmeTab] = useState<'preview' | 'edit'>('preview');
     const exportPod = useExportPod();
     const githubPublish = useGithubPublish();
@@ -218,9 +240,7 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
     });
     const githubAccount = githubAccounts.data?.[0];
 
-    useEffect(() => {
-        setRepoName(suggestRepoName(effectivePodName));
-    }, [effectivePodName]);
+    const repoName = repoNameOverride ?? suggestRepoName(effectivePodName);
 
     // Debounce the repo name before it drives the README preview fetch, so
     // typing doesn't fire a request per keystroke.
@@ -232,15 +252,13 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
     const preview = useGithubPublishPreview(podId, debouncedRepoName, showGithubForm);
     const generatedReadme = preview.data?.readme;
     const published = githubResult?.status === 'published';
+    const readmeEdited = readmeOverride !== null;
 
-    // The editor tracks the generated draft as it (re)loads — until the user's
-    // first edit, which pins the text (a repo rename must not clobber edits).
-    // After a publish, the panel holds what actually landed on GitHub, so the
-    // stale generated draft must not overwrite it either.
-    useEffect(() => {
-        if (readmeEdited || published) return;
-        if (generatedReadme !== undefined) setReadmeText(generatedReadme);
-    }, [generatedReadme, readmeEdited, published]);
+    // The panel shows the user's pinned edit if there is one (a repo rename or
+    // preview reload must not clobber it); after a publish, what actually
+    // landed on GitHub; otherwise the generated draft as it (re)loads.
+    const readmeText =
+        readmeOverride ?? (published ? (githubResult.readme ?? null) : null) ?? generatedReadme ?? '';
 
     const onOpenChange = (next: boolean) => {
         // A publish stream can't be cancelled — closing now would wipe the
@@ -254,8 +272,8 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
             setShowGithubForm(false);
             setGithubResult(null);
             setPublishProgress(null);
-            setReadmeText('');
-            setReadmeEdited(false);
+            setReadmeOverride(null);
+            readmeSourceSlug.current = null;
             setReadmeTab('preview');
         }
     };
@@ -286,6 +304,9 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
                 // An edited README publishes verbatim; otherwise the backend
                 // renders (and possibly AI-polishes) its own draft.
                 readme: effectiveEdited ? readmeText : undefined,
+                readmeSourceSlug: effectiveEdited
+                    ? (readmeSourceSlug.current ?? undefined)
+                    : undefined,
                 onProgress: setPublishProgress,
             },
             {
@@ -297,10 +318,11 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
                     if (result.status === 'published') {
                         setShowGithubForm(false);
                         // Show exactly what landed on GitHub (post AI-polish /
-                        // import-URL rewrite), not the local draft.
+                        // import-URL rewrite), not the local draft — drop the
+                        // pin so the published text takes over.
                         if (result.readme != null) {
-                            setReadmeText(result.readme);
-                            setReadmeEdited(false);
+                            setReadmeOverride(null);
+                            readmeSourceSlug.current = null;
                         }
                     }
                     if (result.status === 'failed') toast.error(result.message ?? 'Publish failed');
@@ -329,27 +351,15 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
                     <FileText className="h-3.5 w-3.5" /> README
                 </p>
                 <div className="flex items-center gap-1">
-                    <div className="inline-flex rounded-md border border-[color:var(--chip-border)] bg-[var(--chip-bg)] p-1">
-                        {([
-                            { label: 'Preview', value: 'preview' },
-                            { label: 'Edit', value: 'edit' },
-                        ] as const).map((option) => (
-                            <button
-                                key={option.value}
-                                type="button"
-                                aria-pressed={activeReadmeTab === option.value}
-                                disabled={readmeLocked && option.value === 'edit'}
-                                onClick={() => setReadmeTab(option.value)}
-                                className={`rounded-sm px-2.5 py-0.5 text-xs font-medium transition-gentle disabled:cursor-not-allowed disabled:opacity-50 ${
-                                    activeReadmeTab === option.value
-                                        ? 'bg-[var(--surface-1)] text-[var(--text-primary)] shadow-[var(--shadow-xs)]'
-                                        : 'text-[var(--text-tertiary)]'
-                                }`}
-                            >
-                                {option.label}
-                            </button>
-                        ))}
-                    </div>
+                    <SegmentedToggle
+                        size="sm"
+                        options={[
+                            { label: 'Preview', value: 'preview' as const },
+                            { label: 'Edit', value: 'edit' as const, disabled: readmeLocked },
+                        ]}
+                        value={activeReadmeTab}
+                        onChange={setReadmeTab}
+                    />
                     {readmeEdited && !readmeLocked ? (
                         <Button
                             variant="ghost"
@@ -358,8 +368,8 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
                             title="Reset to generated"
                             aria-label="Reset to generated"
                             onClick={() => {
-                                setReadmeText(generatedReadme ?? '');
-                                setReadmeEdited(false);
+                                setReadmeOverride(null);
+                                readmeSourceSlug.current = null;
                             }}
                         >
                             <RotateCcw className="h-3.5 w-3.5" />
@@ -372,8 +382,13 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
                     <Textarea
                         value={readmeText}
                         onChange={(e) => {
-                            setReadmeText(e.target.value);
-                            setReadmeEdited(true);
+                            // The draft being pinned embeds the current
+                            // preview slug in its badge URL — remember it so
+                            // publish can still rewrite the badge if the repo
+                            // is renamed after this edit.
+                            if (readmeOverride === null)
+                                readmeSourceSlug.current = preview.data?.repo_name ?? null;
+                            setReadmeOverride(e.target.value);
                         }}
                         className="h-[420px] w-full resize-none font-mono text-xs leading-5"
                         aria-label="README markdown"
@@ -515,7 +530,7 @@ export function SharePodSheet({ podId, podName }: { podId: string; podName?: str
                             <Input
                                 className="mt-2"
                                 value={repoName}
-                                onChange={(e) => setRepoName(e.target.value)}
+                                onChange={(e) => setRepoNameOverride(e.target.value)}
                                 placeholder="repo-name"
                             />
                             <div className="mt-2">

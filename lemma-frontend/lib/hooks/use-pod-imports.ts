@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { lemmaFetch } from '@/lib/sdk/lemma-client';
 
@@ -38,7 +38,6 @@ export interface PodImport {
 export interface GithubPublishResult {
     status: 'published' | 'not_connected' | 'failed';
     repo_url?: string | null;
-    import_badge_markdown?: string | null;
     /** The exact README text committed to the repo (post AI-polish / import-URL
      * rewrite); null when publish never reached the README stage. */
     readme?: string | null;
@@ -46,13 +45,16 @@ export interface GithubPublishResult {
 }
 
 /** One "progress" line of the NDJSON publish stream. `label` describes the
- * export/repo/readme stages; the upload stage carries per-file counters. */
+ * export/repo/readme stages; the upload stage carries per-file counters, plus
+ * `part`/`parts` when the current file is written as .chunkNNNN pieces. */
 export type GithubPublishProgress = {
     stage: 'export' | 'repo' | 'readme' | 'upload';
     label?: string;
     done?: number;
     total?: number;
     path?: string;
+    part?: number;
+    parts?: number;
 };
 
 export interface GithubPublishPreview {
@@ -192,6 +194,7 @@ export const useGithubPublish = () =>
             repoName,
             isPrivate = false,
             readme,
+            readmeSourceSlug,
             onProgress,
         }: {
             podId: string;
@@ -200,6 +203,10 @@ export const useGithubPublish = () =>
             /** User-edited README: published verbatim (import URLs still get
              * rewritten server-side) instead of the rendered + AI-polished draft. */
             readme?: string;
+            /** The repo slug the edited README's badge URL was generated
+             * against — a repo rename after editing would otherwise leave the
+             * server unable to find and rewrite the badge. */
+            readmeSourceSlug?: string;
             onProgress?: (progress: GithubPublishProgress) => void;
         }): Promise<GithubPublishResult> => {
             const res = await lemmaFetch(`/pods/${podId}/export/github`, {
@@ -208,6 +215,7 @@ export const useGithubPublish = () =>
                     repo_name: repoName,
                     private: isPrivate,
                     ...(readme !== undefined ? { readme } : {}),
+                    ...(readmeSourceSlug ? { readme_source_slug: readmeSourceSlug } : {}),
                 }),
             });
             if (!res.ok) throw new Error(await readError(res));
@@ -301,6 +309,10 @@ export const useGithubPublishPreview = (podId: string, repoName: string, enabled
         },
         enabled,
         staleTime: 15_000,
+        // A repo-name change swaps the query key; without this, data resets to
+        // undefined for the refetch and the share dialog's derived README text
+        // (and Edit textarea) blanks out for every debounce tick.
+        placeholderData: keepPreviousData,
     });
 
 /** Poll an import; auto-refreshes while it is applying. `forcePoll` keeps it

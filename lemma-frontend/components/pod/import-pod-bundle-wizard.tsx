@@ -44,6 +44,7 @@ import {
     useImportIntoNewPod,
     usePodImport,
 } from '@/lib/hooks/use-pod-imports';
+import { formatKindCount, KIND_LABEL, planResourceCounts, RESOURCE_KIND_ORDER, SINGULAR } from '@/lib/pod-bundle';
 
 /** Where an import lands: a brand-new pod the importer owns, or merged into the
  * pod they're already in. */
@@ -61,42 +62,6 @@ const TIER_ICON: Record<string, LucideIcon> = {
     external: Globe,
     ai: Bot,
     data: Database,
-};
-
-const PLAN_TYPE_ORDER = [
-    'tables',
-    'functions',
-    'agents',
-    'workflows',
-    'schedules',
-    'surfaces',
-    'apps',
-    // Grants are applied in a final pass once every resource exists.
-    'agent_grants',
-    'function_grants',
-];
-const PLAN_TYPE_LABEL: Record<string, string> = {
-    tables: 'Tables',
-    functions: 'Functions',
-    agents: 'Agents',
-    workflows: 'Workflows',
-    schedules: 'Schedules',
-    surfaces: 'Surfaces',
-    apps: 'Apps',
-    agent_grants: 'Agent access',
-    function_grants: 'Function access',
-};
-
-const SINGULAR: Record<string, string> = {
-    tables: 'table',
-    functions: 'function',
-    agents: 'agent',
-    workflows: 'workflow',
-    schedules: 'schedule',
-    surfaces: 'surface',
-    apps: 'app',
-    agent_grants: 'agent access',
-    function_grants: 'function access',
 };
 
 /** A human hint for the most common failure causes; null falls back to the raw error. */
@@ -140,27 +105,25 @@ function prettifyBundleName(name: string): string {
         .trim();
 }
 
-/** The resource types the hero strip counts, in display order — grants are an
- * implementation detail of the plan, not something the user "gets". */
-const HERO_COUNT_TYPES: [string, LucideIcon][] = [
-    ['tables', Database],
-    ['functions', Code2],
-    ['agents', Bot],
-    ['workflows', Workflow],
-    ['schedules', CalendarClock],
-    ['surfaces', Radio],
-    ['apps', PanelsTopLeft],
-];
+/** The hero strip's icon per resource kind — presentation only; the kinds and
+ * their order live in lib/pod-bundle. */
+const KIND_ICON: Record<string, LucideIcon> = {
+    tables: Database,
+    functions: Code2,
+    agents: Bot,
+    workflows: Workflow,
+    schedules: CalendarClock,
+    surfaces: Radio,
+    apps: PanelsTopLeft,
+};
 
 /** The install sheet's inventory chips ("5 tables", "1 app"), computed off the
  * plan. */
 function resourceCountChips(imp: PodImport): { label: string; icon: LucideIcon }[] {
-    const counts = new Map<string, number>();
-    for (const s of imp.plan) counts.set(s.resource_type, (counts.get(s.resource_type) ?? 0) + 1);
-    return HERO_COUNT_TYPES.flatMap(([type, icon]) => {
-        const n = counts.get(type) ?? 0;
-        return n ? [{ label: `${n} ${n === 1 ? (SINGULAR[type] ?? type) : type}`, icon }] : [];
-    });
+    return planResourceCounts(imp.plan).map(({ kind, count }) => ({
+        label: formatKindCount(kind, count),
+        icon: KIND_ICON[kind] ?? PackagePlus,
+    }));
 }
 
 /** App-store-style install header: app-icon tile + title + where it came from,
@@ -396,10 +359,18 @@ function PlanList({
     showProgress?: boolean;
     bare?: boolean;
 }) {
-    const groups = PLAN_TYPE_ORDER.map((type) => ({
+    // Group by the types actually present in the plan — known kinds first in
+    // canonical order, then any kind the backend grew since, labelled by its
+    // raw type, so a new resource kind is never silently dropped.
+    const presentTypes = [...new Set(imp.plan.map((s) => s.resource_type))];
+    const orderedTypes = [
+        ...RESOURCE_KIND_ORDER.filter((type) => presentTypes.includes(type)),
+        ...presentTypes.filter((type) => !RESOURCE_KIND_ORDER.includes(type)),
+    ];
+    const groups = orderedTypes.map((type) => ({
         type,
         steps: imp.plan.filter((s) => s.resource_type === type),
-    })).filter((g) => g.steps.length);
+    }));
 
     const body = (
         <>
@@ -424,7 +395,7 @@ function PlanList({
                         >
                             <div className="w-24 shrink-0 pt-1">
                                 <span className="text-sm font-medium text-[var(--text-primary)]">
-                                    {PLAN_TYPE_LABEL[g.type] ?? g.type}
+                                    {KIND_LABEL[g.type] ?? g.type}
                                 </span>
                                 <span className="ml-1.5 text-xs text-[var(--text-tertiary)]">
                                     {done}/{g.steps.length}
@@ -502,17 +473,12 @@ function TargetCard({
 
 export function ImportPodBundleWizard({
     podId,
-    initialImport,
     source,
     fullWidth = false,
 }: {
     // The pod you're already inside (e.g. /pod/<id>/import) — omit for a
     // standalone entry point that has no "current pod" (see `source`).
     podId?: string;
-    // A pre-planned import — the wizard skips upload and opens straight at
-    // review. No entry point passes this today (direct pod-id share links were
-    // pulled), but the capability stays for the next shared-link flow.
-    initialImport?: PodImport;
     // A non-upload origin (e.g. a GitHub repo) for a standalone entry point —
     // the "upload" phase asks new-vs-existing-pod and an org/pod picker
     // instead of a file drop.
@@ -523,10 +489,10 @@ export function ImportPodBundleWizard({
 }) {
     const router = useRouter();
     const standalone = !podId;
-    const [phase, setPhase] = useState<Phase>(initialImport ? 'review' : 'upload');
+    const [phase, setPhase] = useState<Phase>('upload');
     const [target, setTarget] = useState<Target>('new');
     const [file, setFile] = useState<File | null>(null);
-    const [imp, setImp] = useState<PodImport | null>(initialImport ?? null);
+    const [imp, setImp] = useState<PodImport | null>(null);
     const [vars, setVars] = useState<Record<string, string>>({});
     const [selectedOrgId, setSelectedOrgId] = useState('');
     const [selectedExistingPodId, setSelectedExistingPodId] = useState('');
@@ -573,18 +539,12 @@ export function ImportPodBundleWizard({
         [imp],
     );
     const hasApp = useMemo(() => !!imp?.plan.some((s) => s.resource_type === 'apps'), [imp]);
-    // A pre-planned import (shared link) has no upload phase to go "Back" to —
-    // reset() would land on an upload form scoped to the SHARER's pod, where
-    // "install into this pod" mutates the pod that was shared with you.
-    const preplanned = !!initialImport;
 
     // Where this bundle came from, for the install hero's source line.
     const sourceLine =
         source?.kind === 'github'
             ? `From GitHub · ${source.owner}/${source.repo}`
-            : initialImport
-              ? 'Shared from another Lemma pod'
-              : 'From uploaded bundle';
+            : 'From uploaded bundle';
     const countChips = useMemo(() => (imp ? resourceCountChips(imp) : []), [imp]);
 
     const onUpload = async () => {
@@ -851,11 +811,9 @@ export function ImportPodBundleWizard({
                             </p>
                         )}
                         <div className="flex items-center gap-2">
-                            {!preplanned && (
-                                <Button variant="ghost" onClick={reset}>
-                                    Back
-                                </Button>
-                            )}
+                            <Button variant="ghost" onClick={reset}>
+                                Back
+                            </Button>
                             {/* The install CTA owns the row, app-store style —
                                 this is the one button the whole sheet leads to. */}
                             <Button
@@ -880,12 +838,10 @@ export function ImportPodBundleWizard({
                         <div className="mt-5">
                             <PlanList imp={imp} showProgress />
                         </div>
-                        <div className={`mt-4 flex ${preplanned ? 'justify-end' : 'justify-between'}`}>
-                            {!preplanned && (
-                                <Button variant="ghost" onClick={reset}>
-                                    Import another
-                                </Button>
-                            )}
+                        <div className="mt-4 flex justify-between">
+                            <Button variant="ghost" onClick={reset}>
+                                Import another
+                            </Button>
                             <Button
                                 variant="primary"
                                 onClick={() => router.push(`/pod/${imp.pod_id}`)}
@@ -970,12 +926,10 @@ export function ImportPodBundleWizard({
                             runningKey={runningKey}
                             showProgress
                         />
-                        <div className={`flex ${preplanned ? 'justify-end' : 'justify-between'}`}>
-                            {!preplanned && (
-                                <Button variant="ghost" onClick={reset}>
-                                    Import another
-                                </Button>
-                            )}
+                        <div className="flex justify-between">
+                            <Button variant="ghost" onClick={reset}>
+                                Import another
+                            </Button>
                             {imp.status === 'FAILED' ? (
                                 <Button loading={applyImport.isPending} onClick={onApply}>
                                     <RotateCcw className="mr-1.5 h-4 w-4" /> Resume

@@ -50,7 +50,10 @@ export function getRawGitHubAssetUrl(kit: KitDefinition, branch: string, assetPa
 }
 
 export function absolutizeReadmeAssetUrls(markdown: string, kit: KitDefinition, branch: string) {
-    return markdown.replace(/(!\[[^\]]*]\()((?!https?:\/\/|#|mailto:)[^)]+)(\))/gi, (_match, prefix: string, assetPath: string, suffix: string) => {
+    // Only repo-relative paths get absolutized — data: URIs (inline badges)
+    // and protocol-relative //host/... URLs are already absolute and would be
+    // mangled into raw.githubusercontent.com paths.
+    return markdown.replace(/(!\[[^\]]*]\()((?!https?:\/\/|\/\/|#|mailto:|data:)[^)]+)(\))/gi, (_match, prefix: string, assetPath: string, suffix: string) => {
         return `${prefix}${getRawGitHubAssetUrl(kit, branch, assetPath)}${suffix}`;
     });
 }

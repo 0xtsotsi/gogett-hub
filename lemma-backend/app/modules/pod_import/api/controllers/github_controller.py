@@ -9,7 +9,7 @@ Publish goes through the GitHub connector Lemma already provides (Composio),
 so there is no bespoke OAuth here — same account/consent flow as any other
 connector. Import fetches a repo's zipball directly (no auth needed for a
 public repo) and reuses the exact "create a new pod from a bundle" path the
-upload and shared-link flows already use.
+upload flow already uses.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from app.core.api.dependencies import CurrentUser, UoWDep
 from app.core.authorization.dependencies import PodContextDep
 from app.core.config import settings
 from app.core.crypto import get_secret_cipher
+from app.core.helpers.slug import sanitize_ascii_slug
 from app.core.log.log import get_logger
 from app.modules.connectors.api.dependencies import ConnectorOperationUseCasesDep
 from app.modules.connectors.domain.errors import (
@@ -47,15 +48,20 @@ from app.modules.pod.api.dependencies import PodServiceDep
 from app.modules.pod_import.api.controllers.import_controller import (
     _create_new_pod_from_bundle,
 )
-from app.modules.pod_import.api.dependencies import ImportAppServiceDep
+from app.modules.pod_import.api.dependencies import (
+    ImportAppServiceDep,
+    ImportEditorDep,
+    ImportViewerDep,
+)
 from app.modules.pod_import.api.schemas import PodImportResponse
 from app.modules.pod_import.infrastructure.ai_readme import polish_available, polish_readme
 from app.modules.pod_import.infrastructure.exporter import BundleExporter
 from app.modules.pod_import.infrastructure.readme import (
-    import_badge_markdown,
+    parse_bundle,
     render_readme,
     resource_counts,
 )
+from app.modules.pod_import.infrastructure.staging import reassemble_chunked_entries
 
 logger = get_logger(__name__)
 
@@ -91,15 +97,19 @@ class GithubPublishRequest(BaseModel):
     # split into .chunkNNNN pieces, leaving the repo with no rendered README
     # (and no import badge) at all.
     readme: str | None = Field(default=None, max_length=100_000)
+    # The repo slug the README draft's import URL was written for. A rename in
+    # the share dialog changes the requested slug after the draft was rendered,
+    # so the URL rewrite must recognize this one too, not just repo_name.
+    readme_source_slug: str | None = Field(default=None, max_length=100)
 
 
 class GithubPublishResponse(BaseModel):
     status: Literal["published", "not_connected", "failed"]
     repo_url: str | None = None
-    import_badge_markdown: str | None = None
     # The exact README text committed to the repo (post AI polish / post
     # import-URL rewrite) so the UI can show what actually landed — None
-    # unless the publish got far enough to write one.
+    # unless the publish got far enough to write one. The import badge lives
+    # inside it, so there is no separate badge field.
     readme: str | None = None
     message: str | None = None
 
@@ -114,11 +124,6 @@ class GithubPublishPreviewResponse(BaseModel):
     # draft — the share dialog labels the publish step accordingly. Preview
     # itself stays deterministic (never calls the model).
     ai_polish: bool
-
-
-def _github_repo_slug(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.")
-    return (slug or "lemma-pod")[:100]
 
 
 def _archive_entries(archive: bytes) -> list[tuple[str, bytes]]:
@@ -152,20 +157,29 @@ def _frontend_base() -> str:
     return settings.frontend_url.rstrip("/")
 
 
-def _rewrite_import_urls(text: str, import_url: str, requested_slug: str) -> str:
+def _rewrite_import_urls(
+    text: str, import_url: str, requested_slug: str, source_slug: str | None
+) -> str:
     """Repoint an override README's import link(s) at the repo that actually
     got created: the preview embeds a URL guessed from the requested owner/
     slug, but a name collision makes _create_repo_with_retry land on a
-    ``-N``-suffixed repo. Only URLs ending in the slug this publish asked for
-    are rewritten — a deliberate link to some *other* pod's import page, or
-    punctuation right after the URL, must survive verbatim."""
+    ``-N``-suffixed repo — and a rename in the share dialog means the draft
+    still carries the slug it was rendered for (``source_slug``). Only URLs
+    ending in one of those two slugs are rewritten — a deliberate link to some
+    *other* pod's import page, or punctuation right after the URL, must
+    survive verbatim."""
     # The trailing guard is two lookaheads because "." is both a legal slug
     # character and sentence punctuation: "…/trumpet. Enjoy!" must rewrite
     # (dot ends the sentence), while "…/trumpet-2" and "…/trumpet.zip" are
-    # different slugs and must not.
+    # different slugs and must not. Longest slug first so one slug prefixing
+    # the other can't shadow it in the alternation.
+    slugs = sorted(
+        {requested_slug} | ({source_slug} if source_slug else set()), key=len, reverse=True
+    )
     pattern = (
         rf"{re.escape(_frontend_base())}/import/github/[A-Za-z0-9_.-]+/"
-        rf"{re.escape(requested_slug)}(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])"
+        rf"(?:{'|'.join(re.escape(slug) for slug in slugs)})"
+        rf"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])"
     )
     # Lambda replacement: import_url is literal text, not a template re.sub
     # should expand backslashes in.
@@ -208,7 +222,11 @@ def _is_payload_too_large(exc: BaseException) -> bool:
 # scales to however large a bundle's app assets or seed data get.
 _INITIAL_CHUNK_BYTES = 150_000
 _MIN_CHUNK_BYTES = 8_000
-_CHUNK_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.chunk(?P<index>\d{4})of(?P<total>\d{4})$")
+
+
+class _FileTooLargeError(Exception):
+    """Even the smallest chunk size still didn't fit — the publish loop skips
+    the file rather than aborting the whole publish."""
 
 
 async def _put_file(
@@ -233,14 +251,17 @@ def _split_into_chunks(content: bytes, chunk_size: int) -> list[bytes]:
 
 async def _push_one_file_best_effort(
     use_cases: Any, common: dict[str, Any], owner: str, repo: str, path: str, content: bytes
-) -> bool:
+) -> AsyncGenerator[tuple[int, int], None]:
     """Push one file, falling back to adaptively-sized `.chunkNNNNofMMMM`
-    pieces if it (or a chunk of it) is too big for one request. Returns False
+    pieces if it (or a chunk of it) is too big for one request. Yields
+    ``(part, parts)`` before each chunk push so the publish stream can emit a
+    progress line per chunk — a single huge file is otherwise minutes of
+    silence that trips the client's stall guard. Raises _FileTooLargeError
     (skip, don't abort the publish) only once even the smallest chunk size
     still doesn't fit."""
     try:
         await _put_file(use_cases, common, owner, repo, path, content)
-        return True
+        return
     except OperationExecutionError as exc:
         if not _is_payload_too_large(exc):
             raise
@@ -251,45 +272,16 @@ async def _push_one_file_best_effort(
         total = len(chunks)
         try:
             for i, chunk in enumerate(chunks):
+                yield i + 1, total
                 await _put_file(
                     use_cases, common, owner, repo, f"{path}.chunk{i:04d}of{total:04d}", chunk
                 )
-            return True
+            return
         except OperationExecutionError as exc:
             if not _is_payload_too_large(exc):
                 raise
             chunk_size //= 2
-    return False
-
-
-def _reassemble_chunked_entries(archive: bytes) -> bytes:
-    """A repo published by Lemma may have large files split into
-    `<path>.chunkNNNNofMMMM` pieces (see _push_one_file_best_effort) — glue
-    each complete set back into its original file before staging. An
-    incomplete set (a stale leftover from a chunk size that got shrunk
-    mid-publish) is dropped rather than reassembled wrong; missing one
-    non-essential file degrades the same way a skipped one does on publish."""
-    with zipfile.ZipFile(BytesIO(archive)) as zf:
-        chunk_groups: dict[tuple[str, int], dict[int, bytes]] = {}
-        passthrough: dict[str, bytes] = {}
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            match = _CHUNK_SUFFIX_RE.match(info.filename)
-            if match:
-                key = (match.group("base"), int(match.group("total")))
-                chunk_groups.setdefault(key, {})[int(match.group("index"))] = zf.read(info)
-            else:
-                passthrough[info.filename] = zf.read(info)
-
-    out = BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, content in passthrough.items():
-            zf.writestr(name, content)
-        for (base, total), parts in chunk_groups.items():
-            if len(parts) == total:
-                zf.writestr(base, b"".join(parts[i] for i in range(total)))
-    return out.getvalue()
+    raise _FileTooLargeError(path)
 
 
 _MAX_REPO_NAME_ATTEMPTS = 5
@@ -330,7 +322,11 @@ async def _create_repo_with_retry(
     )
 
 
-@github_publish_router.get("/github/preview", response_model=GithubPublishPreviewResponse)
+@github_publish_router.get(
+    "/github/preview",
+    response_model=GithubPublishPreviewResponse,
+    dependencies=[ImportViewerDep],
+)
 async def preview_github_publish(
     pod_id: UUID,
     user: CurrentUser,
@@ -341,34 +337,38 @@ async def preview_github_publish(
 ) -> GithubPublishPreviewResponse:
     """What Publish will actually write, without touching GitHub: the repo name
     it'll create and the README draft it'll commit — so the share dialog can
-    show it before the user commits to publishing. Skips row data (with_data=
-    False): the renderer then omits the seed-row column, and re-exporting every
-    row just to preview a README would be waste. Deterministic — the optional
-    AI polish (flagged via ``ai_polish``) only runs on publish."""
+    show it before the user commits to publishing. Skips row data and app
+    assets (with_data/with_assets=False): the renderer then omits the seed-row
+    column, and re-exporting every row or downloading dist archives just to
+    preview a README would be waste. Deterministic — the optional AI polish
+    (flagged via ``ai_polish``) only runs on publish."""
     pod = await pod_service.get_pod(pod_id, user.id)
     if pod is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pod not found")
 
     pod_name, archive = await BundleExporter(uow).export(
-        pod_id=pod_id, user_id=user.id, ctx=ctx, with_data=False
+        pod_id=pod_id, user_id=user.id, ctx=ctx, with_data=False, with_assets=False
     )
-    slug = _github_repo_slug(repo_name or pod_name or pod.name)
+    slug = sanitize_ascii_slug(repo_name or pod_name or pod.name, fallback="lemma-pod")
 
     account_repo = AccountRepository(uow, encryption=get_secret_cipher())
     account = await account_repo.get_by_user_org_and_app(user.id, pod.organization_id, "github")
     owner = account.provider_account_id if account else "your-username"
 
     import_url = f"{_frontend_base()}/import/github/{owner}/{slug}"
-    readme = render_readme(pod.name, pod.description, archive, import_url, _frontend_base())
+    bundle = parse_bundle(archive)
+    readme = render_readme(pod.name, pod.description, bundle, import_url, _frontend_base())
     return GithubPublishPreviewResponse(
         repo_name=slug,
         readme=readme,
-        resource_counts=resource_counts(archive),
+        resource_counts=resource_counts(bundle),
         ai_polish=polish_available(),
     )
 
 
-@github_publish_router.post("/github", response_class=StreamingResponse)
+@github_publish_router.post(
+    "/github", response_class=StreamingResponse, dependencies=[ImportEditorDep]
+)
 async def publish_pod_to_github(
     pod_id: UUID,
     user: CurrentUser,
@@ -384,7 +384,8 @@ async def publish_pod_to_github(
     (Connectors settings) — this never initiates OAuth itself.
 
     Streams NDJSON: ``{"event":"progress",...}`` lines (stage export/repo/
-    readme, then one per file upload with done/total/path) and a final
+    readme, then one per file upload with done/total/path — plus one per chunk
+    with part/parts when a large file falls back to chunked pushes) and a final
     ``{"event":"result",...}`` line carrying exactly the GithubPublishResponse
     fields. A publish is dozens of sequential Composio calls, easily a minute —
     without progress the dialog is a dead spinner. Errors after streaming
@@ -425,7 +426,9 @@ async def publish_pod_to_github(
             pod_name, archive = await BundleExporter(uow).export(
                 pod_id=pod_id, user_id=user.id, ctx=ctx, with_data=True
             )
-            repo_name = _github_repo_slug(body.repo_name or pod_name or pod.name)
+            repo_name = sanitize_ascii_slug(
+                body.repo_name or pod_name or pod.name, fallback="lemma-pod"
+            )
 
             yield _progress_line(stage="repo", label="Creating repository")
             repo = await _create_repo_with_retry(
@@ -451,9 +454,12 @@ async def publish_pod_to_github(
             if override is not None:
                 # The user already saw and edited the draft — commit their text
                 # verbatim. Only the import URL may be stale: the preview embeds
-                # one guessed from the requested owner/slug, and a repo-name
-                # collision just landed the repo on a suffixed slug.
-                readme = _rewrite_import_urls(override, import_url, repo_name)
+                # one guessed from the owner/slug it was drafted for, and a
+                # repo-name collision (or a rename since the draft) just landed
+                # the repo on a different slug.
+                readme = _rewrite_import_urls(
+                    override, import_url, repo_name, body.readme_source_slug
+                )
             else:
                 readme = render_readme(
                     pod.name, pod.description, archive, import_url, _frontend_base()
@@ -487,9 +493,23 @@ async def publish_pod_to_github(
             skipped: list[str] = []
             for done, (path, content) in enumerate(files, start=1):
                 yield _progress_line(stage="upload", done=done, total=len(files), path=path)
-                if not await _push_one_file_best_effort(
-                    use_cases, common, owner, repo_slug, path, content
-                ):
+                try:
+                    # One more line per chunk when the file falls back to
+                    # chunked pushes — each chunk is its own Composio call, so
+                    # per-file lines alone would leave the client's stall
+                    # guard starving through a single large file.
+                    async for part, parts in _push_one_file_best_effort(
+                        use_cases, common, owner, repo_slug, path, content
+                    ):
+                        yield _progress_line(
+                            stage="upload",
+                            done=done,
+                            total=len(files),
+                            path=path,
+                            part=part,
+                            parts=parts,
+                        )
+                except _FileTooLargeError:
                     skipped.append(path)
             if any(path.rsplit("/", 1)[-1] == "pod.json" for path in skipped):
                 raise OperationExecutionError(
@@ -530,7 +550,6 @@ async def publish_pod_to_github(
             GithubPublishResponse(
                 status="published",
                 repo_url=html_url,
-                import_badge_markdown=import_badge_markdown(import_url),
                 readme=readme,
                 message=message,
             )
@@ -555,8 +574,10 @@ async def import_from_github(
     """Create a new pod from a public GitHub repo's bundle — the engine behind
     a repo's "Import to Lemma" badge. Fetches the repo's zipball directly
     (works for any public repo with no auth); private repos are a follow-up
-    once resolving the *viewer's* own GitHub account is wired in."""
-    archive = _reassemble_chunked_entries(await _fetch_repo_zip(owner, repo, ref))
+    once resolving the *viewer's* own GitHub account is wired in. No route
+    guard: like POST /imports, org membership is enforced by
+    pod_service.create_pod (the same check POST /pods relies on)."""
+    archive = reassemble_chunked_entries(await _fetch_repo_zip(owner, repo, ref))
     entity = await _create_new_pod_from_bundle(
         pod_service=pod_service,
         service=service,
@@ -573,7 +594,10 @@ async def import_from_github(
 
 
 @github_import_into_pod_router.post(
-    "/{owner}/{repo}", response_model=PodImportResponse, status_code=status.HTTP_201_CREATED
+    "/{owner}/{repo}",
+    response_model=PodImportResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[ImportEditorDep],
 )
 async def import_from_github_into_pod(
     pod_id: UUID,
@@ -589,7 +613,7 @@ async def import_from_github_into_pod(
     "install into this pod" counterpart to import_from_github's "create a new
     pod" path. Same fetch as import_from_github; plans into pod_id the same
     way create_import (import_controller.py) does for an uploaded bundle."""
-    archive = _reassemble_chunked_entries(await _fetch_repo_zip(owner, repo, ref))
+    archive = reassemble_chunked_entries(await _fetch_repo_zip(owner, repo, ref))
     entity = await service.create(
         pod_id=pod_id,
         user_id=user.id,

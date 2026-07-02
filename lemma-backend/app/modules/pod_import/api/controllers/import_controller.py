@@ -16,17 +16,34 @@ from app.core.api.dependencies import CurrentUser, UoWDep
 from app.core.authorization.dependencies import PodContextDep
 from app.modules.pod.api.dependencies import PodServiceDep
 from app.modules.pod.domain.pod_entities import PodConfig, PodEntity, PodSource
-from app.modules.pod_import.api.dependencies import ImportAppServiceDep
+from app.modules.pod_import.api.dependencies import (
+    ImportAppServiceDep,
+    ImportEditorDep,
+    ImportViewerDep,
+)
 from app.modules.pod_import.api.schemas import ApplyImportRequest, PodImportResponse
-from app.modules.pod_import.domain.entities import PodImportEntity
-from app.modules.pod_import.infrastructure.exporter import BundleExporter
-from app.modules.pod_import.infrastructure.staging import has_pod_manifest, peek_pod_manifest
+from app.modules.pod_import.domain.entities import ImportInProgressError, PodImportEntity
+from app.modules.pod_import.infrastructure.staging import pod_manifest_bytes
 
 router = APIRouter(prefix="/pods/{pod_id}/imports", tags=["imports"])
 
-# "Create a new pod" path lives at /imports (no pod yet); "install into this pod"
-# is the pod-scoped router above.
+# "Create a new pod" path lives at /imports (no pod yet, so no route guard —
+# org membership is enforced by pod_service.create_pod, exactly like POST /pods);
+# "install into this pod" is the pod-scoped router above.
 new_pod_import_router = APIRouter(prefix="/imports", tags=["imports"])
+
+
+def _parse_pod_manifest(raw: bytes) -> dict:
+    """pod.json is JSONC on disk (CLI-authored bundles carry comments); a
+    malformed one degrades to ``{}`` — the bundle is real (pod.json exists),
+    it just can't name the pod."""
+    from lemma_pod_bundle import loads_jsonc
+
+    try:
+        data = loads_jsonc(raw.decode("utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _bundle_stem(filename: str | None) -> str | None:
@@ -65,10 +82,11 @@ async def _create_new_pod_from_bundle(
     source_kind: str,
     source_ref: str | None,
 ) -> PodImportEntity:
-    """Shared by every "create a new pod" entry (upload, shared link, GitHub
-    import): name the pod from the bundle's pod.json, dedupe against the org,
-    stamp provenance, then plan the import into it."""
-    if not has_pod_manifest(archive, filename):
+    """Shared by every "create a new pod" entry (upload, GitHub import): name
+    the pod from the bundle's pod.json, dedupe against the org, stamp
+    provenance, then plan the import into it."""
+    raw_manifest = pod_manifest_bytes(archive, filename)
+    if raw_manifest is None:
         # Otherwise this silently creates an empty "Imported pod" with no
         # resources — e.g. a GitHub repo whose file pushes never landed (repo
         # created, then publish failed before committing anything) fetches as
@@ -77,7 +95,7 @@ async def _create_new_pod_from_bundle(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="This doesn't look like a Lemma pod bundle (no pod.json found).",
         )
-    manifest = peek_pod_manifest(archive, filename)
+    manifest = _parse_pod_manifest(raw_manifest)
     desired = str(manifest.get("name") or _bundle_stem(filename) or "Imported pod")
     name = await _unique_pod_name(pod_service, organization_id, user_id, desired)
     pod = await pod_service.create_pod(
@@ -132,53 +150,12 @@ async def import_into_new_pod(
     return PodImportResponse.from_entity(entity)
 
 
-@new_pod_import_router.post(
-    "/from-pod/{pod_id}", response_model=PodImportResponse, status_code=status.HTTP_201_CREATED
+@router.post(
+    "",
+    response_model=PodImportResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[ImportEditorDep],
 )
-async def import_from_pod(
-    pod_id: UUID,
-    user: CurrentUser,
-    pod_service: PodServiceDep,
-    service: ImportAppServiceDep,
-    uow: UoWDep,
-    ctx: PodContextDep,
-) -> PodImportResponse:
-    """Create a new pod from an existing pod's bundle — the engine behind a
-    shared ``/import/p/<id>`` link. The caller must be able to read the source
-    pod (org-scoped for now; public/token sharing is a follow-up)."""
-    source = await pod_service.get_pod(pod_id, user.id)
-    if source is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pod not found")
-    pod_name, archive = await BundleExporter(uow).export(
-        pod_id=pod_id, user_id=user.id, ctx=ctx, with_data=True
-    )
-    name = await _unique_pod_name(
-        pod_service, source.organization_id, user.id, pod_name or source.name or "Imported pod"
-    )
-    pod = await pod_service.create_pod(
-        PodEntity(
-            user_id=user.id,
-            organization_id=source.organization_id,
-            name=name,
-            description=source.description,
-            icon_url=source.icon_url,
-            config=PodConfig(source=PodSource(kind="link", ref=str(pod_id))),
-        ),
-        user.id,
-    )
-    entity = await service.create(
-        pod_id=pod.id,
-        user_id=user.id,
-        archive=archive,
-        filename=f"{pod_name or 'pod'}.zip",
-        source_name=pod_name,
-    )
-    async with uow:
-        await uow.commit()
-    return PodImportResponse.from_entity(entity)
-
-
-@router.post("", response_model=PodImportResponse, status_code=status.HTTP_201_CREATED)
 async def create_import(
     pod_id: UUID,
     user: CurrentUser,
@@ -203,7 +180,7 @@ async def create_import(
     return PodImportResponse.from_entity(entity)
 
 
-@router.get("/{import_id}", response_model=PodImportResponse)
+@router.get("/{import_id}", response_model=PodImportResponse, dependencies=[ImportViewerDep])
 async def get_import(
     pod_id: UUID,
     import_id: UUID,
@@ -216,7 +193,9 @@ async def get_import(
     return PodImportResponse.from_entity(entity)
 
 
-@router.post("/{import_id}/apply", response_model=PodImportResponse)
+@router.post(
+    "/{import_id}/apply", response_model=PodImportResponse, dependencies=[ImportEditorDep]
+)
 async def apply_import(
     pod_id: UUID,
     import_id: UUID,
@@ -229,10 +208,20 @@ async def apply_import(
     completed steps are skipped. Reads the bundle staged at create time.
     ``variables`` resolves the bundle's ${var} placeholders (connector accounts;
     pod-member assignees default to the importing user)."""
-    entity = await service.apply(
-        import_id=import_id, ctx=ctx, variables=(body.variables if body else None)
-    )
+    # Ownership gate BEFORE apply: a mismatched pod_id must 404 without a single
+    # step running — apply mutates the import's own target pod otherwise.
+    entity = await service.get(import_id)
     if entity is None or entity.pod_id != pod_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
+    try:
+        entity = await service.apply(
+            import_id=import_id, ctx=ctx, variables=(body.variables if body else None)
+        )
+    except ImportInProgressError as exc:
+        # A double-click / retry while the first (blocking) apply is mid-loop:
+        # joining it would double-run the current step.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if entity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
     async with uow:
         await uow.commit()

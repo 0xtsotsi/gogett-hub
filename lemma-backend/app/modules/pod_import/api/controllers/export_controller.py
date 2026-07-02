@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-import re
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Response
 
 from app.core.api.dependencies import CurrentUser, UoWDep
 from app.core.authorization.dependencies import PodContextDep
+from app.core.helpers.slug import sanitize_ascii_slug
+from app.modules.pod_import.api.dependencies import ImportViewerDep
 from app.modules.pod_import.infrastructure.exporter import BundleExporter
 
 router = APIRouter(prefix="/pods/{pod_id}/export", tags=["imports"])
 
 
 def _safe_filename(pod_name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pod_name).strip("-") or "pod"
-    return f"{slug}.zip"
+    return f"{sanitize_ascii_slug(pod_name, fallback='pod')}.zip"
 
 
-@router.get("")
+@router.get("", dependencies=[ImportViewerDep])
 async def export_pod(
     pod_id: UUID,
     user: CurrentUser,

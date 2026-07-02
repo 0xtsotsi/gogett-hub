@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.helpers.slug import sanitize_ascii_slug
 from app.modules.connectors.domain.errors import (
     OperationExecutionError,
     OperationExecutionUnauthorizedError,
@@ -21,15 +22,15 @@ from app.modules.pod_import.api.controllers.github_controller import (
     _archive_entries,
     _create_repo_with_retry,
     _extract_result,
-    _github_repo_slug,
+    _FileTooLargeError,
     _is_payload_too_large,
     _push_one_file_best_effort,
-    _reassemble_chunked_entries,
     _strip_bundle_root,
     preview_github_publish,
     publish_pod_to_github,
 )
 from app.modules.pod_import.infrastructure.readme import IMPORT_BADGE_URL
+from app.modules.pod_import.infrastructure.staging import reassemble_chunked_entries
 
 
 class FakeUseCases:
@@ -93,13 +94,15 @@ async def test_create_repo_does_not_retry_a_different_kind_of_error():
 
 
 def test_repo_slug_strips_unsafe_characters():
-    assert _github_repo_slug("My Cool Pod!!") == "My-Cool-Pod"
-    assert _github_repo_slug("  ") == "lemma-pod"
-    assert _github_repo_slug("already-safe_name.v2") == "already-safe_name.v2"
+    # The shared helper (app/core/helpers/slug.py) carries the repo-name rules
+    # publish depends on — pinned here because a drift breaks published URLs.
+    assert sanitize_ascii_slug("My Cool Pod!!", fallback="lemma-pod") == "My-Cool-Pod"
+    assert sanitize_ascii_slug("  ", fallback="lemma-pod") == "lemma-pod"
+    assert sanitize_ascii_slug("already-safe_name.v2", fallback="lemma-pod") == "already-safe_name.v2"
 
 
 def test_repo_slug_truncates_to_github_max_length():
-    assert len(_github_repo_slug("x" * 200)) == 100
+    assert len(sanitize_ascii_slug("x" * 200, fallback="lemma-pod")) == 100
 
 
 def _zip_with(entries: dict[str, bytes]) -> bytes:
@@ -171,10 +174,15 @@ class FakeFileUseCases:
 
 async def _push_files(use_cases, files: list[tuple[str, bytes]]) -> list[str]:
     """The publish loop's per-file skeleton (publish itself streams a progress
-    line between pushes, so there is no batch helper to import)."""
+    line per file and per chunk, so there is no batch helper to import)."""
     skipped: list[str] = []
     for path, content in files:
-        if not await _push_one_file_best_effort(use_cases, {}, "owner", "repo", path, content):
+        try:
+            async for _part, _parts in _push_one_file_best_effort(
+                use_cases, {}, "owner", "repo", path, content
+            ):
+                pass
+        except _FileTooLargeError:
             skipped.append(path)
     return skipped
 
@@ -203,7 +211,7 @@ class FakeChunkingRepo:
     """A fake that rejects any push above ``ceiling`` bytes (of the base64
     content, mimicking Composio's real request-size limit) and otherwise
     stores the file — enough to exercise adaptive chunk-size shrinking and
-    prove a real repo round-trip through _reassemble_chunked_entries."""
+    prove a real repo round-trip through reassemble_chunked_entries."""
 
     def __init__(self, ceiling: int):
         self.ceiling = ceiling
@@ -235,7 +243,7 @@ async def test_chunked_publish_reassembles_byte_identical_on_import():
     await _push_files(repo, [("apps/mini/dist.zip", original)])
 
     archive = _zip_with(repo.files)
-    reassembled = _archive_entries(_reassemble_chunked_entries(archive))
+    reassembled = _archive_entries(reassemble_chunked_entries(archive))
     assert dict(reassembled) == {"apps/mini/dist.zip": original}
 
 
@@ -249,7 +257,7 @@ def test_reassemble_drops_an_incomplete_chunk_set():
             "pod.json": b"{}",
         }
     )
-    entries = dict(_archive_entries(_reassemble_chunked_entries(archive)))
+    entries = dict(_archive_entries(reassemble_chunked_entries(archive)))
     assert "dist.zip" not in entries
     assert entries["pod.json"] == b"{}"
 
@@ -263,11 +271,18 @@ class FakePublishUseCases:
     every file push — content included, so a test can read back exactly what
     landed in README.md. ``fail_create`` injects the error a real Composio call
     would raise, to prove mid-stream errors become result lines rather than
-    HTTP errors."""
+    HTTP errors. ``ceiling`` 413s any push whose base64 content is bigger,
+    like FakeChunkingRepo, to force the chunked fallback mid-stream."""
 
-    def __init__(self, fail_create: Exception | None = None, taken: set[str] | None = None):
+    def __init__(
+        self,
+        fail_create: Exception | None = None,
+        taken: set[str] | None = None,
+        ceiling: int | None = None,
+    ):
         self.fail_create = fail_create
         self.taken = taken or set()
+        self.ceiling = ceiling
         self.pushed: list[str] = []
         self.files: dict[str, bytes] = {}
 
@@ -278,6 +293,8 @@ class FakePublishUseCases:
             if payload["name"] in self.taken:
                 raise OperationExecutionError("name already exists on this account")
             return SimpleNamespace(result={"data": {"full_name": f"someone/{payload['name']}"}})
+        if self.ceiling is not None and len(payload["content"]) > self.ceiling:
+            raise OperationExecutionError("Error code: 413 - Request Entity Too Large")
         self.pushed.append(payload["path"])
         self.files[payload["path"]] = base64.b64decode(payload["content"])
 
@@ -286,10 +303,15 @@ def _patch_publish_collaborators(monkeypatch, *, account, archive: bytes):
     from app.modules.pod_import.api.controllers import github_controller
 
     class FakeExporter:
+        # The kwargs of the last export() call, so a test can pin what the
+        # handler asked the exporter for (e.g. preview must skip assets).
+        export_kwargs: dict | None = None
+
         def __init__(self, uow):
             pass
 
-        async def export(self, **_kwargs):
+        async def export(self, **kwargs):
+            type(self).export_kwargs = kwargs
             return "trumpet", archive
 
     class FakeAccountRepo:
@@ -305,6 +327,7 @@ def _patch_publish_collaborators(monkeypatch, *, account, archive: bytes):
     # Unit tests must never reach for a real model (a dev .env may configure one).
     monkeypatch.setattr(github_controller, "polish_available", lambda: False)
     monkeypatch.setattr(github_controller.settings, "frontend_url", "https://lemma.work/")
+    return FakeExporter
 
 
 def _fake_pod_service():
@@ -368,15 +391,51 @@ async def test_publish_streams_progress_then_a_published_result(monkeypatch):
     assert result["status"] == "published"
     # The repo is named from the exported bundle's pod_name, not the display name.
     assert result["repo_url"] == "https://github.com/someone/trumpet"
-    assert IMPORT_BADGE_URL in result["import_badge_markdown"]
-    # Built from settings.frontend_url (trailing slash stripped), not hardcoded.
-    assert result["import_badge_markdown"].endswith(
-        "(https://lemma.work/import/github/someone/trumpet)"
-    )
+    # No separate badge field — the badge (and its import URL, built from
+    # settings.frontend_url with the trailing slash stripped) lives in the README.
+    assert "import_badge_markdown" not in result
+    assert IMPORT_BADGE_URL in result["readme"]
+    assert "(https://lemma.work/import/github/someone/trumpet)" in result["readme"]
     # The result carries the exact README text that was committed.
     assert result["readme"] == use_cases.files["README.md"].decode("utf-8")
     assert result["readme"].startswith("# Trumpet")
     assert result["message"] is None
+
+
+@pytest.mark.asyncio
+async def test_publish_streams_a_progress_line_per_chunk_of_a_large_file(monkeypatch):
+    # dist.zip is over the fake request ceiling, so it lands as adaptively-
+    # halved chunks — each preceded by its own progress line (a single large
+    # file is otherwise minutes of stream silence, tripping the client's
+    # stall guard).
+    big = bytes((i * 7) % 256 for i in range(200_000))
+    archive = _zip_with({"trumpet/pod.json": b"{}", "trumpet/apps/mini/dist.zip": big})
+    _patch_publish_collaborators(
+        monkeypatch, account=SimpleNamespace(provider_account_id="someone"), archive=archive
+    )
+    use_cases = FakePublishUseCases(ceiling=60_000)
+
+    lines = await _publish_lines(use_cases)
+
+    assert lines[-1]["status"] == "published"
+    chunk_lines = [line for line in lines if line.get("stage") == "upload" and "part" in line]
+    assert chunk_lines and all(line["path"] == "apps/mini/dist.zip" for line in chunk_lines)
+    # done/total still describe the file's position in the whole upload.
+    assert all((line["done"], line["total"]) == (3, 3) for line in chunk_lines)
+    # The final (successful) pass announced every one of its parts in order.
+    parts = chunk_lines[-1]["parts"]
+    assert [
+        line["part"] for line in chunk_lines if line["parts"] == parts
+    ] == list(range(1, parts + 1))
+    # Files that fit whole keep part-free lines.
+    assert all(
+        "part" not in line
+        for line in lines
+        if line.get("stage") == "upload" and line.get("path") == "pod.json"
+    )
+    # And the pieces still reassemble byte-identical on the import side.
+    entries = dict(_archive_entries(reassemble_chunked_entries(_zip_with(use_cases.files))))
+    assert entries["apps/mini/dist.zip"] == big
 
 
 @pytest.mark.asyncio
@@ -439,7 +498,7 @@ async def test_preview_reports_non_zero_resource_counts(monkeypatch):
             "trumpet/agents/greeter/greeter.json": b'{"name": "greeter"}',
         }
     )
-    _patch_publish_collaborators(
+    exporter = _patch_publish_collaborators(
         monkeypatch, account=SimpleNamespace(provider_account_id="someone"), archive=archive
     )
 
@@ -455,6 +514,9 @@ async def test_preview_reports_non_zero_resource_counts(monkeypatch):
     assert preview.repo_name == "trumpet"
     # Only kinds actually present in the bundle appear — no zero entries.
     assert preview.resource_counts == {"tables": 2, "agents": 1}
+    # Preview is README-only: no row re-export, no app-asset downloads.
+    assert exporter.export_kwargs["with_data"] is False
+    assert exporter.export_kwargs["with_assets"] is False
 
 
 # -- README override ----------------------------------------------------------
@@ -512,6 +574,32 @@ async def test_readme_override_rewrite_spares_other_links_and_punctuation(monkey
     # after it and the deliberate link to another pod stay byte-identical.
     assert "https://lemma.work/import/github/someone/trumpet-2. Enjoy!" in committed
     assert "https://lemma.work/import/github/alice/companion-pod" in committed
+
+
+@pytest.mark.asyncio
+async def test_readme_override_rewrite_recognizes_the_preview_slug_after_a_rename(monkeypatch):
+    # The draft was previewed for "trumpet", then the user renamed the repo to
+    # "cornet" in the dialog: the requested slug never appears in the text, so
+    # the rewrite must recognize the draft's own slug (readme_source_slug).
+    _patch_publish_collaborators(
+        monkeypatch,
+        account=SimpleNamespace(provider_account_id="someone"),
+        archive=_zip_with({"trumpet/pod.json": b"{}"}),
+    )
+    use_cases = FakePublishUseCases()
+    override = "Click https://lemma.work/import/github/someone/trumpet to import.\n"
+
+    lines = await _publish_lines(
+        use_cases,
+        body=GithubPublishRequest(
+            repo_name="cornet", readme=override, readme_source_slug="trumpet"
+        ),
+    )
+
+    committed = use_cases.files["README.md"].decode("utf-8")
+    assert "https://lemma.work/import/github/someone/cornet" in committed
+    assert "/trumpet" not in committed
+    assert lines[-1]["repo_url"] == "https://github.com/someone/cornet"
 
 
 @pytest.mark.asyncio

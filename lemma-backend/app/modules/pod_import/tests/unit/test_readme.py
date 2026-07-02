@@ -9,6 +9,7 @@ import zipfile
 from app.modules.pod_import.infrastructure.readme import (
     IMPORT_BADGE_URL,
     import_badge_markdown,
+    parse_bundle,
     render_readme,
     resource_counts,
 )
@@ -161,6 +162,24 @@ def test_a_malformed_manifest_is_skipped_not_fatal():
     assert "broken" not in readme
 
 
+def test_a_lone_json_manifest_renders_like_the_canonical_name():
+    # CLI-authored bundles may name the manifest freely — the same
+    # "<dir>.json, else a lone *.json" lookup lemma_pod_bundle applies on disk.
+    archive = _zip_with(
+        {
+            "trumpet/pod.json": {"name": "trumpet"},
+            "trumpet/agents/greeter/config.json": {
+                "name": "greeter",
+                "description": "Greets.",
+            },
+        }
+    )
+    readme = _render(archive)
+    assert "### Agents" in readme
+    assert "| greeter | Greets. |" in readme
+    assert resource_counts(archive) == {"agents": 1}
+
+
 def test_a_bundle_without_a_wrapper_folder_still_parses():
     archive = _bundle_archive()
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
@@ -184,3 +203,15 @@ def test_resource_counts_reports_only_present_kinds():
 
 def test_resource_counts_of_a_corrupt_archive_is_empty():
     assert resource_counts(b"not a zip") == {}
+
+
+def test_a_parsed_bundle_feeds_both_renderer_and_counts():
+    # The publish preview needs both the README and the counts — one
+    # parse_bundle call, no second walk over the archive.
+    archive = _bundle_archive()
+    bundle = parse_bundle(archive)
+    assert resource_counts(bundle) == resource_counts(archive)
+    assert (
+        render_readme("Trumpet", "A horn pod.", bundle, _IMPORT_URL, _FRONTEND_URL)
+        == _render(archive)
+    )

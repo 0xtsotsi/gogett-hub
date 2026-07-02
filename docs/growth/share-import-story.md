@@ -23,16 +23,19 @@ the agent → hits **Share**. The loop closes; now there are two billboards.
    whatever the entry point. All entries converge on the same wizard once the
    bundle is resolved.
 3. **One URL namespace.** `lemma.work/import/...` is the spine:
-   - `/import/p/<id>` — a shared pod
    - `/import/github/<owner>/<repo>` — a repo
    - `/import/g/<slug>` — gallery (later)
+   - `/import/p/<id>` — a shared pod (built, then removed for now: it was
+     org-scoped only, useless to the external viewer the loop needs; it comes
+     back with public/token sharing)
    Logged-out → sign up, then continue. Acquisition is *inside* the loop.
 
 ## The beats
 
 1. **Share** — primary `Share` button on every pod. Produces (in viral-leverage
-   order): a **link** (`/import/p/<id>`), **Publish to GitHub**, **Download .zip**.
-   Export is the stateless `GET`; stash the zip as a pod file, hand back its URL.
+   order): **Publish to GitHub**, **Download .zip**. Export is the stateless
+   `GET`. (A `/import/p/<id>` **link** shipped first and was removed — see the
+   checklist note below; the badge and the bundle are the share channels today.)
 2. **Publish to GitHub** — user's own repo first; gallery-PR later. Creates
    `github.com/<user>/<pod>` with bundle + generated README + **import badge**
    (`[![Import to Lemma](badge.svg)](https://lemma.work/import/github/<user>/<pod>)`).
@@ -72,11 +75,14 @@ and later "source changed — pull updates".
 - [x] Backend: `source` on pod config (`PodConfig.source` / `PodSource`).
 - [x] Backend: "create new pod from bundle" — `POST /imports` (names from `pod.json`,
       stamps provenance, dedups name). e2e tested.
-- [x] Backend: shared-link resolve — `POST /imports/from-pod/{id}` (export an
-      existing pod → new pod for the caller, provenance `kind="link"`). e2e tested.
-- [x] Frontend: `Share` sheet (copy link + download, GitHub placeholder) on the pod.
+- [x] ~~Backend: shared-link resolve — `POST /imports/from-pod/{id}`~~ **removed**:
+      it was org-scoped only (an external viewer — the whole point of a share
+      link — got a 403), and its lone frontend caller went with the
+      `/import/p/<id>` page. GitHub badge + bundle download are the share
+      channels until public/token sharing exists.
+- [x] Frontend: `Share` sheet (GitHub publish + download) on the pod.
 - [x] Frontend: create-new vs install-here fork in the wizard; apply keyed off `imp.pod_id`.
-- [x] Frontend: `/import/p/<id>` route → resolves link into the wizard (review → apply).
+- [x] ~~Frontend: `/import/p/<id>` route~~ **removed** with the backend endpoint above.
 - [x] Frontend (L2): remix takeover — four actions (view app, surface, share, customize)
       on a create-new completion.
 - [x] L3: GitHub publish — reuses Lemma's own GitHub connector (Composio), not
@@ -102,8 +108,8 @@ and later "source changed — pull updates".
       mocks only the network fetch, the rest is the real path).
       `/import/github/<owner>/<repo>` is the frontend page a repo's badge
       points to.
-- [ ] Follow-up: public/token sharing for `/import/p/<id>` (today it's
-      org-scoped — an external viewer without org access gets a 403); private
+- [ ] Follow-up: public/token sharing brings `/import/p/<id>` back with real
+      external access (the org-scoped version above was removed); private
       GitHub repo import (needs the *viewer's* own GitHub account, not the
       publisher's); verify the two Composio operation names against a live
       catalog and replace with confirmed names if they differ; the

@@ -313,39 +313,6 @@ async def test_import_into_new_pod_creates_pod_with_provenance(
     assert source["ref"] == "trumpet.zip"
 
 
-async def test_share_link_imports_existing_pod_into_a_new_pod(
-    authenticated_client: AsyncClient, fixed_test_org: dict, tmp_path: Path
-):
-    # The /import/p/<id> link: export an existing pod's bundle and create a fresh
-    # pod from it for the caller, with provenance pointing back to the source.
-    source_pod = await _create_pod(authenticated_client, fixed_test_org)
-    seed = await authenticated_client.post(
-        f"/pods/{source_pod}/imports",
-        files={
-            "bundle": ("seed.zip", _zip_bundle(_stage_bundle(tmp_path / "bundle")), "application/zip"),
-        },
-    )
-    assert seed.status_code == status.HTTP_201_CREATED, seed.text
-    applied = await authenticated_client.post(
-        f"/pods/{source_pod}/imports/{seed.json()['id']}/apply"
-    )
-    assert applied.json()["status"] == "COMPLETED", applied.text
-
-    created = await authenticated_client.post(f"/imports/from-pod/{source_pod}")
-    assert created.status_code == status.HTTP_201_CREATED, created.text
-    imp = created.json()
-    assert imp["status"] == "PLANNED"
-    new_pod_id = imp["pod_id"]
-    assert new_pod_id != source_pod
-    # provenance points back to the source pod
-    src = (await authenticated_client.get(f"/pods/{new_pod_id}")).json()["config"]["source"]
-    assert src["kind"] == "link"
-    assert src["ref"] == source_pod
-    # the new pod's plan mirrors the source's resources
-    kinds = {(s["resource_type"], s["resource_name"]) for s in imp["plan"]}
-    assert ("tables", "widgets") in kinds
-
-
 async def test_github_badge_imports_a_repos_bundle_into_a_new_pod(
     authenticated_client: AsyncClient, fixed_test_org: dict, tmp_path: Path, monkeypatch
 ):

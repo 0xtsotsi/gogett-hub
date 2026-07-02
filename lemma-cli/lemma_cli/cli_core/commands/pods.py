@@ -682,8 +682,8 @@ def import_pod(
     defer: bool = typer.Option(
         False,
         "--defer",
-        help="Import even if connector/variable requirements are unresolved, "
-        "dropping their fields so you can wire them up afterwards.",
+        help="Import even if free variables are unresolved, dropping their "
+        "fields so you can wire them up afterwards.",
     ),
 ) -> None:
     """Import a local bundle into the pod.
@@ -691,10 +691,12 @@ def import_pod(
     Non-portable ids (workflow assignees, schedule/surface accounts) are exported
     as ${name} variables listed under `variables` in pod.json. Resolve them with
     `--var name=value` or a `--values file.json`; pod-member variables default to
-    your own membership. By default an import blocks if a connector or variable
-    is still unresolved and tells you exactly what to pass — re-run with `--defer`
-    to import now (dropping those fields) and wire them up later. See what a
-    bundle needs up front with `lemma pods requirements <bundle>`.
+    your own membership, and unsupplied connector-account variables warn and drop
+    their field (the pod's existing wiring, or your own connected account, is
+    used). By default an import blocks if a free variable is still unresolved and
+    tells you exactly what to pass — re-run with `--defer` to import now
+    (dropping those fields) and wire them up later. See what a bundle needs up
+    front with `lemma pods requirements <bundle>`.
     """
     state = state_from_ctx(ctx)
     from ...cli_app.pod_bundle import import_pod_bundle

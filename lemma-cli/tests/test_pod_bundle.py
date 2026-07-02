@@ -2210,22 +2210,69 @@ def _surface_client(upserted: list) -> "FakeClient":
     )
 
 
-def test_import_blocks_on_unresolved_requirement(tmp_path: Path):
-    bundle = _unresolved_surface_bundle(tmp_path)
-    with pytest.raises(ValueError, match="needs values|--defer"):
+def _unresolved_free_var_bundle(tmp_path: Path) -> Path:
+    """A bundle whose surface config needs a free string variable nobody supplied."""
+    (tmp_path / "pod.json").write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "variables": {
+                    "webhook_url": {
+                        "type": "string",
+                        "description": "Where the slack surface posts alerts",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    slack_dir = tmp_path / "surfaces" / "slack"
+    slack_dir.mkdir(parents=True)
+    (slack_dir / "slack.json").write_text(
+        json.dumps(
+            {
+                "name": "slack",
+                "platform": "SLACK",
+                "config": {"webhook_url": "${webhook_url}"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_import_blocks_on_unresolved_free_variable(tmp_path: Path):
+    bundle = _unresolved_free_var_bundle(tmp_path)
+    with pytest.raises(ValueError, match="--defer"):
         import_pod_bundle(_surface_client([]), pod_id="pod_123", source_dir=bundle)
 
 
-def test_import_defer_imports_and_drops_unresolved_field(tmp_path: Path):
+def test_import_warns_and_drops_unresolved_account_var(tmp_path: Path, monkeypatch):
     bundle = _unresolved_surface_bundle(tmp_path)
+    msgs: list[str] = []
+    monkeypatch.setattr(pod_bundle_module.console, "print", lambda *a, **k: msgs.append(str(a[0])))
+    upserted: list = []
+    result = import_pod_bundle(
+        _surface_client(upserted), pod_id="pod_123", source_dir=bundle
+    )
+    assert result["ok"] is True
+    # An unsupplied account var never blocks — the server re-points connector
+    # grants to the importing user's own account — it warns and drops the field.
+    assert len(upserted) == 1
+    assert "account_id" not in upserted[0][1]
+    assert any("warning" in m and "slack_account" in m for m in msgs)
+
+
+def test_import_defer_imports_and_drops_unresolved_field(tmp_path: Path):
+    bundle = _unresolved_free_var_bundle(tmp_path)
     upserted: list = []
     result = import_pod_bundle(
         _surface_client(upserted), pod_id="pod_123", source_dir=bundle, allow_unresolved=True
     )
     assert result["ok"] is True
-    # Surface still imported, but the unresolved account_id field was dropped.
+    # Surface still imported, but the unresolved config field was dropped.
     assert len(upserted) == 1
-    assert "account_id" not in upserted[0][1]
+    assert "webhook_url" not in (upserted[0][1].get("config") or {})
 
 
 def test_import_supplying_var_clears_the_gate(tmp_path: Path):

@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import io
 import json
-import re
 import subprocess
 import shutil
 import tempfile
@@ -13,6 +12,14 @@ from pathlib import Path
 from typing import Any, Iterator
 from zipfile import ZIP_DEFLATED, ZipFile
 
+# Tolerant JSONC parsing lives in the shared lemma-pod-bundle package (one
+# parser across CLI and backend); re-exported here because scaffold, the
+# workflow commands, and tests import these helpers from this module.
+from lemma_pod_bundle.jsonc import (
+    _strip_trailing_commas as _strip_trailing_commas,
+    loads_jsonc as loads_jsonc,
+    strip_jsonc as strip_jsonc,
+)
 from lemma_sdk import Lemma
 from lemma_sdk.errors import LemmaAPIError
 from lemma_sdk.openapi_client.models.add_column_request import AddColumnRequest
@@ -212,86 +219,6 @@ def _json_dump(data: Any) -> str:
 
 def _write_json(path: Path, data: Any) -> None:
     path.write_text(_json_dump(data), encoding="utf-8")
-
-
-def strip_jsonc(text: str) -> str:
-    """Remove `//` line comments and `/* */` block comments from JSONC text,
-    leaving string literals (and any `//` inside them, e.g. URLs) untouched.
-    Comment characters are replaced with spaces so byte offsets — and thus the
-    line/column in any downstream json error — stay accurate."""
-    out: list[str] = []
-    i = 0
-    n = len(text)
-    in_string = False
-    escaped = False
-    while i < n:
-        ch = text[i]
-        if in_string:
-            out.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            i += 1
-            continue
-        if ch == '"':
-            in_string = True
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "/" and i + 1 < n and text[i + 1] == "/":
-            while i < n and text[i] != "\n":
-                out.append(" ")
-                i += 1
-            continue
-        if ch == "/" and i + 1 < n and text[i + 1] == "*":
-            while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
-                out.append("\n" if text[i] == "\n" else " ")
-                i += 1
-            # consume the closing */
-            i += 2
-            out.append("  ")
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def _strip_trailing_commas(text: str) -> str:
-    """Blank a trailing comma (one before a closing `}`/`]`, ignoring whitespace)
-    by replacing it with a space, so a common hand-edit mistake still parses.
-    Replacing rather than deleting keeps byte offsets — and json error line/cols —
-    accurate. Expects comment-free input (run after strip_jsonc)."""
-    out = list(text)
-    n = len(out)
-    in_string = False
-    escaped = False
-    for i, ch in enumerate(out):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == ",":
-            j = i + 1
-            while j < n and out[j] in " \t\r\n":
-                j += 1
-            if j < n and out[j] in "}]":
-                out[i] = " "
-    return "".join(out)
-
-
-def loads_jsonc(text: str) -> Any:
-    """json.loads that tolerates JSONC comments and trailing commas (so scaffolded
-    and hand-edited bundle files can be self-documenting and forgiving)."""
-    return json.loads(_strip_trailing_commas(strip_jsonc(text)))
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -2230,14 +2157,21 @@ def import_pod_bundle(
         upsert=upsert,
     )
     # Surface what the bundle still needs from the importer. Members default to
-    # the importing user, so only connectors/variables bound to an unsupplied
-    # variable block. This turns the old silent placeholder-drop into an explicit
-    # gate (override with allow_unresolved / --defer to import and wire up later).
+    # the importing user. Connector-account variables never block: the backend
+    # applier re-points connector grants to the importing user's own account, so
+    # an unsupplied account var warns and drops its field — an --upsert re-import
+    # into a pod whose accounts are already wired must keep succeeding. Only free
+    # variables hard-gate (override with allow_unresolved / --defer to import
+    # now and wire up later).
     from .pod_requirements import unresolved_requirements
 
     unresolved = unresolved_requirements(
         source_dir, supplied_vars=set(variables or {})
     )
+    account_unresolved = [
+        item for item in unresolved if item.get("kind") == "connector"
+    ]
+    blocking = [item for item in unresolved if item.get("kind") != "connector"]
     if dry_run:
         return {
             "ok": len(issues) == 0,
@@ -2252,8 +2186,15 @@ def import_pod_bundle(
     if issues:
         rendered = "\n".join(f"- {issue.path}: {issue.message}" for issue in issues)
         raise ValueError(f"Bundle validation failed:\n{rendered}")
-    if unresolved and not allow_unresolved:
-        raise ValueError(_format_unresolved_message(unresolved))
+    if blocking and not allow_unresolved:
+        raise ValueError(_format_unresolved_message(blocking))
+    for item in account_unresolved:
+        var = (item.get("resolution") or {}).get("var") or item.get("key")
+        console.print(
+            f"[yellow]warning[/yellow] connector '{item.get('key')}': no --var "
+            f"{var}=<account-id> supplied; dropping the account field so the "
+            "pod's existing wiring (or your own connected account) is used"
+        )
 
     # By default an import leaves the target pod's own name/description/icon
     # alone — importing resources into an existing pod should never silently

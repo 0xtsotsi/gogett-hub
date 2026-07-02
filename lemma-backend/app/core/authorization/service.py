@@ -853,24 +853,15 @@ class Authorizer:
             return AuthorizationDecision(
                 False, "DELEGATED_POD_SCOPE_ONLY", permission_id, resource
             )
-        # Destructive actions are never part of the user-mirror: the default
-        # pod agent may only perform them after the user approves (per session,
-        # per action type). Named workloads handle this in
-        # _authorize_delegated_workload where explicit grants count too.
-        if (
-            clamp_to_pod
-            and permission_id in DESTRUCTIVE_ACTIONS
-            and not await has_session_approval(
-                session_id=ctx.delegation_session_id,
-                workload_actor_id=ctx.actor_id,
-                permission_id=permission_id,
-            )
-        ):
-            return AuthorizationDecision(
-                False, "DESTRUCTIVE_ACTION_REQUIRES_APPROVAL", permission_id, resource
-            )
 
         if resource is None:
+            # Destructive capability checks (no specific resource) must still be
+            # gated for delegated workloads, before the user-mirror allows them.
+            destructive = await self._destructive_delegated_decision(
+                ctx, permission_id, None
+            )
+            if destructive is not None:
+                return destructive
             if not ctx.has_permission(permission_id):
                 return AuthorizationDecision(
                     False,
@@ -889,6 +880,17 @@ class Authorizer:
             return AuthorizationDecision(
                 False, "DELEGATED_POD_SCOPE_ONLY", permission_id, hydrated
             )
+        # Destructive actions are gated for EVERY delegated workload — default
+        # pod agent and named workloads alike — and this runs before the owner /
+        # org-owner / function-self shortcuts so none of them can bypass it. It
+        # returns None (proceed) only when the user approved the action for the
+        # session or a named workload holds an explicit grant (standing
+        # authority); otherwise it denies.
+        destructive = await self._destructive_delegated_decision(
+            ctx, permission_id, hydrated
+        )
+        if destructive is not None:
+            return destructive
         if self._is_function_self_read(ctx, permission_id, hydrated):
             return AuthorizationDecision(True, "FUNCTION_SELF_READ", permission_id, hydrated)
         if self._is_org_owner_of_pod(ctx, permission_id, hydrated):
@@ -952,6 +954,43 @@ class Authorizer:
                 return grant_decision
             return AuthorizationDecision(False, "MISSING_RESOURCE_GRANT", permission_id, hydrated)
         return AuthorizationDecision(False, "UNSUPPORTED_VISIBILITY", permission_id, hydrated)
+
+    async def _destructive_delegated_decision(
+        self,
+        ctx: Context,
+        permission_id: str,
+        resource: ResourceRef | None,
+    ) -> AuthorizationDecision | None:
+        """Gate DESTRUCTIVE_ACTIONS for delegated workloads.
+
+        Returns a deny decision when the action must be blocked, or ``None`` to
+        let normal authorization proceed. Proceed only when the user recorded a
+        session approval (``APPROVE_FOR_SESSION``) for the action type, or a
+        named workload holds an explicit grant for it (standing authority — the
+        headless path). Applies to the default pod agent and named workloads
+        alike, and is called before the owner / org-owner / function-self
+        shortcuts so those cannot bypass it.
+        """
+        if (
+            ctx.actor_type != ActorType.DELEGATED_USER_WORKLOAD
+            or permission_id not in DESTRUCTIVE_ACTIONS
+        ):
+            return None
+        if await has_session_approval(
+            session_id=ctx.delegation_session_id,
+            workload_actor_id=ctx.actor_id,
+            permission_id=permission_id,
+        ):
+            return None
+        if resource is not None and ctx.workload_principal_refs:
+            grant_ids = await self._matching_grant_ids_for_principal_sets(
+                ctx, permission_id, resource, (ctx.workload_principal_refs,)
+            )
+            if grant_ids:
+                return None
+        return AuthorizationDecision(
+            False, "DESTRUCTIVE_ACTION_REQUIRES_APPROVAL", permission_id, resource
+        )
 
     async def _authorize_delegated_workload(
         self,
@@ -1026,10 +1065,12 @@ class Authorizer:
             (ctx.workload_principal_refs,),
         )
         if not workload_grant_ids:
-            # A session approval (APPROVE_FOR_SESSION) stands in as an
-            # ephemeral grant — the only path for destructive actions besides
-            # an explicit grant, and a coherent fallback for anything else the
-            # user chose to approve for the session.
+            # A session approval (APPROVE_FOR_SESSION) stands in as an ephemeral
+            # grant for anything the user chose to approve for the session.
+            # (Destructive actions are already gated earlier in ``authorize``;
+            # by the time an ungranted destructive action reaches here it must
+            # carry an approval — but check generically so any approved action
+            # is honored.)
             if await has_session_approval(
                 session_id=ctx.delegation_session_id,
                 workload_actor_id=ctx.actor_id,
@@ -1037,13 +1078,6 @@ class Authorizer:
             ):
                 return AuthorizationDecision(
                     True, "SESSION_APPROVAL", permission_id, resource
-                )
-            if permission_id in DESTRUCTIVE_ACTIONS:
-                return AuthorizationDecision(
-                    False,
-                    "DESTRUCTIVE_ACTION_REQUIRES_APPROVAL",
-                    permission_id,
-                    resource,
                 )
             return AuthorizationDecision(
                 False,

@@ -936,13 +936,14 @@ async def test_named_workload_destructive_explicit_grant_is_standing_authority(
     monkeypatch,
 ):
     """An explicit destructive grant works without any approval — the headless
-    (schedule/webhook) path."""
+    (schedule/webhook) path. The grant is standing authority even with no
+    session approval recorded."""
     from app.core.authorization import service as service_module
 
-    async def fail_if_approval_checked(**kwargs):
-        raise AssertionError("explicit grant must not consult session approvals")
+    async def no_approval(**kwargs):
+        return False
 
-    monkeypatch.setattr(service_module, "has_session_approval", fail_if_approval_checked)
+    monkeypatch.setattr(service_module, "has_session_approval", no_approval)
     authorizer = Authorizer(session=None)  # type: ignore[arg-type]
     workload_principal_refs = frozenset({PrincipalRef("AGENT", uuid4())})
     grant_id = uuid4()

@@ -5,8 +5,11 @@ capabilities extraction, table-column diffing, and tolerant JSON parsing.
 """
 
 from lemma_pod_bundle.bundle import (
+    GRANT_STEP_KINDS,
     RESOURCE_KINDS,
     list_resource_names,
+    manifest_name,
+    manifest_path,
     order_tables_by_fk,
     read_manifest,
     read_table_data,
@@ -28,6 +31,7 @@ from lemma_pod_bundle.requirements import (
 
 __all__ = [
     "CAPABILITY_TIER_ORDER",
+    "GRANT_STEP_KINDS",
     "RESOURCE_KINDS",
     "TableDiff",
     "build_replacements",
@@ -38,6 +42,8 @@ __all__ = [
     "resolve_placeholders",
     "list_resource_names",
     "loads_jsonc",
+    "manifest_name",
+    "manifest_path",
     "order_tables_by_fk",
     "read_manifest",
     "read_table_data",

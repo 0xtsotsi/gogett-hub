@@ -18,10 +18,11 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
 
-_RESOURCE_KINDS = ("tables", "functions", "agents", "workflows", "schedules", "surfaces", "apps")
+from lemma_pod_bundle import RESOURCE_KINDS, manifest_name
 
 # Source SVG for the badge logo — the Lemma mark (three rounded #D99A32 bars on
 # a transparent background), redrawn minimal for a data URI:
@@ -79,19 +80,32 @@ _DESCRIPTION_CELL_MAX = 120
 
 
 def import_badge_markdown(import_url: str) -> str:
-    """The README's own badge line — also handed back to the publisher
-    (import_badge_markdown in the publish result) for pasting elsewhere."""
+    """The README's own badge line — the funnel from a published repo back
+    into Lemma's import flow."""
     return f"[![Import to Lemma]({IMPORT_BADGE_URL})]({import_url})"
+
+
+@dataclass(frozen=True)
+class ParsedBundle:
+    """One zip walk's worth of bundle facts: pod.json, each resource's
+    manifest, and seed-row counts per table. ``render_readme`` and
+    ``resource_counts`` both accept it, so a caller needing both (the publish
+    preview) parses the archive once."""
+
+    pod: dict[str, Any]
+    manifests: dict[str, list[tuple[str, dict[str, Any]]]]
+    seed_rows: dict[str, int]
 
 
 def render_readme(
     pod_name: str,
     description: str | None,
-    archive: bytes,
+    archive: bytes | ParsedBundle,
     import_url: str,
     frontend_url: str,
 ) -> str:
-    pod, manifests, seed_rows = _bundle_contents(archive)
+    bundle = archive if isinstance(archive, ParsedBundle) else parse_bundle(archive)
+    pod, manifests, seed_rows = bundle.pod, bundle.manifests, bundle.seed_rows
     title = pod_name or str(pod.get("name") or "Lemma pod")
     tagline = _one_line(description or pod.get("description") or "") or _GENERIC_TAGLINE
 
@@ -117,63 +131,71 @@ def render_readme(
     return "\n".join(lines)
 
 
-def resource_counts(archive: bytes) -> dict[str, int]:
+def resource_counts(archive: bytes | ParsedBundle) -> dict[str, int]:
     """Non-zero resource counts per kind, e.g. ``{"tables": 5, "agents": 1}`` —
     the publish preview's at-a-glance summary. Counted from the same
     wrapper-tolerant manifest walk the renderer uses, so the two never
     disagree about what's in the bundle."""
-    _, manifests, _ = _bundle_contents(archive)
-    return {kind: len(items) for kind, items in manifests.items() if items}
+    bundle = archive if isinstance(archive, ParsedBundle) else parse_bundle(archive)
+    return {kind: len(items) for kind, items in bundle.manifests.items() if items}
 
 
-def _bundle_contents(
-    archive: bytes,
-) -> tuple[dict[str, Any], dict[str, list[tuple[str, dict[str, Any]]]], dict[str, int]]:
-    """``(pod.json, {kind: [(name, manifest)]}, seed-row counts per table)``.
+def parse_bundle(archive: bytes) -> ParsedBundle:
+    """One walk over the archive, shared by the renderer and the counters.
 
     The bundle root is wherever the shallowest pod.json sits (export archives
     carry a ``<pod_name>/`` wrapper; a bare bundle doesn't), and everything is
-    resolved relative to it. A corrupt zip or a manifest with bad JSON degrades
-    to "not there" — the README must render from whatever is readable.
+    resolved relative to it. Each resource's manifest is found by the same
+    rule ``lemma_pod_bundle`` uses on disk (``<dir>.json``, else a lone
+    ``*.json`` — CLI-authored bundles use the latter), and only the JSON files
+    that actually get parsed are read: a bundle's big members (app dist.zip /
+    source.zip) are never decompressed. A corrupt zip or a manifest with bad
+    JSON degrades to "not there" — the README must render from whatever is
+    readable.
     """
-    empty: dict[str, list[tuple[str, dict[str, Any]]]] = {k: [] for k in _RESOURCE_KINDS}
+    empty: dict[str, list[tuple[str, dict[str, Any]]]] = {k: [] for k in RESOURCE_KINDS}
     try:
-        entries: dict[str, bytes] = {}
         with zipfile.ZipFile(BytesIO(archive)) as zf:
-            for info in zf.infolist():
-                if not info.is_dir():
-                    entries[info.filename] = zf.read(info)
-    except (zipfile.BadZipFile, OSError):
-        return {}, empty, {}
+            names = [info.filename for info in zf.infolist() if not info.is_dir()]
+            pod_paths = [path for path in names if path.rsplit("/", 1)[-1] == "pod.json"]
+            if not pod_paths:
+                return ParsedBundle({}, empty, {})
+            pod_path = min(pod_paths, key=lambda path: path.count("/"))
+            root = pod_path[: -len("pod.json")]
+            pod = _parse_json_object(zf.read(pod_path))
 
-    pod_paths = [path for path in entries if path.rsplit("/", 1)[-1] == "pod.json"]
-    if not pod_paths:
-        return {}, empty, {}
-    pod_path = min(pod_paths, key=lambda path: path.count("/"))
-    root = pod_path[: -len("pod.json")]
-    pod = _parse_json_object(entries[pod_path])
-
-    manifests: dict[str, list[tuple[str, dict[str, Any]]]] = {k: [] for k in _RESOURCE_KINDS}
-    seed_rows: dict[str, int] = {}
-    for kind in _RESOURCE_KINDS:
-        base = f"{root}{kind}/"
-        names = sorted(
-            {
-                path[len(base) :].split("/", 1)[0]
-                for path in entries
-                if path.startswith(base) and "/" in path[len(base) :]
+            manifests: dict[str, list[tuple[str, dict[str, Any]]]] = {
+                k: [] for k in RESOURCE_KINDS
             }
-        )
-        for name in names:
-            manifest = _parse_json_object(entries.get(f"{base}{name}/{name}.json", b""))
-            if not manifest:
-                continue  # malformed/missing manifest — skip the entry, keep the README
-            manifests[kind].append((name, manifest))
-            if kind == "tables":
-                rows = _parse_json(entries.get(f"{base}{name}/data.json"))
-                if isinstance(rows, list):
-                    seed_rows[name] = len(rows)
-    return pod, manifests, seed_rows
+            seed_rows: dict[str, int] = {}
+            for kind in RESOURCE_KINDS:
+                base = f"{root}{kind}/"
+                # name -> the files directly inside its dir (manifest candidates).
+                children: dict[str, list[str]] = {}
+                for path in names:
+                    if not path.startswith(base):
+                        continue
+                    name, _, member = path[len(base) :].partition("/")
+                    if not member:
+                        continue
+                    children.setdefault(name, [])
+                    if "/" not in member:
+                        children[name].append(member)
+                for name in sorted(children):
+                    manifest_file = manifest_name(name, children[name])
+                    if not manifest_file:
+                        continue
+                    manifest = _parse_json_object(zf.read(f"{base}{name}/{manifest_file}"))
+                    if not manifest:
+                        continue  # malformed manifest — skip the entry, keep the README
+                    manifests[kind].append((name, manifest))
+                    if kind == "tables" and "data.json" in children[name]:
+                        rows = _parse_json(zf.read(f"{base}{name}/data.json"))
+                        if isinstance(rows, list):
+                            seed_rows[name] = len(rows)
+    except (zipfile.BadZipFile, OSError):
+        return ParsedBundle({}, empty, {})
+    return ParsedBundle(pod, manifests, seed_rows)
 
 
 def _parse_json(data: bytes | None) -> Any:
@@ -200,7 +222,7 @@ def _what_it_does(
     ]
     if not bullets:
         # Old bundle without a capabilities block — fall back to plain counts.
-        for kind in _RESOURCE_KINDS:
+        for kind in RESOURCE_KINDS:
             n = len(manifests[kind])
             if n:
                 bullets.append(f"- {n} {_KIND_LABELS[kind]}{_plural(n)}")
@@ -333,7 +355,7 @@ def _get_started() -> list[str]:
 
 def _repo_layout(manifests: dict[str, list[tuple[str, dict[str, Any]]]]) -> list[str]:
     rows = [("pod.json", "name, requirements, capabilities")]
-    rows += [(f"{kind}/", _LAYOUT_COMMENTS[kind]) for kind in _RESOURCE_KINDS if manifests[kind]]
+    rows += [(f"{kind}/", _LAYOUT_COMMENTS[kind]) for kind in RESOURCE_KINDS if manifests[kind]]
     width = max(len(path) for path, _ in rows)
     return [
         "## Repo layout",

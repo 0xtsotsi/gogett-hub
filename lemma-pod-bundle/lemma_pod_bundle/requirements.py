@@ -11,9 +11,9 @@ facts from the same code. Pure: reads a bundle directory on disk, no live pod.
 * **capabilities** — what the pod *does*, tier-ordered most-sensitive first — the
   app-store-style consent manifest.
 
-This module is intentionally self-contained (its own tolerant JSON reader and
-directory scanner) so it carries no dependency on the CLI's large bundle module:
-grants and account references all live inline in the manifest JSON.
+The bundle layout (resource kinds, manifest lookup) comes from ``bundle.py`` in
+this same package — grants and account references all live inline in the
+manifest JSON, so nothing here depends on the CLI's large bundle module.
 """
 
 from __future__ import annotations
@@ -22,18 +22,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from lemma_pod_bundle.bundle import GRANT_STEP_KINDS, RESOURCE_KINDS, manifest_path
 from lemma_pod_bundle.jsonc import loads_jsonc
 
-_RESOURCE_KINDS = (
-    "tables",
-    "functions",
-    "agents",
-    "workflows",
-    "schedules",
-    "surfaces",
-    "apps",
-)
-_PERMISSIONED_KINDS = ("agents", "functions")
 _TABLE_DATA_CANDIDATES = ("data.csv", "data.jsonl", "data.json")
 
 # Consent tiers, ordered most-sensitive first — also the emit order.
@@ -54,15 +45,6 @@ def _write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def _manifest_path(resource_dir: Path) -> Path | None:
-    """The resource's manifest JSON — ``<dir-name>.json``, else a lone ``*.json``."""
-    primary = resource_dir / f"{resource_dir.name}.json"
-    if primary.is_file():
-        return primary
-    jsons = sorted(resource_dir.glob("*.json"))
-    return jsons[0] if len(jsons) == 1 else None
-
-
 def _resource_dirs(bundle_root: Path, kind: str) -> list[Path]:
     base = bundle_root / kind
     if not base.is_dir():
@@ -70,12 +52,12 @@ def _resource_dirs(bundle_root: Path, kind: str) -> list[Path]:
     return [
         path
         for path in sorted(base.iterdir())
-        if path.is_dir() and _manifest_path(path) is not None
+        if path.is_dir() and manifest_path(path) is not None
     ]
 
 
 def _grants_for(resource_dir: Path) -> list[dict[str, Any]]:
-    manifest = _manifest_path(resource_dir)
+    manifest = manifest_path(resource_dir)
     if manifest is None:
         return []
     try:
@@ -130,7 +112,7 @@ def _merge_used_by(entry: dict[str, Any], used_by: list[str]) -> None:
 
 def _used_by_for_token(bundle_root: Path, token: str) -> list[str]:
     refs: list[str] = []
-    for kind in _RESOURCE_KINDS:
+    for kind in RESOURCE_KINDS:
         kind_dir = bundle_root / kind
         if not kind_dir.is_dir():
             continue
@@ -173,7 +155,7 @@ def _connectors(bundle_root: Path, variables: dict[str, Any]) -> list[dict[str, 
         }
         _merge_used_by(entry, _used_by_for_token(bundle_root, _placeholder(name)))
 
-    for kind in _PERMISSIONED_KINDS:
+    for kind in GRANT_STEP_KINDS:
         for resource_dir in _resource_dirs(bundle_root, kind):
             for grant in _grants_for(resource_dir):
                 if str(grant.get("resource_type") or "") != "connector":

@@ -8,6 +8,7 @@ builder so neither re-implements "what resources does this bundle contain" or
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -32,14 +33,34 @@ RESOURCE_KINDS = (
     "apps",
 )
 
+# Kinds whose manifests may carry a ``permissions.grants`` block, mapped to the
+# deferred grant-step type an import plan emits for each (grants replay only
+# after every resource exists, since a grant can target a resource created
+# later). One mapping so the requirements extractor, the backend plan builder,
+# and the backend applier can never disagree on which kinds are permissioned.
+GRANT_STEP_KINDS = {
+    "agents": "agent_grants",
+    "functions": "function_grants",
+}
+
+
+def manifest_name(dir_name: str, filenames: Iterable[str]) -> str | None:
+    """The manifest among a resource dir's files — ``<dir-name>.json``, else a
+    lone ``*.json``. The name-level rule behind ``manifest_path``, split out so
+    archive readers (which walk zip entries, not a filesystem) apply the same
+    lookup."""
+    names = sorted(name for name in filenames if name.endswith(".json"))
+    primary = f"{dir_name}.json"
+    if primary in names:
+        return primary
+    return names[0] if len(names) == 1 else None
+
 
 def manifest_path(resource_dir: Path) -> Path | None:
     """The resource's manifest JSON — ``<dir-name>.json``, else a lone ``*.json``."""
-    primary = resource_dir / f"{resource_dir.name}.json"
-    if primary.is_file():
-        return primary
-    jsons = sorted(resource_dir.glob("*.json"))
-    return jsons[0] if len(jsons) == 1 else None
+    names = [path.name for path in resource_dir.glob("*.json") if path.is_file()]
+    name = manifest_name(resource_dir.name, names)
+    return resource_dir / name if name else None
 
 
 def list_resource_names(bundle_root: Path, kind: str) -> list[str]:

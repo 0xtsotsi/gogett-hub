@@ -1,0 +1,12 @@
+{
+  "name": "submissions",
+  "primary_key_column": "id",
+  "enable_rls": false,
+  "columns": [
+    {"name": "id", "type": "UUID", "required": true, "auto": true},
+    {"name": "author", "type": "TEXT", "required": false},
+    {"name": "content", "type": "TEXT", "required": true},
+    {"name": "status", "type": "TEXT", "required": false},
+    {"name": "reason", "type": "TEXT", "required": false}
+  ]
+}

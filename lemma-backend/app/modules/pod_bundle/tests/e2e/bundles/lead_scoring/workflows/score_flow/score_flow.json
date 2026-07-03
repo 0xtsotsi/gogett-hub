@@ -1,0 +1,22 @@
+{
+  "name": "score_flow",
+  "description": "Score a single lead supplied in the run payload.",
+  "start": {"type": "MANUAL"},
+  "nodes": [
+    {
+      "id": "score",
+      "type": "FUNCTION",
+      "label": "Score lead",
+      "config": {
+        "function_name": "score_lead",
+        "input_mapping": {
+          "company": {"type": "expression", "value": "start.payload.company"},
+          "employees": {"type": "expression", "value": "start.payload.employees"},
+          "plan_interest": {"type": "expression", "value": "start.payload.plan_interest"}
+        }
+      }
+    },
+    {"id": "end", "type": "END", "label": "Done"}
+  ],
+  "edges": [{"id": "e1", "source": "score", "target": "end"}]
+}

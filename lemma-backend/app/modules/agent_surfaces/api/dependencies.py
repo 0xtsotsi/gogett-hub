@@ -78,8 +78,15 @@ def get_surface_event_handler(
     )
 
 
-def get_surface_webhook_security_service() -> SurfaceWebhookSecurityService:
-    return SurfaceWebhookSecurityService()
+def get_surface_webhook_security_service(
+    uow: UoWDep,
+) -> SurfaceWebhookSecurityService:
+    return SurfaceWebhookSecurityService(
+        credential_resolver=SurfaceCredentialResolver(
+            session=uow.session,
+            connector_service=get_connector_service(uow),
+        )
+    )
 
 
 def get_user_surfaces_service(uow: UoWDep) -> UserSurfacesService:

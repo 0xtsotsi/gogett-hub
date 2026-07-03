@@ -1,0 +1,5 @@
+{
+  "name": "Static App Pod",
+  "format_version": 2,
+  "description": "A pod whose app is a prebuilt static site (no build step)."
+}

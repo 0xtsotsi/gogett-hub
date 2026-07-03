@@ -72,14 +72,15 @@ from app.modules.agent.services.realtime import (
 from app.modules.agent.services.agent_context_brief import AgentContextBriefBuilder
 from app.modules.agent.services.run_message_writer import RunMessageWriter
 from app.modules.agent.services.run_usage_recorder import RunUsageRecorder
-from app.modules.agent.services.workspace_location import resolve_workspace_location
+from app.modules.agent.services.workspace_location import (
+    resolve_pod_cwd,
+    resolve_workspace_location,
+)
 from app.modules.agent.tools.context import ConversationContext
 from app.modules.agent.tools.callable_tool_factory import AgentCallableToolFactory
 from app.modules.agent.tools.final_answer import get_final_answer_tool
-from app.modules.agent.tools.registry import (
-    POD_DEFAULT_AGENT_TOOLSETS,
-    adapt_toolsets_for_vision,
-)
+from app.modules.agent.tools.registry import POD_DEFAULT_AGENT_TOOLSETS
+from app.modules.agent.tools.workspace_cli.pydantic_adapter import view_image_toolset
 from app.modules.agent.tools.tool_assembler import RunToolAssembler
 from app.core.crypto import get_secret_cipher
 from app.core.authorization.delegation import DEFAULT_POD_AGENT_NAME
@@ -114,6 +115,25 @@ async def _finalize_safely(coro: Awaitable[None], *, agent_run_id: UUID) -> None
             exc,
             exc_info=True,
         )
+
+
+def _rejected_run_error_message(data: object) -> str:
+    """Build a user-facing message for a daemon-capacity REJECTED event.
+
+    Falls back to a generic message if the structured shape the daemon sends
+    (``{"reason", "active_run_count", "max_concurrent_runs"}``) isn't present
+    -- keeps this robust against an older/newer daemon sending a different
+    payload shape.
+    """
+    if isinstance(data, dict) and data.get("reason") == "daemon_at_capacity":
+        active = data.get("active_run_count")
+        cap = data.get("max_concurrent_runs")
+        if isinstance(active, int) and isinstance(cap, int):
+            return (
+                f"Daemon busy: {active}/{cap} runs already active. "
+                "Try again in a moment."
+            )
+    return "Daemon rejected this run (at capacity). Try again in a moment."
 
 
 def _profile_model_settings(
@@ -213,6 +233,7 @@ class AgentRunnerService:
             runtime_profile_snapshot = resolved_runtime.public_snapshot()
             runtime_credentials = resolved_runtime.credentials or {}
             workspace_location = resolve_workspace_location(conversation)
+            pod_cwd = resolve_pod_cwd(conversation)
             ctx = ConversationContext(
                 user_id=user_id,
                 org_id=conversation.organization_id,
@@ -230,6 +251,7 @@ class AgentRunnerService:
                 runtime_credentials=runtime_credentials,
                 workspace_id=workspace_location.workspace_id,
                 workspace_cwd=workspace_location.cwd,
+                pod_cwd=pod_cwd,
                 # Only the in-process pydantic (LEMMA) harness catches the
                 # ask_user/request_approval pause signal; daemon harnesses run the
                 # tools over MCP and own their own session, so they can't be paused
@@ -237,6 +259,7 @@ class AgentRunnerService:
                 supports_pause_signal=(
                     resolved_runtime.harness_kind == HarnessKind.LEMMA
                 ),
+                is_pod_default_agent=(agent.id == _POD_ASSISTANT_AGENT_ID),
                 **surface_context,
             )
             try:
@@ -254,6 +277,15 @@ class AgentRunnerService:
                 agent=agent,
                 conversation=conversation,
             )
+            # `view_image` is a standalone toolset, appended for any agent/harness
+            # whose resolved model declares VISION support — independent of the
+            # agent's configured toolsets (see AgentToolset.VIEW_IMAGE).
+            supports_vision = (
+                resolved_runtime.model is not None
+                and RuntimeModelCapability.VISION in resolved_runtime.model.capabilities
+            )
+            if supports_vision and view_image_toolset not in full_toolsets:
+                full_toolsets = [*full_toolsets, view_image_toolset]
             # Daemon harnesses (Codex/Claude-Code) reach every tool through the MCP
             # server, so they keep the full toolset list. The in-process LEMMA
             # harness instead shows core tools directly and defers the heavy "extra"
@@ -265,28 +297,13 @@ class AgentRunnerService:
                 harness_model_settings = _profile_model_settings(
                     runtime_profile_snapshot
                 )
-                # The in-process pydantic-ai harness drives the model directly and
-                # owns the message history, so a model without vision support
-                # breaks when `view_image` returns image content. Withhold the
-                # image-returning tools unless the resolved model declares VISION.
-                # (Daemon harnesses run their own external multimodal models and
-                # keep the full toolset.)
-                supports_vision = (
-                    resolved_runtime.model is not None
-                    and RuntimeModelCapability.VISION
-                    in resolved_runtime.model.capabilities
-                )
-                lemma_toolsets = adapt_toolsets_for_vision(
-                    full_toolsets,
-                    supports_vision=supports_vision,
-                )
                 # The in-process harness realizes every tool surface as a
                 # capability, so its toolset list is empty.
                 harness_capabilities = await build_lemma_harness_tooling(
                     uow_factory=self.uow_factory,
                     agent=agent,
                     ctx=ctx,
-                    full_toolsets=lemma_toolsets,
+                    full_toolsets=full_toolsets,
                     agent_run_id=agent_run_id,
                     model_name=resolved_runtime.model_name_for_harness,
                     enable_prompt_caching=(
@@ -645,6 +662,26 @@ class AgentRunnerService:
                 agent_run_id=agent_run_id,
                 status=AgentRunStatus.FAILED,
                 error=str(event.data),
+                usage_data=usage_data,
+                organization_id=organization_id,
+                pod_id=pod_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                started_at=started_at,
+                runtime_profile=runtime_profile,
+                usage_reservation=usage_reservation,
+            )
+            return True
+
+        if event.type == AgentEventType.REJECTED:
+            # The daemon explicitly refused this run (already at
+            # max_concurrent_runs) -- terminal, like ERROR, but with a more
+            # actionable message built from the event's structured data.
+            await self._finish_agent_run(
+                conversation_id=conversation_id,
+                agent_run_id=agent_run_id,
+                status=AgentRunStatus.FAILED,
+                error=_rejected_run_error_message(event.data),
                 usage_data=usage_data,
                 organization_id=organization_id,
                 pod_id=pod_id,

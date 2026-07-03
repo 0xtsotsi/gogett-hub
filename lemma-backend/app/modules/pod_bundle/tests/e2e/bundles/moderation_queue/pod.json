@@ -1,0 +1,6 @@
+{
+  "name": "Moderation Queue",
+  "description": "Screen user-generated submissions for banned content and queue the flagged ones for human review.",
+  "format_version": 2,
+  "variables": {}
+}

@@ -141,12 +141,12 @@ class ConversationService:
         # agent.execute grant on itself, but running another copy of the agent the
         # user is already running is no privilege escalation.
         if require_execute_grant:
-            # Dispatching a *named* agent needs both agent.execute (to start it)
-            # and agent.read (to load the conversation back when starting the
-            # run). Check them together so a caller missing a grant sees every
-            # missing permission at once instead of fixing one, retrying, and
-            # hitting the next 403. The downstream read check reuses the cached
-            # decision. The default pod agent (agent is None) needs only execute.
+            # Dispatching a *named* agent checks agent.execute and agent.read
+            # together. agent.execute implies agent.read (IMPLIED_PERMISSIONS),
+            # so an execute-only grant satisfies both; checking read here anyway
+            # warms the decision cache for the run-load that follows and keeps
+            # the error complete for callers missing everything. The default
+            # pod agent (agent is None) needs only execute.
             actions = [Permissions.AGENT_EXECUTE]
             if agent is not None:
                 actions.append(Permissions.AGENT_READ)
@@ -191,8 +191,12 @@ class ConversationService:
         A child (``parent_id`` set — a sub-agent OR a conversation pinned under a
         PROJECT) inherits the parent's resolved cwd + workspace selection, so it
         shares the parent's directory instead of getting its own. A root
-        conversation gets its own ``/workspace/conversations/{id}`` cwd. An
-        explicit ``cwd`` already in metadata always wins.
+        conversation gets its own ``/workspace/c/{date}/{slug}`` cwd. An explicit
+        ``cwd`` already in metadata always wins.
+
+        The cwd is the single source of truth for both filesystems: the pod
+        working directory (``/me/{suffix}``) is derived from it at read time
+        (``resolve_pod_cwd``), so nothing pod-specific is persisted here.
         """
         metadata = conversation.metadata if isinstance(conversation.metadata, dict) else {}
         if metadata.get("cwd"):
@@ -666,6 +670,19 @@ class ConversationService:
             )
             return "request_approval", content.model_dump(mode="json")
 
+        if decision == AgentRunApprovalDecision.APPROVE_FOR_SESSION:
+            # Beyond the one-off run below, remember the approval so the
+            # workload can keep performing this action type in this
+            # conversation (the authorizer honors it as an ephemeral grant,
+            # which is the only unlock for DESTRUCTIVE_ACTIONS besides an
+            # explicit grant). The permission ids ride in the request_approval
+            # args, copied by the agent from the denied tool result.
+            await self._record_session_approvals(
+                conversation=conversation,
+                tool_args=tool_args,
+                user_id=user_id,
+            )
+
         executed = await self._execute_approved_tool_as_user(
             conversation=conversation,
             user_id=user_id,
@@ -691,6 +708,37 @@ class ConversationService:
                 response=response,
             )
         return "request_approval", content.model_dump(mode="json")
+
+    async def _record_session_approvals(
+        self,
+        *,
+        conversation: Conversation,
+        tool_args: dict[str, object],
+        user_id: UUID,
+    ) -> None:
+        """Persist APPROVE_FOR_SESSION as per-permission session approvals.
+
+        Keyed to (conversation, workload actor, permission) — the same key the
+        authorizer checks. Without permission ids in the request_approval args
+        this quietly degrades to APPROVE_ONCE behavior (the wrapped tool still
+        runs once as the user; the next attempt re-prompts).
+        """
+        from app.core.authorization.delegation import DEFAULT_POD_AGENT_ID
+        from app.core.authorization.session_approvals import record_session_approval
+
+        permission_ids = tool_args.get("permission_ids")
+        if not isinstance(permission_ids, list):
+            return
+        workload_actor_id = f"agent:{conversation.agent_id or DEFAULT_POD_AGENT_ID}"
+        for permission_id in permission_ids:
+            if not isinstance(permission_id, str) or not permission_id:
+                continue
+            await record_session_approval(
+                session_id=str(conversation.id),
+                workload_actor_id=workload_actor_id,
+                permission_id=permission_id,
+                resolved_by_user_id=user_id,
+            )
 
     async def _execute_approved_tool_as_user(
         self,
@@ -749,6 +797,7 @@ class ConversationService:
         )
         from app.modules.agent.tools.context import ConversationContext
         from app.core.crypto import get_secret_cipher
+        from app.modules.agent.services.workspace_location import resolve_pod_cwd
 
         uow_factory = SessionUnitOfWorkFactory(async_session_maker)
         agent = await self._resolve_agent(conversation=conversation, user_id=user_id)
@@ -786,6 +835,7 @@ class ConversationService:
             runtime_credentials=resolved.credentials or {},
             workspace_id=workspace_location.workspace_id,
             workspace_cwd=workspace_location.cwd,
+            pod_cwd=resolve_pod_cwd(conversation),
         )
 
     async def _pending_user_approval_from_messages(

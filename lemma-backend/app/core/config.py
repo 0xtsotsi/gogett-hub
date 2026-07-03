@@ -203,6 +203,27 @@ class Settings(BaseSettings):
             "disable the background reconcile loop."
         ),
     )
+    daemon_ws_ping_stale_after_seconds: float = Field(
+        default=90.0,
+        description=(
+            "If a connected user daemon sends no daemon.ping for this long, the "
+            "backend closes the websocket proactively instead of waiting for a "
+            "TCP-level disconnect (handles a half-open connection the daemon "
+            "itself doesn't notice). Should comfortably exceed the daemon's own "
+            "self-declared-dead threshold (ping interval * missed-pong limit, "
+            "default 15s * 3 = 45s)."
+        ),
+    )
+    daemon_reconnect_grace_seconds: float = Field(
+        default=120.0,
+        description=(
+            "How long DaemonHarness.run() waits for a disconnected user daemon "
+            "to reattach an in-flight run before failing it. Bounded and "
+            "orthogonal to DEFAULT_DAEMON_EVENT_TIMEOUT_SECONDS (7200s), which "
+            "governs a *live* connection's max silent gap between events, not "
+            "disconnect recovery."
+        ),
+    )
     local_agent_runtime_config_path: str = Field(
         default_factory=lambda: str(
             _default_local_root() / "lemma" / "agent-runtime.json"
@@ -304,6 +325,14 @@ class Settings(BaseSettings):
         description=(
             "TTL in seconds for cached authorization role snapshots. "
             "Set to 0 to disable the in-process cache."
+        ),
+    )
+    session_approval_ttl_seconds: int = Field(
+        default=3600,
+        description=(
+            "How long an APPROVE_FOR_SESSION decision authorizes the approved "
+            "action type for a workload within one conversation. Set to 0 to "
+            "disable session approvals (every destructive action re-prompts)."
         ),
     )
     # Google OAuth Settings

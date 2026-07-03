@@ -1,0 +1,6 @@
+{
+  "name": "dashboard",
+  "public_slug": "dashboard-e2e",
+  "description": "A static imported dashboard app.",
+  "visibility": "POD"
+}

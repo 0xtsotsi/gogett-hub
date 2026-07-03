@@ -415,6 +415,14 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
                                 replacements=replacements,
                             )
                             await applier.apply_step(step)
+                            # Commit the step before checkpointing it DONE: the
+                            # bare UoW rolls back on error but does NOT auto-commit
+                            # on success, so uncommitted writes (e.g. a workflow a
+                            # later schedule step must resolve) would otherwise be
+                            # lost — and a DONE checkpoint on lost data would break
+                            # crash-resume. Idempotent when the service already
+                            # committed internally.
+                            await uow.commit()
                     step.status = StepStatus.DONE
                 except StepNotApplicableError as exc:
                     # Deferred kind (app/surface/grants) — skip, don't fail.

@@ -944,21 +944,22 @@ class ConnectorService:
             connector.id, credentials, native_profile
         )
 
-        # The user's default account for this auth config; a plain re-auth
-        # updates it. Multiple identities may be connected per auth config, so
-        # if the default belongs to a different provider identity, look up the
-        # matching account (or fall through to creating a new one).
-        account = await self.account_repository.get_by_user_and_auth_config(
-            user_id, auth_config.id
-        )
-        if (
-            account is not None
-            and provider_account_id
-            and account.provider_account_id
-            and account.provider_account_id != provider_account_id
-        ):
+        # Match the re-authing identity to an existing account:
+        #  - provider account id known → the account with exactly that id. A new
+        #    identity has none yet, so `account` stays None and the create branch
+        #    below runs — we must NOT fall back to the default here, or a second
+        #    identity's re-auth would clobber the default account's credentials
+        #    (which may itself have a null provider_account_id).
+        #  - provider account id absent → the user's default for this auth config
+        #    (a plain re-auth of the existing/only account; can't disambiguate
+        #    identities without an id).
+        if provider_account_id:
             account = await self.account_repository.get_by_user_auth_config_and_provider_account(
                 user_id, auth_config.id, provider_account_id
+            )
+        else:
+            account = await self.account_repository.get_by_user_and_auth_config(
+                user_id, auth_config.id
             )
 
         if account:
@@ -1183,6 +1184,15 @@ class ConnectorService:
                 logger.warning(f"Failed to revoke connection: {exc}")
 
         await self.account_repository.delete(account_id)
+        # Keep the "exactly one default per (user, auth_config)" invariant: if the
+        # deleted account was the default, promote the oldest remaining one so
+        # implicit account resolution never silently loses its default.
+        if account.is_default and account.auth_config_id is not None:
+            await self.account_repository.promote_next_default(
+                user_id=account.user_id,
+                auth_config_id=account.auth_config_id,
+                exclude_account_id=account_id,
+            )
         await self.uow.commit()
 
     async def delete_auth_config(

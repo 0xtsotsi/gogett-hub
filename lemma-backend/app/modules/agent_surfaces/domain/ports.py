@@ -312,3 +312,11 @@ class SurfacePodMembershipPort(Protocol):
     async def get_user_pod_ids(self, user_id: UUID) -> list[UUID]: ...
 
     async def get_user_email(self, user_id: UUID) -> str | None: ...
+
+    async def get_user_default_surface_id(
+        self, user_id: UUID, platform: str
+    ) -> UUID | None:
+        """The user's preferred surface id for ``platform`` (from
+        ``users.preferences``), used to disambiguate a sender reachable via a
+        shared system bot across pods in multiple orgs. None if unset."""
+        ...

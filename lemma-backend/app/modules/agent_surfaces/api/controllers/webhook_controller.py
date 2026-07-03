@@ -118,6 +118,9 @@ async def handle_platform_webhook(
     # Resend inbound: a catch-all address webhook. Resolve the destination
     # address to a concrete surface and feed the normal surface-level pipeline.
     if platform == "resend":
+        # Authenticate the Svix signature over the raw body BEFORE trusting any
+        # of it (Resend does not go through assert_platform_request_allowed).
+        await security_service.verify_resend_request(headers=headers, raw_body=raw_body)
         normalized = _normalize_resend_inbound(payload)
         to_address = normalized.get("to")
         if not to_address:

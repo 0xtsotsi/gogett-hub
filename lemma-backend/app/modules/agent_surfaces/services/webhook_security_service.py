@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -17,6 +18,11 @@ from app.modules.agent_surfaces.config import surface_settings
 from app.modules.agent_surfaces.domain.entities import AgentSurfaceEntity, SurfacePlatform
 _SLACK_SIGNATURE_VERSION = "v0"
 _SLACK_MAX_TIMESTAMP_SKEW_SECONDS = 60 * 5
+# Resend delivers inbound webhooks via Svix; the signature is a base64 HMAC-SHA256
+# over ``{svix-id}.{svix-timestamp}.{body}`` keyed by the base64 secret (minus its
+# ``whsec_`` prefix). The signature header carries space-separated ``v1,<sig>``
+# entries so the secret can be rotated.
+_SVIX_MAX_TIMESTAMP_SKEW_SECONDS = 60 * 5
 _BOT_FRAMEWORK_OPENID_CONFIG_URL = (
     "https://login.botframework.com/v1/.well-known/openidconfiguration"
 )
@@ -133,6 +139,80 @@ class SurfaceWebhookSecurityService:
             headers=headers,
             raw_body=raw_body,
         )
+
+    async def verify_resend_request(
+        self,
+        *,
+        headers: dict[str, str],
+        raw_body: bytes,
+    ) -> None:
+        """Verify a Resend (Svix) inbound webhook signature.
+
+        Resend does not go through ``assert_platform_request_allowed`` (that path
+        only covers the four chat platforms with a shared webhook), so the
+        controller calls this directly before enqueuing the inbound email.
+        """
+        if not self.verification_enabled():
+            return
+        self._verify_svix_signature(
+            headers=headers,
+            raw_body=raw_body,
+            signing_secret=surface_settings.resend_inbound_signing_secret,
+        )
+
+    def _verify_svix_signature(
+        self,
+        *,
+        headers: dict[str, str],
+        raw_body: bytes,
+        signing_secret: str | None,
+    ) -> None:
+        if not signing_secret:
+            raise SurfaceWebhookAuthenticationError(
+                "Resend inbound signing secret is not configured",
+                status_code=503,
+            )
+        svix_id = headers.get("svix-id") or headers.get("Svix-Id")
+        svix_timestamp = headers.get("svix-timestamp") or headers.get("Svix-Timestamp")
+        svix_signature = headers.get("svix-signature") or headers.get("Svix-Signature")
+        if not svix_id or not svix_timestamp or not svix_signature:
+            raise SurfaceWebhookAuthenticationError("Missing Svix signature headers")
+        try:
+            timestamp_int = int(svix_timestamp)
+        except (TypeError, ValueError) as exc:
+            raise SurfaceWebhookAuthenticationError(
+                "Invalid Svix request timestamp"
+            ) from exc
+        if abs(int(time.time()) - timestamp_int) > _SVIX_MAX_TIMESTAMP_SKEW_SECONDS:
+            raise SurfaceWebhookAuthenticationError("Svix request timestamp is too old")
+
+        secret = signing_secret
+        if secret.startswith("whsec_"):
+            secret = secret[len("whsec_") :]
+        try:
+            secret_bytes = base64.b64decode(secret)
+        except Exception as exc:
+            raise SurfaceWebhookAuthenticationError(
+                "Resend inbound signing secret is malformed",
+                status_code=503,
+            ) from exc
+
+        signed_content = b"%b.%b.%b" % (
+            svix_id.encode("utf-8"),
+            str(timestamp_int).encode("utf-8"),
+            raw_body,
+        )
+        expected = base64.b64encode(
+            hmac.new(secret_bytes, signed_content, hashlib.sha256).digest()
+        ).decode("utf-8")
+
+        # The header is a space-separated list of ``version,signature`` pairs
+        # (e.g. ``v1,<sig> v1,<sig2>``) so a rotated secret still verifies.
+        for part in svix_signature.split(" "):
+            _, _, candidate = part.partition(",")
+            if candidate and hmac.compare_digest(expected, candidate):
+                return
+        raise SurfaceWebhookAuthenticationError("Invalid Svix request signature")
 
     def _verify_slack_signature(
         self,

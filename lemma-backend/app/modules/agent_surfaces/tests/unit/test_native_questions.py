@@ -461,3 +461,57 @@ async def test_whatsapp_parse_inbound_interaction_ignores_non_lemma_id():
         ]
     }
     assert await adapter.parse_inbound_interaction(payload) is None
+
+
+def test_whatsapp_interactive_rejects_header_with_separator():
+    """A header containing '~' would corrupt the packed reply id → fall back to
+    text (return None) rather than mis-key the answer."""
+    from app.modules.agent_surfaces.platforms.whatsapp.service import (
+        _build_whatsapp_interactive,
+    )
+
+    question = SurfaceQuestion(
+        question="Pick a timezone",
+        header="time~zone",  # contains the reserved separator
+        options=[SurfaceQuestionOption(label="US"), SurfaceQuestionOption(label="CA")],
+    )
+    assert _build_whatsapp_interactive("conv|tool", question) is None
+
+
+def test_whatsapp_parse_interaction_preserves_value_with_separator():
+    """The option value may legitimately contain '~'; the 2-split keeps it whole
+    in the answer while the header stays correct."""
+    from app.modules.agent_surfaces.platforms.whatsapp.parser import (
+        WhatsAppMessageParser,
+    )
+
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "type": "interactive",
+                                    "from": "15551230000",
+                                    "id": "wamid.abc",
+                                    "interactive": {
+                                        "type": "button_reply",
+                                        "button_reply": {
+                                            "id": "conv|tool~region~a~b",
+                                            "title": "a~b",
+                                        },
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    parsed = WhatsAppMessageParser().parse_interaction(payload)
+    assert parsed is not None
+    assert parsed.callback_id == "conv|tool"
+    assert parsed.values == {"region": "a~b"}

@@ -225,10 +225,14 @@ class AgentSurfaceService:
         """Derive a unique per-pod inbound/outbound Resend address.
 
         Uses the pod id for uniqueness under a catch-all inbound domain
-        (``*@<domain>`` → one webhook), so no per-address API registration.
+        (``*@<domain>`` → one webhook), so no per-address API registration. The
+        full 32-char hex is used (not a prefix) so two pods can never collide on
+        the same address — ``get_active_by_address`` would otherwise misroute one
+        pod's inbound mail to the other. ``pod-`` + 32 hex = 36 chars, within the
+        64-char local-part limit.
         """
         domain = surface_settings.resend_inbound_domain or "ops.lemma.work"
-        return f"pod-{pod_id.hex[:12]}@{domain}"
+        return f"pod-{pod_id.hex}@{domain}"
 
     async def get_surface(self, surface_id: UUID) -> AgentSurfaceEntity:
         surface = await self.surface_repository.get(surface_id)

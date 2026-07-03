@@ -450,6 +450,7 @@ async def send_surface_message(
     surface_name: str,
     request: SurfaceSendRequest,
     user: CurrentUser,
+    ctx: PodContextDep,
     ingress: SurfaceEventHandlerDep,
     service: AgentSurfaceService = Depends(get_surface_service),
 ) -> SurfaceSendResponse:
@@ -460,6 +461,12 @@ async def send_surface_message(
     reachable conversation here yet.
     """
     surface = await service.get_surface_by_name_in_pod(pod_id=pod_id, name=surface_name)
+    await _require_surface_agent_action(
+        ctx=ctx,
+        pod_id=pod_id,
+        agent_id=surface.agent_id,
+        action=Permissions.AGENT_UPDATE,
+    )
     sent = await ingress.send_to_member(
         surface=surface,
         user_id=request.user_id,
@@ -503,6 +510,7 @@ async def get_surface_setup(
 async def list_surface_channels(
     pod_id: UUID,
     surface_name: str,
+    ctx: PodContextDep,
     service: AgentSurfaceService = Depends(get_surface_service),
 ) -> AvailableSurfaceChannelsResponse:
     """List the channels/groups this surface bot can be configured to respond in.
@@ -511,6 +519,12 @@ async def list_surface_channels(
     (Telegram groups, WhatsApp, email).
     """
     surface = await service.get_surface_by_name_in_pod(pod_id=pod_id, name=surface_name)
+    await _require_surface_agent_action(
+        ctx=ctx,
+        pod_id=pod_id,
+        agent_id=surface.agent_id,
+        action=Permissions.AGENT_READ,
+    )
     channels = await service.list_channels(surface=surface)
     return AvailableSurfaceChannelsResponse(
         channels=[

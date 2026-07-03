@@ -122,9 +122,16 @@ class SurfaceRepository(SurfaceInstallationRepositoryPort):
     async def list_active_by_type(
         self, surface_type: str
     ) -> list[AgentSurfaceEntity]:
-        stmt = select(AgentSurface).where(
-            AgentSurface.surface_type == surface_type,
-            AgentSurface.status == AgentSurfaceStatus.ACTIVE.value,
+        # Stable ordering so surface selection is deterministic when a sender
+        # resolves to several candidate surfaces on a shared bot/number (the
+        # ingress tiebreak relies on this order).
+        stmt = (
+            select(AgentSurface)
+            .where(
+                AgentSurface.surface_type == surface_type,
+                AgentSurface.status == AgentSurfaceStatus.ACTIVE.value,
+            )
+            .order_by(AgentSurface.created_at, AgentSurface.id)
         )
         result = await self.session.execute(stmt)
         return [model.to_entity() for model in result.scalars().all()]
@@ -349,6 +356,48 @@ class SurfaceConversationLinkRepository:
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
         return model.to_entity() if model else None
+
+    async def find_surface_id_for_external_thread(
+        self,
+        *,
+        platform: str,
+        external_channel_id: str | None,
+        external_thread_id: str,
+        external_user_id: str | None,
+    ) -> UUID | None:
+        """The surface an existing conversation for this exact chat lives on.
+
+        Same match shape as ``get_by_external_thread`` but NOT scoped to a
+        surface id — used at ingress to keep a returning chat on the surface it
+        first landed on, so a sender reachable via a shared bot across several
+        pods doesn't bounce between them. Returns the most-recently-updated
+        link's surface id, or None when the chat is new.
+        """
+        stmt = select(AgentSurfaceConversationLinkModel.surface_id).where(
+            AgentSurfaceConversationLinkModel.platform == platform,
+            AgentSurfaceConversationLinkModel.external_thread_id == external_thread_id,
+        )
+        if external_channel_id is None:
+            stmt = stmt.where(
+                AgentSurfaceConversationLinkModel.external_channel_id.is_(None)
+            )
+        else:
+            stmt = stmt.where(
+                AgentSurfaceConversationLinkModel.external_channel_id
+                == external_channel_id
+            )
+        if external_user_id is None:
+            stmt = stmt.where(
+                AgentSurfaceConversationLinkModel.external_user_id.is_(None)
+            )
+        else:
+            stmt = stmt.where(
+                AgentSurfaceConversationLinkModel.external_user_id == external_user_id
+            )
+        stmt = stmt.order_by(
+            AgentSurfaceConversationLinkModel.updated_at.desc()
+        ).limit(1)
+        return await self.session.scalar(stmt)
 
     async def get_latest_by_surface_and_external_user(
         self,

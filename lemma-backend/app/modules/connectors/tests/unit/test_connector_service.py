@@ -271,6 +271,7 @@ async def test_create_account_composio_api_key_connects_via_provider():
 
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     uow = AsyncMock()
 
@@ -664,6 +665,7 @@ async def test_handle_oauth_callback_sets_provider_account_id_on_create():
 
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     connect_repo = AsyncMock()
     connect_repo.get_by_state.return_value = connect_request
@@ -731,6 +733,7 @@ async def test_handle_oauth_callback_enriches_slack_account_profile():
     ]
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     connect_repo = AsyncMock()
     connect_repo.get_by_state.return_value = connect_request
@@ -880,6 +883,7 @@ async def test_handle_oauth_callback_populates_email_via_profile_operation():
 
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     connect_repo = AsyncMock()
     connect_repo.get_by_state.return_value = connect_request
@@ -965,3 +969,109 @@ async def test_handle_oauth_callback_surfaces_upstream_error_details():
 
     assert exc_info.value.details == {"upstream_message": "provider broke"}
     connect_repo.update.assert_awaited_once()
+
+
+async def test_reauth_new_identity_does_not_clobber_null_provider_default():
+    """A re-auth for a *different* provider identity must not overwrite the
+    default account when the default's provider_account_id is null — it creates a
+    new account instead (regression for the credential-clobber bug)."""
+    user_id = uuid4()
+    auth_config = _auth_config("slack")
+    connect_request = ConnectRequestEntity(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        connector_id="slack",
+        authorization_url="https://auth",
+        status=ConnectRequestStatus.PENDING,
+        attributes={"state": "state-clobber"},
+    )
+    credentials = OAuthCredentials(
+        access_token="xoxb-new-identity",
+        raw_response={"authed_user": {"id": "U_NEW_IDENTITY"}},
+    )
+    auth_provider = AsyncMock()
+    auth_provider.exchange_code_for_credentials.return_value = credentials
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    # The user's default account has a NULL provider_account_id.
+    default_account = _account(user_id, "slack")
+    default_account.is_default = True
+    default_account.provider_account_id = None
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = default_account
+    # No account matches the incoming (different) provider identity.
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
+    account_repo.create.side_effect = lambda entity: entity
+    connect_repo = AsyncMock()
+    connect_repo.get_by_state.return_value = connect_request
+    connect_repo.update.side_effect = lambda req: req
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("slack"))),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+    )
+
+    with patch.object(service, "_load_native_account_profile", AsyncMock(return_value=None)):
+        account = await service.handle_oauth_callback(
+            redirect_uri="https://cb?state=state-clobber&code=abc",
+            state="state-clobber",
+        )
+
+    # A NEW account was created for the new identity; the default was not touched.
+    account_repo.create.assert_awaited_once()
+    account_repo.update.assert_not_awaited()
+    assert account.provider_account_id == "U_NEW_IDENTITY"
+    assert account.is_default is False
+
+
+async def test_delete_default_account_promotes_next_default():
+    """Deleting the default account promotes the oldest remaining one so the
+    'exactly one default per (user, auth_config)' invariant survives."""
+    user_id = uuid4()
+    default_account = _account(user_id, "telegram")
+    default_account.is_default = True
+
+    account_repo = AsyncMock()
+    service = _service(
+        account_repository=account_repo,
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("telegram"))),
+    )
+    service.get_account = AsyncMock(return_value=default_account)
+    service._resolve_auth_config = AsyncMock(return_value=_auth_config("telegram"))
+    service._should_revoke_account = Mock(return_value=False)
+
+    await service.delete_account(default_account.id, user_id)
+
+    account_repo.delete.assert_awaited_once_with(default_account.id)
+    account_repo.promote_next_default.assert_awaited_once()
+    kwargs = account_repo.promote_next_default.await_args.kwargs
+    assert kwargs["user_id"] == user_id
+    assert kwargs["auth_config_id"] == default_account.auth_config_id
+    assert kwargs["exclude_account_id"] == default_account.id
+
+
+async def test_delete_non_default_account_does_not_promote():
+    user_id = uuid4()
+    account = _account(user_id, "telegram")
+    account.is_default = False
+
+    account_repo = AsyncMock()
+    service = _service(
+        account_repository=account_repo,
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("telegram"))),
+    )
+    service.get_account = AsyncMock(return_value=account)
+    service._resolve_auth_config = AsyncMock(return_value=_auth_config("telegram"))
+    service._should_revoke_account = Mock(return_value=False)
+
+    await service.delete_account(account.id, user_id)
+
+    account_repo.delete.assert_awaited_once_with(account.id)
+    account_repo.promote_next_default.assert_not_awaited()

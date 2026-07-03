@@ -179,6 +179,34 @@ class AccountRepository(
         instance = result.scalars().first()
         return self._to_entity(instance) if instance else None
 
+    async def promote_next_default(
+        self,
+        user_id: UUID,
+        auth_config_id: UUID,
+        exclude_account_id: UUID,
+    ) -> Optional[AccountEntity]:
+        """Make the user's oldest remaining account (excluding one being deleted)
+        the default for this auth config, so the "exactly one default" invariant
+        holds after the current default is removed. No-op when none remain."""
+        stmt = (
+            select(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.auth_config_id == auth_config_id,
+                Account.id != exclude_account_id,
+            )
+            .order_by(Account.is_default.desc(), Account.created_at)
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        instance = result.scalars().first()
+        if instance is None:
+            return None
+        if not instance.is_default:
+            instance.is_default = True
+            await self.session.flush()
+        return self._to_entity(instance)
+
     async def list_by_auth_config(
         self,
         auth_config_id: UUID,

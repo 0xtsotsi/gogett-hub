@@ -37,7 +37,14 @@ def _build_whatsapp_interactive(
     callback_id: str, question: SurfaceQuestion
 ) -> dict[str, Any] | None:
     """Build a WhatsApp interactive payload for one question, or ``None`` if it
-    can't be expressed natively (id over 256 chars, or more than 10 options)."""
+    can't be expressed natively (id over 256 chars, more than 10 options, or a
+    header containing the reserved separator)."""
+    # The reply id packs ``callback_id~header~value`` and is decoded with a
+    # 2-split, so the value may contain ``~`` but the header must not — otherwise
+    # the split misassigns and the answer is mis-keyed. Fall back to text when a
+    # header contains the separator (rare; header is model-authored).
+    if WHATSAPP_INTERACTION_SEP in (question.header or ""):
+        return None
     rows: list[tuple[str, str]] = []
     for option in question.options:
         button_id = (

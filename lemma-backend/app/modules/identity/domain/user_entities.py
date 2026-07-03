@@ -4,6 +4,7 @@ from pydantic import EmailStr
 
 from app.core.domain.aggregate import AggregateRoot
 from app.core.domain.entity import Entity
+from app.modules.identity.domain.user_preferences import UserPreferences
 
 
 class AuthUserEntity(Entity):
@@ -28,6 +29,7 @@ class UserEntity(AggregateRoot):
     country: str | None = None
     timezone: str | None = None
     date_of_birth: date | None = None
+    preferences: UserPreferences | None = None
 
     def mark_signed_up(self) -> None:
         """Emit signed-up event for welcome email processing."""

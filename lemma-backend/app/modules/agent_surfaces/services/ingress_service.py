@@ -30,7 +30,6 @@ from app.modules.agent_surfaces.domain.entities import (
     ParsedSurfaceInteraction,
     ResolvedSurfaceUser,
     SurfaceChannelRoute,
-    SurfaceCredentialMode,
     SurfaceMode,
     SurfacePlatform,
 )
@@ -207,6 +206,22 @@ class AgentSurfaceIngressService:
 
         surfaces = await self.surface_repository.list_active_by_type(platform)
 
+        # Scope to the bot that actually delivered this event when a native
+        # receiver told us which surfaces it serves (Telegram polling / Slack
+        # socket). This prevents a custom bot's update from being attributed to a
+        # different bot's surface. A shared system-bot platform webhook leaves
+        # this unset → platform-wide fan-in (disambiguated per-sender below).
+        if request.receiver_surface_ids:
+            allowed_ids = set(request.receiver_surface_ids)
+            surfaces = [surface for surface in surfaces if surface.id in allowed_ids]
+            if not surfaces:
+                logger.info(
+                    "Agent surface ignored native-receiver webhook: no active "
+                    "surface among receiver ids platform=%s",
+                    platform,
+                )
+                return None
+
         # Mention verification for Telegram groups: the parser records any
         # @username / text_mention entities but does NOT set mentioned_agent for
         # generic mentions (a `mention` entity is just a plain @username and
@@ -247,18 +262,20 @@ class AgentSurfaceIngressService:
             return None
 
         # Resolve the sender once (using the first candidate's credentials) and
-        # pick the candidate whose pod the sender belongs to. An unknown sender
-        # only proceeds when the target surface is unambiguous — it gets the
-        # signup/link flow on that surface.
+        # pick the surface this event belongs to (continuity → pod membership →
+        # user default → deterministic tiebreak). An unknown sender only proceeds
+        # when the target surface is unambiguous — it gets the signup/link flow.
         identity_surface = candidates[0]
         resolved_user = await self._resolve_sender_identity(
             adapter=adapter,
             parsed=parsed,
             credentials=await self._resolve_credentials(identity_surface),
         )
-        matched_surface = await self._match_surface_for_user(
-            surfaces=candidates,
+        matched_surface = await self._select_surface(
+            candidates=candidates,
             resolved_user=resolved_user,
+            parsed=parsed,
+            platform=platform,
         )
         if matched_surface is None and len(candidates) == 1 and parsed.is_dm:
             # Single unambiguous DM surface: route to it so the onboarding flow
@@ -1320,6 +1337,85 @@ class AgentSurfaceIngressService:
                 return surface
         return None
 
+    async def _select_surface(
+        self,
+        *,
+        candidates: list[AgentSurfaceEntity],
+        resolved_user: ResolvedSurfaceUser | None,
+        parsed: ParsedInboundSurfaceEvent,
+        platform: str,
+    ) -> AgentSurfaceEntity | None:
+        """Pick which candidate surface an inbound event belongs to.
+
+        Deterministic precedence — this is what makes a sender reachable via a
+        shared system bot/number across pods in multiple orgs route consistently:
+
+        1. **Continuity** — reuse the surface an existing conversation for this
+           exact chat already lives on, so a returning chat never bounces between
+           pods (independent of pod-membership ordering).
+        2. **Pod membership** — only surfaces whose pod the sender belongs to.
+        3. **User default** — when the sender belongs to several such pods,
+           honor ``users.preferences.default_surfaces[platform]``.
+        4. **Deterministic tiebreak** — the first member candidate (``candidates``
+           is ordered by ``created_at, id``).
+
+        Membership is still re-validated downstream in ``_prepare_surface_context``
+        (which sends the pod-access/signup reply when appropriate), so continuity
+        only decides *which* candidate — never bypasses the access check.
+        """
+        # 1. Continuity — reuse the surface this chat already lives on.
+        continuity_id = (
+            await self.conversation_link_repository.find_surface_id_for_external_thread(
+                platform=platform,
+                external_channel_id=parsed.external_channel_id,
+                external_thread_id=parsed.external_thread_id,
+                external_user_id=parsed.sender_external_user_id,
+            )
+        )
+        if continuity_id is not None:
+            for surface in candidates:
+                if surface.id == continuity_id:
+                    return surface
+
+        if resolved_user is None or resolved_user.internal_user_id is None:
+            return None
+        if not self.pod_membership_port:
+            return None
+
+        user_pod_ids = set(
+            await self.pod_membership_port.get_user_pod_ids(
+                resolved_user.internal_user_id
+            )
+        )
+        member_candidates = [s for s in candidates if s.pod_id in user_pod_ids]
+        if not member_candidates:
+            return None
+        if len(member_candidates) == 1:
+            return member_candidates[0]
+
+        # 3. Several pods across orgs share this bot — honor the user's default.
+        get_default = getattr(
+            self.pod_membership_port, "get_user_default_surface_id", None
+        )
+        if get_default is not None:
+            default_id = await get_default(resolved_user.internal_user_id, platform)
+            if default_id is not None:
+                for surface in member_candidates:
+                    if surface.id == default_id:
+                        return surface
+
+        # 4. Deterministic tiebreak (candidates are ordered by created_at, id).
+        # The user can pick a default via GET/PUT /surfaces/me when this happens.
+        logger.info(
+            "Agent surface sender resolves to %d candidate surfaces on shared "
+            "platform=%s with no default set; routing to the oldest (surface=%s). "
+            "User can set a default via /surfaces/me.",
+            len(member_candidates),
+            platform,
+            member_candidates[0].id,
+        )
+        return member_candidates[0]
+
     async def _telegram_text_mention_enrich(
         self,
         parsed: ParsedInboundSurfaceEvent,
@@ -1583,13 +1679,11 @@ class AgentSurfaceIngressService:
                 resolved_user.internal_user_id,
                 surface.pod_id,
             )
-            # Signed up but not a pod member: on a DM system surface, point them
-            # to the pod home page to request access (instead of dropping). Not
-            # offered for custom/personal bots.
-            if (
-                parsed.is_dm
-                and surface.credential_mode is SurfaceCredentialMode.SYSTEM
-            ):
+            # Signed up but not a pod member: on any DM surface, point them to the
+            # pod home page to request access (instead of dropping). Safe for both
+            # system bots and custom/personal bots — a custom bot's token maps to
+            # exactly one surface (one pod), so the join target is unambiguous.
+            if parsed.is_dm:
                 return self._reply_context(
                     surface=surface,
                     parsed=parsed,

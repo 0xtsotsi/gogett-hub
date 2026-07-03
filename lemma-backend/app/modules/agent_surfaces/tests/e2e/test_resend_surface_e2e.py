@@ -6,12 +6,11 @@ matrix files) exercises, since those all feed an already-normalized payload
 directly into ``process_ingress_and_run_scripted``, bypassing the HTTP layer
 and ``_normalize_resend_inbound`` entirely.
 
-Unlike Slack/Teams/WhatsApp/Telegram, Resend has **no signature verification**
-at all (``resend_inbound_signing_secret`` is declared in config but never
-read anywhere) — the webhook controller's own `if platform == "resend":`
-branch returns before ``security_service.verify_platform_request`` is ever
-called. So there is no signature-header builder to use here, unlike the other
-platforms' ``build_*_signature_headers`` helpers.
+Like the other platforms, Resend inbound is authenticated: the controller
+verifies the Svix signature (HMAC-SHA256 over ``{svix-id}.{svix-timestamp}.{body}``
+keyed by ``resend_inbound_signing_secret``) before trusting the payload. These
+tests sign their POSTs with ``build_resend_svix_headers`` and set the secret via
+``monkeypatch``, mirroring the other platforms' ``build_*_signature_headers``.
 
 The real webhook route only *publishes* an event to the Redis-backed message
 bus (there is no consumer wired into the e2e test client), so the raw-webhook
@@ -42,7 +41,11 @@ from app.modules.agent_surfaces.tests.e2e.helpers import (
     _ensure_connector_account,
     _resend_payload,
 )
-from app.modules.agent_surfaces.tests.e2e.mock_infrastructure import wait_for_messages
+from app.modules.agent_surfaces.config import surface_settings
+from app.modules.agent_surfaces.tests.e2e.mock_infrastructure import (
+    build_resend_svix_headers,
+    wait_for_messages,
+)
 from app.modules.agent_surfaces.tests.e2e.scripted_llm import (
     process_ingress_and_run_scripted,
     script_text,
@@ -50,6 +53,9 @@ from app.modules.agent_surfaces.tests.e2e.scripted_llm import (
 from app.modules.connectors.domain.connector import AuthProvider
 
 pytestmark = pytest.mark.e2e
+
+# A base64 secret with the Svix ``whsec_`` prefix, matching production shape.
+_RESEND_SIGNING_SECRET = "whsec_cmVzZW5kLWUyZS1zaWduaW5nLXNlY3JldA=="
 
 
 def _raw_resend_envelope(
@@ -77,10 +83,15 @@ async def test_resend_webhook_ignores_unmatched_address(
     authenticated_client: AsyncClient,
     db_session: AsyncSession,
     fixed_test_user,
+    monkeypatch,
 ):
     """A raw inbound envelope addressed to a mailbox with no active surface is
     ignored (200 OK, no surface/agent involvement) — proves address routing
-    fails closed rather than guessing a destination."""
+    fails closed rather than guessing a destination. The Svix signature is valid;
+    only the destination is unknown."""
+    monkeypatch.setattr(
+        surface_settings, "resend_inbound_signing_secret", _RESEND_SIGNING_SECRET
+    )
     envelope = _raw_resend_envelope(
         sender_email=fixed_test_user["email"],
         to_address="pod-nonexistent@ops.lemma.work",
@@ -88,13 +99,40 @@ async def test_resend_webhook_ignores_unmatched_address(
         text="Is anyone there?",
         subject="Surface Resend Raw E2E",
     )
+    raw_body = json.dumps(envelope).encode("utf-8")
     response = await authenticated_client.post(
         "/surfaces/webhooks/resend",
-        content=json.dumps(envelope).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        content=raw_body,
+        headers=build_resend_svix_headers(
+            raw_body=raw_body, signing_secret=_RESEND_SIGNING_SECRET
+        ),
     )
     assert response.status_code == 200, response.text
     assert response.json() == {"message": "Ignored: no surface for address"}
+
+
+async def test_resend_webhook_rejects_invalid_signature(
+    authenticated_client: AsyncClient,
+    monkeypatch,
+):
+    """An inbound envelope with a bad/absent Svix signature is rejected (401)
+    before any address routing — proves inbound is authenticated."""
+    monkeypatch.setattr(
+        surface_settings, "resend_inbound_signing_secret", _RESEND_SIGNING_SECRET
+    )
+    envelope = _raw_resend_envelope(
+        sender_email="attacker@evil.test",
+        to_address="pod-anything@ops.lemma.work",
+        message_id="resend-forged-1",
+        text="Forged inbound",
+        subject="Forged",
+    )
+    response = await authenticated_client.post(
+        "/surfaces/webhooks/resend",
+        content=json.dumps(envelope).encode("utf-8"),
+        headers={"Content-Type": "application/json"},  # no Svix signature
+    )
+    assert response.status_code == 401, response.text
 
 
 async def test_resend_webhook_routes_raw_envelope_to_provisioned_address(
@@ -114,6 +152,9 @@ async def test_resend_webhook_routes_raw_envelope_to_provisioned_address(
     from app.core.config import settings as app_settings
 
     monkeypatch.setattr(app_settings, "api_url", "https://api.example.test")
+    monkeypatch.setattr(
+        surface_settings, "resend_inbound_signing_secret", _RESEND_SIGNING_SECRET
+    )
     pod_id = test_pod["id"]
     account = await _ensure_connector_account(
         db_session,
@@ -146,10 +187,13 @@ async def test_resend_webhook_routes_raw_envelope_to_provisioned_address(
         text="Can you help over email?",
         subject="Surface Resend Raw E2E",
     )
+    raw_body = json.dumps(envelope).encode("utf-8")
     response = await authenticated_client.post(
         "/surfaces/webhooks/resend",
-        content=json.dumps(envelope).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        content=raw_body,
+        headers=build_resend_svix_headers(
+            raw_body=raw_body, signing_secret=_RESEND_SIGNING_SECRET
+        ),
     )
     assert response.status_code == 200, response.text
     assert response.json() == {"message": "Webhook received"}

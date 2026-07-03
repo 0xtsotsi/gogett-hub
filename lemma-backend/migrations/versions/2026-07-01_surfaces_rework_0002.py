@@ -14,6 +14,10 @@ to a live DB yet:
    several surfaces of the same platform. Existing rows are backfilled to the
    lowercased platform, with a numeric suffix on any collisions.
 
+3. users: add a nullable ``preferences`` JSONB blob (typed ``UserPreferences``)
+   holding per-user surface defaults — used to disambiguate a user reachable via
+   a shared system bot/number across pods in multiple orgs.
+
 Revision ID: 0002_surfaces_rework
 Revises: 0001_baseline
 Create Date: 2026-07-01
@@ -25,6 +29,7 @@ from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -107,8 +112,22 @@ def schema_upgrades() -> None:
         'uq_agent_surface_pod_name', 'agent_surfaces', ['pod_id', 'name']
     )
 
+    # --- users: typed JSON preferences blob (e.g. per-platform default surface
+    # used to disambiguate a user reachable via a shared system bot across pods
+    # in multiple orgs). Nullable; absent means "no preferences set". ---
+    op.add_column(
+        'users',
+        sa.Column(
+            'preferences',
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=True,
+        ),
+    )
+
 
 def schema_downgrades() -> None:
+    op.drop_column('users', 'preferences')
+
     op.drop_constraint('uq_agent_surface_pod_name', 'agent_surfaces', type_='unique')
     op.drop_index('ix_agent_surfaces_name', table_name='agent_surfaces')
     op.drop_column('agent_surfaces', 'name')

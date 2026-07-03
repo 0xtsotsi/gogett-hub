@@ -11,6 +11,11 @@ class SurfacePlatformWebhookIngress(BaseModel):
     source: str
     payload: dict[str, Any]
     headers: dict[str, str] = Field(default_factory=dict)
+    # When the event was delivered by a native receiver (e.g. Telegram polling)
+    # that knows exactly which bot it polled, these scope candidate surfaces to
+    # the ones actually served by that bot — so a custom bot's update can't be
+    # mis-attributed to another bot's surface. None = platform-wide fan-in.
+    receiver_surface_ids: list[UUID] | None = None
 
 
 class SurfaceDirectWebhookIngress(BaseModel):

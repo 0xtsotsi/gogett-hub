@@ -10,6 +10,7 @@ from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.modules.identity.domain.errors import UserNotFoundError
 from app.modules.identity.domain.ports import UserRepositoryPort
 from app.modules.identity.domain.user_entities import UserEntity
+from app.modules.identity.domain.user_preferences import UserPreferences
 from app.modules.identity.infrastructure.models import User
 
 
@@ -86,11 +87,26 @@ class UserRepository(UserRepositoryPort):
 
         data = entity.model_dump(exclude_unset=True)
         for key, value in data.items():
-            if key in {"id", "created_at", "updated_at"}:
+            # ``preferences`` holds UUIDs that are not JSONB-serializable via the
+            # plain model_dump above; it has its own JSON-safe writer below.
+            if key in {"id", "created_at", "updated_at", "preferences"}:
                 continue
             if hasattr(instance, key):
                 setattr(instance, key, value)
 
         await self.session.flush()
         self._collect_events(entity)
+        return instance.to_entity()
+
+    async def set_preferences(
+        self, user_id: UUID, preferences: UserPreferences
+    ) -> UserEntity:
+        """Persist a user's typed preferences as JSONB (UUID→str safe)."""
+        stmt = select(User).where(User.id == user_id)
+        result = await self.session.execute(stmt)
+        instance = result.scalars().first()
+        if not instance:
+            raise UserNotFoundError()
+        instance.preferences = preferences.model_dump(mode="json")
+        await self.session.flush()
         return instance.to_entity()

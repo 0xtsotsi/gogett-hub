@@ -482,7 +482,7 @@ async def test_display_resource_whatsapp_small_file_attaches_natively(
     assert documents[-1]["document"]["filename"] == "small.pdf"
 
 
-async def test_display_resource_gmail_attachment_paths_reports_unsupported(
+async def test_display_resource_gmail_attaches_datastore_file_via_composio(
     authenticated_client: AsyncClient,
     db_session: AsyncSession,
     test_pod,
@@ -492,8 +492,8 @@ async def test_display_resource_gmail_attachment_paths_reports_unsupported(
     message_store,
     monkeypatch,
 ):
-    """Composio-connected Gmail doesn't support outbound attachments yet — the
-    reply tool must still succeed, but report attachment_count=0."""
+    """Composio-connected Gmail attaches a datastore file by passing its signed
+    URL in the Composio op's `attachment` field (the SDK downloads + attaches)."""
     monkeypatch.setattr(
         ManagersFactory, "get_manager", lambda *args, **kwargs: _FakeScheduleManager()
     )
@@ -566,14 +566,16 @@ async def test_display_resource_gmail_attachment_paths_reports_unsupported(
     )
     result = tool_return["tool_result"]
     assert result["success"] is True
-    assert result["attachment_count"] == 0
-    assert "not" in result["message"].lower()
+    assert result["attachment_count"] == 1
 
     gmail_messages = await wait_for_messages(message_store, "GMAIL_REPLY", min_count=1)
-    assert "Here is the report." in json.dumps(gmail_messages[-1]["payload"])
+    payload = gmail_messages[-1]["payload"]
+    assert "Here is the report." in json.dumps(payload)
+    # The datastore file was passed to Composio as a signed URL to download+attach.
+    assert payload.get("attachment")
 
 
-async def test_display_resource_outlook_attachment_paths_reports_unsupported(
+async def test_display_resource_outlook_attaches_datastore_file_via_composio(
     authenticated_client: AsyncClient,
     db_session: AsyncSession,
     test_pod,
@@ -583,8 +585,8 @@ async def test_display_resource_outlook_attachment_paths_reports_unsupported(
     message_store,
     monkeypatch,
 ):
-    """Composio-connected Outlook doesn't support outbound attachments yet —
-    the reply tool must still succeed, but report attachment_count=0."""
+    """Composio-connected Outlook attaches a datastore file by passing its signed
+    URL in the Composio op's `attachment` field."""
     monkeypatch.setattr(
         ManagersFactory, "get_manager", lambda *args, **kwargs: _FakeScheduleManager()
     )
@@ -657,13 +659,15 @@ async def test_display_resource_outlook_attachment_paths_reports_unsupported(
     )
     result = tool_return["tool_result"]
     assert result["success"] is True
-    assert result["attachment_count"] == 0
-    assert "not" in result["message"].lower()
+    assert result["attachment_count"] == 1
 
     outlook_messages = await wait_for_messages(
         message_store, "OUTLOOK_REPLY", min_count=1
     )
-    assert "Here is the report." in json.dumps(outlook_messages[-1]["payload"])
+    payload = outlook_messages[-1]["payload"]
+    assert "Here is the report." in json.dumps(payload)
+    # The datastore file was passed to Composio as a signed URL to download+attach.
+    assert payload.get("attachment")
 
 
 async def test_display_resource_resend_attachment_paths_delivers_real_attachment(

@@ -8,6 +8,7 @@ WhatsApp, Telegram) and capture outbound messages for assertion.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -799,6 +800,31 @@ def build_whatsapp_signature_headers(
 def build_telegram_secret_headers(secret: str) -> dict[str, str]:
     return {
         "X-Telegram-Bot-Api-Secret-Token": secret,
+        "Content-Type": "application/json",
+    }
+
+
+def build_resend_svix_headers(
+    *,
+    raw_body: bytes,
+    signing_secret: str,
+    timestamp: int | None = None,
+    svix_id: str = "msg_e2e_resend",
+) -> dict[str, str]:
+    """Build a valid Svix (Resend inbound) signature header set for ``raw_body``."""
+    ts = str(timestamp or int(time.time()))
+    secret = signing_secret
+    if secret.startswith("whsec_"):
+        secret = secret[len("whsec_") :]
+    key = base64.b64decode(secret)
+    signed = svix_id.encode() + b"." + ts.encode() + b"." + raw_body
+    signature = base64.b64encode(
+        hmac.new(key, signed, hashlib.sha256).digest()
+    ).decode()
+    return {
+        "svix-id": svix_id,
+        "svix-timestamp": ts,
+        "svix-signature": f"v1,{signature}",
         "Content-Type": "application/json",
     }
 

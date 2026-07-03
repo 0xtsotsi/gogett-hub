@@ -33,6 +33,10 @@ from app.modules.agent_surfaces.services.surface_service import (
 from app.modules.agent_surfaces.services.credential_resolver import (
     SurfaceCredentialResolver,
 )
+from app.modules.agent_surfaces.services.user_surfaces_service import (
+    UserSurfacesService,
+)
+from app.modules.identity.infrastructure.user_repositories import UserRepository
 from app.modules.connectors.api.dependencies import get_connector_service
 from app.modules.connectors.infrastructure.repositories.connector_trigger_repository import (
     ConnectorTriggerRepository,
@@ -78,7 +82,18 @@ def get_surface_webhook_security_service() -> SurfaceWebhookSecurityService:
     return SurfaceWebhookSecurityService()
 
 
+def get_user_surfaces_service(uow: UoWDep) -> UserSurfacesService:
+    return UserSurfacesService(
+        surface_repository=surface_repository_factory(uow),
+        pod_membership_port=SqlAlchemySurfaceRoutingResolutionAdapter(uow),
+        user_repository=UserRepository(uow),
+    )
+
+
 SurfaceServiceDep = Annotated[AgentSurfaceService, Depends(get_surface_service)]
+UserSurfacesServiceDep = Annotated[
+    UserSurfacesService, Depends(get_user_surfaces_service)
+]
 SurfaceEventHandlerDep = Annotated[
     AgentSurfaceIngressService, Depends(get_surface_event_handler)
 ]

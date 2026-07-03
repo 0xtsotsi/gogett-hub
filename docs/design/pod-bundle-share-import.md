@@ -137,3 +137,44 @@ Everything format-shaped moves out of `lemma-cli/lemma_cli/cli_app/pod_bundle.py
 - **Unit:** shared-lib format matrix (diff, FK order, `${var}` round-trip, zip-slip rejection); plan builder CREATE/UPDATE/SKIP + destructive matrix against fake snapshots; applier idempotency (apply twice; crash between commit and checkpoint); state store TTL/seq/expiry; publisher against a fake Composio client (repo-exists, chunk fallback); recipe round-trip through `PodConfig.from_raw` + `update_pod`; controller status-code semantics with faked queue/store.
 - **E2E** (real ASGI app + the real streaq worker subprocess from `test_support/e2e_base.py`): upload→plan→apply roundtrip into an existing pod; update-in-place with destructive confirmation; new-pod install; resume after a failed step; expiry (410); GitHub import from a fixture zipball (Composio faked); publish (Composio faked; README + badge + repo_url); SSE snapshot-then-live coherence.
 - **Pool-safety regression check:** during a large e2e apply, `pg_stat_activity` shows no long-held / idle-in-transaction connections — the failure mode this design exists to prevent.
+
+## Executable-import hardening (grants, toolsets, durability)
+
+The first slice made resources *appear*; this hardening makes them *work* — an
+imported function can reach its tables, an imported agent can use its tools, and
+every step is durably committed.
+
+- **Function + agent grants apply on import.** A resource manifest may carry
+  `permissions.grants` (`resource_type` / `resource_name` / `permission_ids`).
+  The applier validates, normalizes (name → id), and replaces the grantee's
+  resource grants in the step's own UoW — the same inline-grants path the
+  function/agent controllers use — so an imported function's datastore reads and
+  writes are authorized immediately. Function grants apply inline with the create
+  (then the delegated-token env cache is dropped); agent grants apply in the
+  deferred `AGENT_GRANTS` step, after every resource they reference exists.
+- **Agent toolsets travel with the agent.** The manifest's `toolsets` are applied
+  on create/update; without them a granted agent still can't act.
+- **Every apply step commits.** The bare per-step UoW rolls back on error but does
+  **not** auto-commit on success, so a step whose service didn't commit
+  internally (e.g. workflow create) was silently lost — and a DONE checkpoint on
+  lost data breaks crash-resume. The apply loop now commits each step before
+  checkpointing it. Two applier bugs surfaced by the executable e2e were fixed
+  alongside: `_apply_function`'s update path built the wrong `update_function`
+  call, and `_flow_exists` treated a `None` "not found" as "exists" and skipped
+  workflow creation.
+- **Real use-case bundle fixtures + execution e2e.** Three hand-authored bundles
+  live in the module (`tests/e2e/bundles/`): **support_inbox** (tickets table +
+  `triage_ticket` function + `support_agent`), **lead_scoring** (leads table +
+  `score_lead` function + `score_flow` workflow), and **moderation_queue**
+  (submissions table + `flag_content` function + `reviewer_agent` +
+  `screen_flow` workflow). Each e2e imports the bundle and then *runs* the
+  imported function against the real datastore — proving the grants were applied,
+  since without them the write returns a real 403 — and asserts the agent's
+  toolsets/grants and the workflow's function cross-reference survived the import.
+  A gated `real_llm` variant points `support_agent` at the real `system:lemma`
+  runtime and asserts it files a ticket by calling the imported function tool
+  (skipped without provider creds).
+- **Not covered here:** schedule *firing* needs the full scheduler stack (a live
+  scheduler API the session-scoped e2e worker can't reach), so schedule import is
+  covered at the applier unit level and firing by the schedule module's own
+  full-stack e2e.

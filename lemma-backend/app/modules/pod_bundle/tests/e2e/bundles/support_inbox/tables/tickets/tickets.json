@@ -1,0 +1,12 @@
+{
+  "name": "tickets",
+  "primary_key_column": "id",
+  "enable_rls": false,
+  "columns": [
+    {"name": "id", "type": "UUID", "required": true, "auto": true},
+    {"name": "subject", "type": "TEXT", "required": true},
+    {"name": "body", "type": "TEXT", "required": false},
+    {"name": "priority", "type": "TEXT", "required": false},
+    {"name": "status", "type": "TEXT", "required": false}
+  ]
+}

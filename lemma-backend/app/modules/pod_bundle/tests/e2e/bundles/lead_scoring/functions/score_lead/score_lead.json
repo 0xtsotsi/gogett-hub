@@ -1,0 +1,19 @@
+{
+  "name": "score_lead",
+  "description": "Score a sales lead by size + plan interest and record it in the leads table.",
+  "code": {"$file": "code.py"},
+  "visibility": "POD",
+  "permissions": {
+    "grants": [
+      {
+        "resource_type": "datastore_table",
+        "resource_name": "leads",
+        "permission_ids": [
+          "datastore.table.read",
+          "datastore.record.read",
+          "datastore.record.write"
+        ]
+      }
+    ]
+  }
+}

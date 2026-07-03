@@ -1,0 +1,6 @@
+{
+  "name": "Support Inbox",
+  "description": "Triage inbound customer-support email into a tickets table, with an assistant that can file and prioritize tickets.",
+  "format_version": 2,
+  "variables": {}
+}

@@ -1,0 +1,13 @@
+{
+  "name": "leads",
+  "primary_key_column": "id",
+  "enable_rls": false,
+  "columns": [
+    {"name": "id", "type": "UUID", "required": true, "auto": true},
+    {"name": "company", "type": "TEXT", "required": true},
+    {"name": "employees", "type": "INTEGER", "required": false},
+    {"name": "plan_interest", "type": "TEXT", "required": false},
+    {"name": "score", "type": "INTEGER", "required": false},
+    {"name": "tier", "type": "TEXT", "required": false}
+  ]
+}

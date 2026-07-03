@@ -127,6 +127,7 @@ class AccountResponseSchema(BaseSchema):
     status: str
     provider_account_id: Optional[str] = None
     email: Optional[str]
+    display_name: Optional[str] = None
     preferences: Optional[Dict[str, Any]]
     allowed_scopes: Optional[List[str]]
     # Include connector info

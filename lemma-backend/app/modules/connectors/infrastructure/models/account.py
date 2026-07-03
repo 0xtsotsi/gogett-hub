@@ -43,6 +43,11 @@ class Account(UUIDAuditBase):
 
     # Account details
     email: Mapped[str | None] = mapped_column(String(255), default=None, nullable=True)
+    # Human-friendly label (bot @username, mailbox, workspace, phone) so several
+    # accounts of the same app can be told apart; derived at connect time.
+    display_name: Mapped[str | None] = mapped_column(
+        String(255), default=None, nullable=True
+    )
 
     # JSON configuration fields
     credentials: Mapped[dict | None] = mapped_column(
@@ -69,6 +74,17 @@ class Account(UUIDAuditBase):
             "auth_config_id",
             unique=True,
             postgresql_where=text("is_default"),
+        ),
+        # One account per provider identity per (user, auth_config): the same
+        # underlying account can't be connected twice. Partial so accounts with
+        # no derivable identity (NULL) don't collide.
+        Index(
+            "uq_accounts_provider_identity",
+            "user_id",
+            "auth_config_id",
+            "provider_account_id",
+            unique=True,
+            postgresql_where=text("provider_account_id IS NOT NULL"),
         ),
     )
 

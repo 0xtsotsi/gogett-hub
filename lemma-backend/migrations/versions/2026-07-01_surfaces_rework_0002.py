@@ -7,7 +7,10 @@ to a live DB yet:
    connect several accounts to the same app (e.g. multiple Telegram bot
    tokens). Add an ``is_default`` flag (exactly one default per user/auth_config,
    enforced by a partial unique index) used when an account is resolved
-   without an explicit id.
+   without an explicit id. Add ``display_name`` (a human-friendly label so
+   several accounts of the same app can be told apart) and a partial unique
+   index on ``(user_id, auth_config_id, provider_account_id)`` so the same
+   provider identity can't be connected twice.
 
 2. agent_surfaces: add ``name`` — the stable, pod-unique identifier the REST
    API now addresses surfaces by (like agent names), since a pod may have
@@ -82,6 +85,22 @@ def schema_upgrades() -> None:
         unique=True,
         postgresql_where=sa.text('is_default'),
     )
+    # A human-friendly label so a user can tell several accounts of the same app
+    # apart (e.g. "@lemmabot", "rahul@gmail.com", "+1 555…"); derived at connect.
+    op.add_column(
+        'accounts',
+        sa.Column('display_name', sa.String(length=255), nullable=True),
+    )
+    # One account per provider identity per (user, auth_config): reject connecting
+    # the same underlying account twice. Partial (provider_account_id NOT NULL) so
+    # accounts whose identity couldn't be derived don't collide on NULL.
+    op.create_index(
+        'uq_accounts_provider_identity',
+        'accounts',
+        ['user_id', 'auth_config_id', 'provider_account_id'],
+        unique=True,
+        postgresql_where=sa.text('provider_account_id IS NOT NULL'),
+    )
 
     # --- agent_surfaces: stable, pod-unique name ---
     op.add_column(
@@ -132,6 +151,8 @@ def schema_downgrades() -> None:
     op.drop_index('ix_agent_surfaces_name', table_name='agent_surfaces')
     op.drop_column('agent_surfaces', 'name')
 
+    op.drop_index('uq_accounts_provider_identity', table_name='accounts')
+    op.drop_column('accounts', 'display_name')
     op.drop_index('uq_accounts_default_per_auth_config', table_name='accounts')
     op.create_index(
         'ix_unique_user_auth_config_account',

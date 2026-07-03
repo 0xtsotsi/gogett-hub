@@ -5,6 +5,9 @@ from uuid import UUID
 
 from app.core.domain.uow import IUnitOfWork
 from app.core.domain.errors import DomainError
+from app.modules.connectors.services.account_identity import (
+    resolve_account_identity,
+)
 from app.modules.connectors.domain.account import (
     AccountEntity,
     AccountStatus,
@@ -861,6 +864,22 @@ class ConnectorService:
             credentials=credentials,
         )
 
+        # Derive a stable identity + human-friendly label from the connected
+        # credentials so the account is distinguishable and duplicates can be
+        # rejected. A client-supplied provider_account_id/email takes precedence.
+        identity = await resolve_account_identity(
+            connector_id=connector.id, credentials=stored_credentials
+        )
+        provider_account_id = provider_account_id or identity.provider_account_id
+        email = email or identity.email
+        display_name = identity.display_name
+        await self._reject_if_identity_already_connected(
+            user_id=user_id,
+            auth_config_id=auth_config.id,
+            provider_account_id=provider_account_id,
+            connector_id=connector.id,
+        )
+
         account = await self.account_repository.create(
             AccountEntity(
                 user_id=user_id,
@@ -871,12 +890,40 @@ class ConnectorService:
                 credentials=stored_credentials,
                 provider_account_id=provider_account_id,
                 email=email,
+                display_name=display_name,
                 preferences=preferences,
                 allowed_scopes=allowed_scopes,
             )
         )
         await self.uow.commit()
         return account
+
+    async def _reject_if_identity_already_connected(
+        self,
+        *,
+        user_id: UUID,
+        auth_config_id: UUID,
+        provider_account_id: str | None,
+        connector_id: str,
+        exclude_account_id: UUID | None = None,
+    ) -> None:
+        """Reject connecting the same provider identity twice.
+
+        A healthy (CONNECTED) account for this ``provider_account_id`` blocks a
+        new connect; an unhealthy one (REAUTH_REQUIRED/DISCONNECTED) is left for
+        the caller to update in place (a genuine reconnect). No-op when the
+        identity couldn't be derived (``provider_account_id`` is None)."""
+        if not provider_account_id:
+            return
+        existing = await self.account_repository.get_by_user_auth_config_and_provider_account(
+            user_id, auth_config_id, provider_account_id
+        )
+        if existing is None:
+            return
+        if exclude_account_id is not None and existing.id == exclude_account_id:
+            return
+        if existing.status == AccountStatus.CONNECTED:
+            raise AccountAlreadyConnectedError(connector_id)
 
     async def handle_oauth_callback(
         self,
@@ -944,6 +991,16 @@ class ConnectorService:
             connector.id, credentials, native_profile
         )
 
+        # Human-friendly label for the account list (team name / mailbox / …),
+        # falling back to the email when the app has no better label.
+        display_name = (
+            await resolve_account_identity(
+                connector_id=connector.id,
+                credentials=credentials,
+                profile=native_profile,
+            )
+        ).display_name or email
+
         # Match the re-authing identity to an existing account:
         #  - provider account id known → the account with exactly that id. A new
         #    identity has none yet, so `account` stays None and the create branch
@@ -957,6 +1014,10 @@ class ConnectorService:
             account = await self.account_repository.get_by_user_auth_config_and_provider_account(
                 user_id, auth_config.id, provider_account_id
             )
+            # A healthy account for this identity blocks a duplicate connect; an
+            # unhealthy one is updated in place below (a genuine reconnect).
+            if account is not None and account.status == AccountStatus.CONNECTED:
+                raise AccountAlreadyConnectedError(connector.id)
         else:
             account = await self.account_repository.get_by_user_and_auth_config(
                 user_id, auth_config.id
@@ -968,6 +1029,8 @@ class ConnectorService:
                 account.provider_account_id = provider_account_id
             if email:
                 account.email = email
+            if display_name:
+                account.display_name = display_name
             # A successful (re-)auth restores the account to a usable state.
             account.status = AccountStatus.CONNECTED
             account = await self.account_repository.update(account)
@@ -986,6 +1049,7 @@ class ConnectorService:
                     credentials=credentials,
                     provider_account_id=provider_account_id,
                     email=email,
+                    display_name=display_name,
                 )
             )
 

@@ -101,6 +101,14 @@ class AccountEntity(Entity):
     )
 
     email: Optional[str] = Field(None, description="Email associated with the account")
+    display_name: Optional[str] = Field(
+        None,
+        description=(
+            "Human-friendly label for the account (e.g. a bot @username, mailbox "
+            "address, workspace, or phone) so a user can tell several accounts of "
+            "the same app apart. Derived at connect time."
+        ),
+    )
 
     credentials: Optional[CredentialTypes] = Field(
         None, description="Stored credentials"

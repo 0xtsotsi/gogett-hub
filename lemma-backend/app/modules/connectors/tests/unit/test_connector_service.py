@@ -26,6 +26,7 @@ from app.modules.connectors.domain.auth_config import AuthConfigEntity, AuthConf
 from app.modules.connectors.domain.connect_request import ConnectRequestEntity
 from app.modules.connectors.domain.connect_request import ConnectRequestStatus
 from app.modules.connectors.domain.errors import (
+    AccountAlreadyConnectedError,
     ConnectorNotFoundError,
     ConnectorValidationError,
     ConnectRequestStateRequiredError,
@@ -1075,3 +1076,73 @@ async def test_delete_non_default_account_does_not_promote():
 
     account_repo.delete.assert_awaited_once_with(account.id)
     account_repo.promote_next_default.assert_not_awaited()
+
+
+def _airtable_service(*, existing_by_identity):
+    app = ConnectorEntity(
+        id="airtable",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="airtable", auth_scheme=AuthScheme.API_KEY
+            )
+        ],
+    )
+    auth_config = _composio_auth_config("airtable")
+    auth_provider = AsyncMock()
+    auth_provider.connect_with_credentials.return_value = ComposioCredentials(
+        connection_id="ca_airtable"
+    )
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = (
+        existing_by_identity
+    )
+    account_repo.create.side_effect = lambda entity: entity
+
+    service = _service(
+        uow=AsyncMock(),
+        connector_repository=AsyncMock(get=AsyncMock(return_value=app)),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        auth_provider_registry=registry,
+    )
+    return service, auth_config, account_repo
+
+
+async def test_create_account_rejects_duplicate_connected_identity():
+    """Connecting the same provider identity again while a healthy account
+    already exists is rejected."""
+    user_id = uuid4()
+    existing = _account(user_id, "airtable")  # status CONNECTED by default
+    service, auth_config, _ = _airtable_service(existing_by_identity=existing)
+
+    with pytest.raises(AccountAlreadyConnectedError):
+        await service.create_account(
+            user_id=user_id,
+            organization_id=ORG_ID,
+            auth_config_id=auth_config.id,
+            provider_account_id="acc-dup",
+            credentials={"api_key": "x"},
+        )
+
+
+async def test_create_account_allows_when_existing_identity_unhealthy():
+    """An unhealthy (needs-reauth) account for the same identity does not block a
+    new connect."""
+    user_id = uuid4()
+    existing = _account(user_id, "airtable")
+    existing.status = AccountStatus.REAUTH_REQUIRED
+    service, auth_config, account_repo = _airtable_service(existing_by_identity=existing)
+
+    account = await service.create_account(
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        provider_account_id="acc-dup",
+        credentials={"api_key": "x"},
+    )
+    account_repo.create.assert_awaited_once()
+    assert account.provider_account_id == "acc-dup"

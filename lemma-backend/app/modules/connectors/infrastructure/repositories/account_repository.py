@@ -59,6 +59,7 @@ class AccountRepository(
             "status": instance.status,
             "provider_account_id": instance.provider_account_id,
             "email": instance.email,
+            "display_name": instance.display_name,
             "credentials": self.encryption.decrypt_json(instance.credentials),
             "preferences": instance.preferences,
             "allowed_scopes": instance.allowed_scopes,
@@ -95,6 +96,7 @@ class AccountRepository(
         )
         instance.provider_account_id = entity.provider_account_id
         instance.email = entity.email
+        instance.display_name = entity.display_name
         instance.status = entity.status.value if hasattr(entity.status, "value") else str(entity.status)
 
         await self.session.flush()

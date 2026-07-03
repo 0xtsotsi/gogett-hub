@@ -172,7 +172,7 @@ class BundleExporter:
             total=pod_bundle_settings.pod_bundle_export_max_records_total,
             warnings=warnings,
         )
-        _byte_budget = _ByteBudget(  # noqa: F841 - consumed when file/asset bytes are added
+        byte_budget = _ByteBudget(
             per_file=pod_bundle_settings.pod_bundle_export_max_file_bytes,
             total=pod_bundle_settings.pod_bundle_export_max_files_total_bytes,
             warnings=warnings,
@@ -366,6 +366,19 @@ class BundleExporter:
                         dir_ / f"{app_name}.json",
                         _normalize_app_payload(_app_response_dict(app)),
                     )
+                    # The app's source code is the critical payload: without it a
+                    # re-import gets an empty app. Download source (rebuildable) or,
+                    # for widget/no-source apps, the built dist — mirrors the CLI's
+                    # _download_app_assets so an API export carries app code too.
+                    await self._export_app_assets(
+                        app_service=app_service,
+                        pod_id=pod_id,
+                        app_name=app_name,
+                        user_id=user_id,
+                        dest=dir_,
+                        ctx=ctx,
+                        byte_budget=byte_budget,
+                    )
                 done += 1
                 await on_progress(done, total)
 
@@ -464,6 +477,53 @@ class BundleExporter:
                     exc,
                 )
 
+    async def _export_app_assets(
+        self,
+        *,
+        app_service: Any,
+        pod_id: UUID,
+        app_name: str,
+        user_id: UUID,
+        dest: Path,
+        ctx: Context,
+        byte_budget: _ByteBudget,
+    ) -> None:
+        """Bundle an app's code: its source (extracted to ``source/``), or — for a
+        widget/no-source app — its built ``dist.zip``. Best-effort and byte-budgeted:
+        an app with neither archive, or one over budget, exports metadata-only.
+        Mirrors the CLI's ``_download_app_assets`` for format parity."""
+        from app.modules.apps.domain.errors import AppNotFoundError
+
+        # Prefer source (rebuildable in the target pod); the exported vite dist is
+        # baked with the source pod id and is not portable.
+        source_bytes: bytes | None = None
+        try:
+            app_id, source_path = await app_service.resolve_source_archive(
+                pod_id, app_name, user_id, ctx=ctx
+            )
+            source_bytes = await app_service.read_archive(app_id, source_path)
+        except AppNotFoundError:
+            source_bytes = None
+
+        if source_bytes:
+            if byte_budget.allow(name=f"apps/{app_name}/source", size=len(source_bytes)):
+                _extract_zip_bytes(source_bytes, dest / "source")
+            return
+
+        dist_bytes: bytes | None = None
+        try:
+            app_id, dist_path = await app_service.resolve_dist_archive(
+                pod_id, app_name, user_id, ctx=ctx
+            )
+            dist_bytes = await app_service.read_archive(app_id, dist_path)
+        except AppNotFoundError:
+            dist_bytes = None
+
+        if dist_bytes and byte_budget.allow(
+            name=f"apps/{app_name}/dist.zip", size=len(dist_bytes)
+        ):
+            (dest / "dist.zip").write_bytes(dist_bytes)
+
 
 # --- response-dict adapters (per-module GET serialization) -------------------
 
@@ -546,6 +606,26 @@ def _extract_large_text(
     next_payload = dict(payload)
     next_payload[field_name] = {RAW_FILE_REF_KEY: file_name}
     return next_payload
+
+
+def _extract_zip_bytes(data: bytes, dest_dir: Path) -> None:
+    """Extract a source zip into ``dest_dir``, guarding against path traversal
+    (zip-slip), mirroring the CLI's app-source extraction check."""
+    import io
+    import zipfile
+
+    from app.modules.pod_bundle.domain.errors import BundleInvalidError
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = dest_dir.resolve()
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for member in archive.infolist():
+            target = (dest_dir / member.filename).resolve()
+            if target != base and not target.is_relative_to(base):
+                raise BundleInvalidError(
+                    f"Unsafe path in app source archive: {member.filename}"
+                )
+        archive.extractall(dest_dir)
 
 
 def _write_export_csv(path: Path, rows: list[dict[str, Any]]) -> None:

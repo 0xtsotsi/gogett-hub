@@ -55,12 +55,13 @@ def test_read_csv_parses_rows(tmp_path):
     ]
 
 
-async def test_unsupported_step_raises(tmp_path):
+async def test_app_step_not_dispatched_by_applier(tmp_path):
+    # APP is applied by the self-scoped AppStepRunner (it builds in the agentbox
+    # with no pooled connection held), so the apply loop special-cases it and it
+    # never reaches the applier dispatch — a direct call raises to make that clear.
     applier = _applier(tmp_path)
     with pytest.raises(StepNotApplicableError):
         await applier.apply_step(_step(StepKind.APP, "dashboard"))
-    with pytest.raises(StepNotApplicableError):
-        await applier.apply_step(_step(StepKind.SURFACE, "slack"))
 
 
 class FakeTableService:
@@ -442,3 +443,71 @@ async def test_schedule_apply_maps_manifest_to_entity(tmp_path, monkeypatch):
     assert entity.schedule_type.value == "TIME"
     assert entity.workflow_name == "score_flow"
     assert entity.config == {"cron": "0 2 * * *"}
+
+
+# --- surfaces (connectors) ---------------------------------------------------
+
+
+class FakeSurfaceService:
+    def __init__(self, existing=None):
+        self._existing = existing
+        self.created: dict | None = None
+        self.updated: dict | None = None
+
+    async def get_surface_by_platform_in_pod(self, *, pod_id, platform):
+        from app.modules.agent_surfaces.domain.errors import AgentSurfaceNotFoundError
+
+        if self._existing is None:
+            raise AgentSurfaceNotFoundError(platform)
+        return self._existing
+
+    async def create_surface(
+        self, *, pod_id, agent_id, platform, config, credential_mode, account_id, ctx=None
+    ):
+        from types import SimpleNamespace
+        from uuid import uuid4 as _uuid4
+
+        self.created = {
+            "platform": platform.value,
+            "agent_id": agent_id,
+            "account_id": account_id,
+            "credential_mode": credential_mode,
+        }
+        return SimpleNamespace(id=_uuid4(), config=config)
+
+    async def update_surface(self, **kwargs):
+        from types import SimpleNamespace
+
+        self.updated = kwargs
+        return SimpleNamespace(id=kwargs.get("surface_id"), config=None)
+
+
+async def test_surface_apply_creates_with_resolved_account(tmp_path, monkeypatch):
+    account = uuid4()
+    root = tmp_path / "bundle"
+    _write(
+        root / "surfaces" / "slack" / "slack.json",
+        {
+            "name": "slack",
+            "platform": "SLACK",
+            "account_id": "${slack_account}",
+            "is_enabled": True,
+        },
+    )
+    surface_fake = FakeSurfaceService()
+    monkeypatch.setattr(
+        "app.modules.agent_surfaces.api.dependencies.get_surface_service",
+        lambda uow: surface_fake,
+    )
+    monkeypatch.setattr(
+        "app.modules.agent.api.dependencies.get_agent_service",
+        lambda uow: FakeAgentService(),
+    )
+    # The account variable resolves the surface's ${slack_account} placeholder.
+    applier = _applier(root, replacements={"slack_account": str(account)})
+    await applier.apply_step(_step(StepKind.SURFACE, "slack"))
+
+    assert surface_fake.created is not None
+    assert surface_fake.created["platform"] == "SLACK"
+    assert surface_fake.created["account_id"] == account
+    assert surface_fake.updated is None  # created, not updated

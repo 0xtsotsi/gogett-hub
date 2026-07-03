@@ -90,11 +90,11 @@ async def wait_import(client, pod_id: str, import_id: str, *, until, timeout: in
     raise AssertionError(f"Import stuck at {body and body['status']} (wanted {until})")
 
 
-async def import_and_apply(
+async def start_and_plan_import(
     client, pod_id: str, zip_bytes: bytes, *, timeout: int = 120
-) -> dict:
-    """Full happy path: upload the zip, import from its signed URL, wait for the
-    plan, apply, and wait for COMPLETED. Returns the final import status body."""
+) -> str:
+    """Upload the zip, start the URL import, wait for the plan, and return the
+    import_id (left AWAITING_CONFIRMATION so the caller can inspect/apply it)."""
     up = await client.post(
         f"/pods/{pod_id}/bundle/uploads",
         files={"data": ("bundle.zip", zip_bytes, "application/zip")},
@@ -107,10 +107,25 @@ async def import_and_apply(
     )
     assert res.status_code == status.HTTP_202_ACCEPTED, res.text
     import_id = res.json()["import_id"]
-
     await wait_import(client, pod_id, import_id, until={"AWAITING_CONFIRMATION"}, timeout=timeout)
+    return import_id
+
+
+async def import_and_apply(
+    client,
+    pod_id: str,
+    zip_bytes: bytes,
+    *,
+    variables: dict | None = None,
+    timeout: int = 120,
+) -> dict:
+    """Full happy path: upload the zip, import from its signed URL, wait for the
+    plan, apply (with any resolved ``variables``), and wait for COMPLETED. Returns
+    the final import status body."""
+    import_id = await start_and_plan_import(client, pod_id, zip_bytes, timeout=timeout)
     apply = await client.post(
-        f"/pods/{pod_id}/bundle/imports/{import_id}/apply", json={}
+        f"/pods/{pod_id}/bundle/imports/{import_id}/apply",
+        json={"variables": variables or {}},
     )
     assert apply.status_code == status.HTTP_202_ACCEPTED, apply.text
     final = await wait_import(

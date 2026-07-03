@@ -88,6 +88,52 @@ class _EmptyListService:
         return [], None
 
 
+class _FakeAppService:
+    """App service that can return an app plus its stored source/dist archives so
+    the exporter's asset-download path is exercised without object storage."""
+
+    def __init__(self, apps, *, source: bytes | None = None, dist: bytes | None = None):
+        self._apps = apps
+        self._source = source
+        self._dist = dist
+
+    async def list_apps(self, pod_id, user_id, limit, cursor, ctx=None):
+        return list(self._apps), None
+
+    async def get_app_by_name(self, pod_id, name, user_id, raise_not_found=False, ctx=None):
+        return next(a for a in self._apps if a.name == name)
+
+    async def resolve_source_archive(self, pod_id, name, user_id, ctx=None):
+        from app.modules.apps.domain.errors import AppNotFoundError
+
+        if self._source is None:
+            raise AppNotFoundError(f"no source for {name}")
+        app = next(a for a in self._apps if a.name == name)
+        return app.id, "source/archive.zip"
+
+    async def resolve_dist_archive(self, pod_id, name, user_id, ctx=None):
+        from app.modules.apps.domain.errors import AppNotFoundError
+
+        if self._dist is None:
+            raise AppNotFoundError(f"no dist for {name}")
+        app = next(a for a in self._apps if a.name == name)
+        return app.id, "releases/v1/dist/archive.zip"
+
+    async def read_archive(self, app_id, archive_path):
+        return self._source if "source" in archive_path else self._dist
+
+
+def _zip_bytes(files: dict[str, str]) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
 class _FakeTableContext:
     def __init__(self, name):
         self.name = name
@@ -319,3 +365,92 @@ async def test_include_filters_resource_types(patched_exporter, tmp_path):
     # agents/functions excluded when include=['tables'].
     assert not (root / "functions" / "enrich").exists()
     assert not (root / "agents" / "assistant").exists()
+
+
+async def test_app_source_exported_and_slug_tokenized(
+    patched_exporter, tmp_path, monkeypatch
+):
+    app = _Named("dashboard")
+    source = _zip_bytes({"index.html": "<h1>hi</h1>", "package.json": "{}"})
+    monkeypatch.setattr(
+        "app.modules.apps.api.dependencies.build_app_service",
+        lambda uow: _FakeAppService([app], source=source),
+    )
+    monkeypatch.setattr(
+        exporter_mod,
+        "_app_response_dict",
+        lambda a: {
+            "name": a.name,
+            "public_slug": "dashboard",
+            "description": None,
+            "visibility": "POD",
+        },
+    )
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=False)
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    # Source archive extracted into a git-friendly tree; no dist fallback written.
+    assert (root / "apps" / "dashboard" / "dashboard.json").is_file()
+    assert (root / "apps" / "dashboard" / "source" / "index.html").read_text() == "<h1>hi</h1>"
+    assert (root / "apps" / "dashboard" / "source" / "package.json").is_file()
+    assert not (root / "apps" / "dashboard" / "dist.zip").exists()
+
+    # public_slug tokenized into a variable with the original as its default.
+    manifest = json.loads((root / "apps" / "dashboard" / "dashboard.json").read_text())
+    assert manifest["public_slug"] == "${dashboard_slug}"
+    pod = json.loads((root / "pod.json").read_text())
+    assert pod["variables"]["dashboard_slug"]["type"] == "app_slug"
+    assert pod["variables"]["dashboard_slug"]["default"] == "dashboard"
+
+
+async def test_app_dist_fallback_when_no_source(patched_exporter, tmp_path, monkeypatch):
+    app = _Named("widget")
+    dist = _zip_bytes({"index.html": "<h1>widget</h1>"})
+    monkeypatch.setattr(
+        "app.modules.apps.api.dependencies.build_app_service",
+        lambda uow: _FakeAppService([app], source=None, dist=dist),
+    )
+    monkeypatch.setattr(
+        exporter_mod,
+        "_app_response_dict",
+        lambda a: {
+            "name": a.name,
+            "public_slug": "widget",
+            "description": None,
+            "visibility": "POD",
+        },
+    )
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=False)
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    # No source → the built dist travels as dist.zip instead.
+    assert (root / "apps" / "widget" / "dist.zip").is_file()
+    assert not (root / "apps" / "widget" / "source").exists()
+
+
+async def test_app_asset_over_byte_budget_is_skipped(
+    patched_exporter, tmp_path, monkeypatch
+):
+    app = _Named("big_app")
+    source = _zip_bytes({"index.html": "x" * 5000})
+    monkeypatch.setattr(
+        "app.modules.apps.api.dependencies.build_app_service",
+        lambda uow: _FakeAppService([app], source=source),
+    )
+    monkeypatch.setattr(
+        exporter_mod,
+        "_app_response_dict",
+        lambda a: {"name": a.name, "public_slug": "big-app", "visibility": "POD"},
+    )
+    # Per-file budget below the archive size → source is skipped with a warning,
+    # but the manifest (metadata) is still exported.
+    monkeypatch.setattr(
+        exporter_mod.pod_bundle_settings, "pod_bundle_export_max_file_bytes", 100
+    )
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=False)
+    warnings = _run_export.last_warnings  # type: ignore[attr-defined]
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    assert (root / "apps" / "big_app" / "big_app.json").is_file()
+    assert not (root / "apps" / "big_app" / "source").exists()
+    assert any("per-file limit" in w for w in warnings)

@@ -183,6 +183,72 @@ async def test_export_pod_bundle_roundtrip(
     assert func_name in (root / "functions" / func_name / "code.py").read_text()
 
 
+def _zip_bytes(files: dict[str, str]) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return buf.getvalue()
+
+
+async def _create_app_with_source(authenticated_client, pod_id: str, app_name: str) -> None:
+    """Create an app and upload a (static) source+dist bundle, so the export path
+    has real stored source bytes to download."""
+    create = await authenticated_client.post(
+        f"/pods/{pod_id}/apps",
+        json={"name": app_name, "public_slug": f"{app_name}-{uuid4().hex[:6]}"},
+        follow_redirects=True,
+    )
+    assert create.status_code == status.HTTP_201_CREATED, create.text
+    html = "<!doctype html><html><body><h1>Hello from source</h1></body></html>"
+    upload = await authenticated_client.post(
+        f"/pods/{pod_id}/apps/{app_name}/bundle",
+        files={
+            "source_archive": ("source.zip", _zip_bytes({"index.html": html}), "application/zip"),
+            "dist_archive": ("dist.zip", _zip_bytes({"index.html": html}), "application/zip"),
+        },
+    )
+    assert upload.status_code == status.HTTP_200_OK, upload.text
+
+
+async def test_export_includes_app_source_and_tokenizes_slug(
+    authenticated_client, test_pod, worker, tmp_path
+):
+    pod_id = test_pod["id"]
+    app_name = f"board_{uuid4().hex[:8]}"
+    await _create_app_with_source(authenticated_client, pod_id, app_name)
+
+    start = await authenticated_client.post(
+        f"/pods/{pod_id}/bundle/exports",
+        json={"with_data": False, "include": ["apps"]},
+    )
+    assert start.status_code == status.HTTP_202_ACCEPTED, start.text
+    export_id = start.json()["export_id"]
+
+    final = await _wait_for_export_ready(authenticated_client, pod_id, export_id)
+    assert final["status"] == "READY", final
+
+    download = await authenticated_client.get(_download_path(final["download_url"]))
+    assert download.status_code == status.HTTP_200_OK, download.text
+    root = extract_bundle(download.content, tmp_path / "bundle")
+
+    # The app's source code travelled with the bundle (not just its metadata).
+    source_index = root / "apps" / app_name / "source" / "index.html"
+    assert source_index.is_file(), "app source was not exported"
+    assert "Hello from source" in source_index.read_text()
+
+    # public_slug is tokenized into a variable (unique platform-wide), recorded in
+    # pod.json with the original as its default.
+    manifest = json.loads((root / "apps" / app_name / f"{app_name}.json").read_text())
+    assert manifest["public_slug"].startswith("${"), manifest
+    var_name = manifest["public_slug"][2:-1]
+    pod = json.loads((root / "pod.json").read_text())
+    assert pod["variables"][var_name]["type"] == "app_slug", pod["variables"]
+
+
 async def test_export_status_expired_returns_410(authenticated_client, test_pod, worker):
     pod_id = test_pod["id"]
     missing_export_id = str(uuid4())

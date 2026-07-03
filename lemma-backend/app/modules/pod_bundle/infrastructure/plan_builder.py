@@ -306,9 +306,13 @@ class ServiceExistingResources:
 
 
 def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]:
-    """Turn ``pod.json -> variables`` into typed specs. Account/member variables
-    are auto-resolvable on apply (the importer's own account / the importing
-    user), so they are not *required*; a free variable with no default is."""
+    """Turn ``pod.json -> variables`` into typed specs.
+
+    A connector ``account`` variable is **required**: its source id belongs to the
+    exporting org and cannot be reused, so the importer must supply one of their own
+    accounts (validated at apply). A ``pod_member`` variable auto-resolves to the
+    importing user, and a ``free`` variable (e.g. an app slug) is required only when
+    it has no default."""
     raw = pod_manifest.get("variables")
     if not isinstance(raw, dict):
         return []
@@ -327,7 +331,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
                 name=str(name),
                 kind=kind,  # type: ignore[arg-type]
                 description=(meta or {}).get("description"),
-                required=(kind == "free" and default is None),
+                required=(kind == "account") or (kind == "free" and default is None),
                 default=str(default) if default is not None else None,
             )
         )

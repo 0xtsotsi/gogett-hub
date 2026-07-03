@@ -66,11 +66,13 @@ class BundleApplier:
             StepKind.AGENT_GRANTS: self._apply_agent_grants,
             StepKind.SCHEDULE: self._apply_schedule,
             StepKind.WORKFLOW: self._apply_workflow,
+            StepKind.SURFACE: self._apply_surface,
         }.get(step.kind)
         if handler is None:
-            # app / surface are deferred: the connector/runtime dependencies they
-            # need are out of scope for this slice. Mark the step
-            # skipped-with-reason instead of failing the import.
+            # APP is applied by the self-scoped AppStepRunner (it builds in the
+            # agentbox with no pooled connection held), so it never reaches here.
+            # FILE remains out of scope for this slice — skip-with-reason rather
+            # than failing the import.
             raise StepNotApplicableError(
                 f"{step.kind.value} import is not supported yet; skipped."
             )
@@ -359,6 +361,114 @@ class BundleApplier:
             nodes=payload.get("nodes"),
             edges=payload.get("edges"),
             requester_user_id=self._user_id,
+            ctx=self._ctx,
+        )
+
+    # --- surfaces (connectors) -------------------------------------------
+
+    async def _apply_surface(self, step: PlanStep) -> None:
+        """Create or update the pod's surface for a platform, binding the connector
+        ``account_id`` resolved from the required ``${..._account}`` variable. A
+        surface is unique per (pod, platform), so this is an idempotent upsert that
+        mirrors the ``agent.surface.upsert`` controller (reusing its config helpers)
+        so an imported connector behaves exactly like a hand-configured one."""
+        from app.modules.agent.api.dependencies import get_agent_service
+        from app.modules.agent_surfaces.api.controllers.surface_controller import (
+            _merge_surface_config,
+            _resolve_surface_config,
+        )
+        from app.modules.agent_surfaces.api.dependencies import get_surface_service
+        from app.modules.agent_surfaces.api.schemas import SurfaceUpsertRequest
+        from app.modules.agent_surfaces.domain.entities import SurfacePlatform
+        from app.modules.agent_surfaces.domain.errors import AgentSurfaceNotFoundError
+
+        payload = self._load("surfaces", step.name)
+        platform_raw = str(payload.get("platform") or step.name)
+        try:
+            platform = SurfacePlatform(platform_raw.upper())
+        except ValueError as exc:
+            raise PodBundleDomainError(
+                f"Unsupported surface platform '{platform_raw}'.",
+                code="POD_BUNDLE_SURFACE_PLATFORM",
+            ) from exc
+
+        # Only the upsert-request fields (extra='forbid'); drop export-only keys
+        # like name/platform. account_id has already been substituted from the
+        # provided account variable by self._load.
+        request = SurfaceUpsertRequest.model_validate(
+            {
+                key: value
+                for key, value in payload.items()
+                if key
+                in {
+                    "default_agent_name",
+                    "account_id",
+                    "credential_mode",
+                    "config",
+                    "is_enabled",
+                }
+            }
+        )
+
+        agent_service = get_agent_service(self._uow)
+        service = get_surface_service(self._uow)
+
+        agent = (
+            await _get_agent(agent_service, self._pod_id, request.default_agent_name, self._ctx)
+            if request.default_agent_name
+            else None
+        )
+
+        try:
+            existing = await service.get_surface_by_platform_in_pod(
+                pod_id=self._pod_id, platform=platform.value
+            )
+        except AgentSurfaceNotFoundError:
+            existing = None
+
+        if existing is None:
+            config = await _resolve_surface_config(
+                pod_id=self._pod_id,
+                config_input=request.config,
+                agent_service=agent_service,
+                ctx=self._ctx,
+            )
+            surface = await service.create_surface(
+                pod_id=self._pod_id,
+                agent_id=agent.id if agent else None,
+                platform=platform,
+                config=config,
+                credential_mode=request.credential_mode,
+                account_id=request.account_id,
+                ctx=self._ctx,
+            )
+            if not request.is_enabled:
+                await service.update_surface(
+                    surface_id=surface.id, is_active=False, ctx=self._ctx
+                )
+            return
+
+        config = await _merge_surface_config(
+            existing=existing.config,
+            pod_id=self._pod_id,
+            config_input=request.config,
+            agent_service=agent_service,
+            ctx=self._ctx,
+        )
+        await service.update_surface(
+            surface_id=existing.id,
+            agent_id=agent.id if agent else None,
+            update_agent_id="default_agent_name" in request.model_fields_set,
+            config=config,
+            credential_mode=(
+                request.credential_mode
+                if "credential_mode" in request.model_fields_set
+                else None
+            ),
+            account_id=request.account_id,
+            is_active=(
+                request.is_enabled if "is_enabled" in request.model_fields_set else None
+            ),
             ctx=self._ctx,
         )
 

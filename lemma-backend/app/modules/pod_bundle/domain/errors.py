@@ -58,3 +58,15 @@ class BundleStagingMissingError(PodBundleDomainError):
 
     def __init__(self, message: str = "The staged bundle is no longer available. Upload it again."):
         super().__init__(message, code="POD_BUNDLE_STAGING_MISSING", status_code=410)
+
+
+class AppBuildFailedError(PodBundleDomainError):
+    """A bundled app could not be built/deployed in the target pod (a non-zero
+    build, a missing ``dist/index.html``, or an invalid dist archive). Terminal:
+    the build ran and failed, so retrying identically fails the same way — the
+    fix is to correct the app source and re-export."""
+
+    def __init__(self, message: str, details: object | None = None):
+        super().__init__(
+            message, code="POD_BUNDLE_APP_BUILD_FAILED", status_code=422, details=details
+        )

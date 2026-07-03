@@ -105,39 +105,119 @@ def _use_cases(**kw) -> tuple[ImportUseCases, FakeStore, FakeStaging, FakeQueue]
     return uc, store, staging, queue
 
 
-async def test_start_upload_stages_and_enqueues():
-    uc, store, staging, queue = _use_cases()
-    pod_id, user_id = uuid4(), uuid4()
+from app.modules.pod_bundle.domain.state import BundleSourceKind  # noqa: E402
 
-    state = await uc.start_upload_import(
-        pod_id=pod_id, user_id=user_id, filename="crm.zip", data=_zip_bytes()
+
+# --- uploads primitive -------------------------------------------------------
+
+
+async def test_stage_upload_returns_signed_url():
+    uc, _store, staging, _queue = _use_cases()
+    url, expires_at = await uc.stage_upload(
+        pod_id=uuid4(), user_id=uuid4(), filename="crm.zip", data=_zip_bytes()
     )
-
-    assert state.status == ImportStatus.QUEUED
-    assert state.source.kind == "upload"
-    assert state.source.bundle_sha256
+    assert "/pods/bundle/download?token=" in url
+    assert expires_at is not None
+    # Bytes were staged under pod-imports; no import created yet.
     assert staging.puts and staging.puts[0][0] == "pod-imports"
-    assert queue.calls[0][0] == "plan_pod_import"
-    assert queue.calls[0][2] == import_plan_job_id(state.import_id)
-    assert store.imports[state.import_id].status == ImportStatus.QUEUED
 
 
-async def test_start_upload_rejects_non_zip():
+async def test_stage_upload_rejects_non_zip():
     uc, *_ = _use_cases()
     with pytest.raises(BundleInvalidError):
-        await uc.start_upload_import(
+        await uc.stage_upload(
             pod_id=uuid4(), user_id=uuid4(), filename="x.txt", data=b"not a zip"
         )
 
 
-async def test_start_upload_rejects_oversize(monkeypatch):
+async def test_stage_upload_rejects_oversize(monkeypatch):
     uc, *_ = _use_cases()
     from app.modules.pod_bundle.application import import_use_cases as m
 
     monkeypatch.setattr(m.pod_bundle_settings, "pod_bundle_max_archive_bytes", 4)
     with pytest.raises(BundleTooLargeError):
-        await uc.start_upload_import(
+        await uc.stage_upload(
             pod_id=uuid4(), user_id=uuid4(), filename="crm.zip", data=_zip_bytes()
+        )
+
+
+# --- start_import: URL -------------------------------------------------------
+
+
+async def test_start_import_url_verifies_token_and_enqueues():
+    uc, store, _, queue = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    # A real lemma download URL for a staged upload.
+    url, _ = await uc.stage_upload(
+        pod_id=pod_id, user_id=user_id, filename="crm.zip", data=_zip_bytes()
+    )
+    state = await uc.start_import(
+        pod_id=pod_id, user_id=user_id, kind=BundleSourceKind.URL, url=url
+    )
+    assert state.status == ImportStatus.QUEUED
+    assert state.source.kind == BundleSourceKind.URL
+    assert state.source.url == url
+    call = next(c for c in queue.calls if c[0] == "import_pod_url")
+    assert call[1]["source_kind"] == "pod-imports"
+    assert call[1]["source_id"]
+    assert call[2] == import_plan_job_id(state.import_id)
+
+
+async def test_start_import_url_non_lemma_url_rejected():
+    uc, *_ = _use_cases()
+    with pytest.raises(BundleInvalidError):
+        await uc.start_import(
+            pod_id=uuid4(),
+            user_id=uuid4(),
+            kind=BundleSourceKind.URL,
+            url="https://evil.example.com/bundle.zip",
+        )
+
+
+async def test_start_import_url_bad_token_rejected():
+    uc, *_ = _use_cases()
+    with pytest.raises(BundleJobExpiredError):
+        await uc.start_import(
+            pod_id=uuid4(),
+            user_id=uuid4(),
+            kind=BundleSourceKind.URL,
+            url="http://localhost:8711/pods/bundle/download?token=garbage",
+        )
+
+
+async def test_start_import_url_missing_url_rejected():
+    uc, *_ = _use_cases()
+    with pytest.raises(BundleInvalidError):
+        await uc.start_import(
+            pod_id=uuid4(), user_id=uuid4(), kind=BundleSourceKind.URL, url=None
+        )
+
+
+# --- start_import: GITHUB ----------------------------------------------------
+
+
+async def test_start_import_github_enqueues():
+    uc, store, _, queue = _use_cases()
+    pod_id, user_id = uuid4(), uuid4()
+    state = await uc.start_import(
+        pod_id=pod_id,
+        user_id=user_id,
+        kind=BundleSourceKind.GITHUB,
+        url="https://github.com/acme/crm",
+        ref="main",
+    )
+    assert state.status == ImportStatus.QUEUED
+    assert state.source.kind == BundleSourceKind.GITHUB
+    assert state.source.repo_url.endswith("acme/crm")
+    call = next(c for c in queue.calls if c[0] == "import_pod_github")
+    assert call[1]["owner"] == "acme" and call[1]["repo"] == "crm"
+
+
+async def test_start_import_github_bad_repo_rejected():
+    uc, *_ = _use_cases()
+    with pytest.raises(BundleInvalidError):
+        await uc.start_import(
+            pod_id=uuid4(), user_id=uuid4(), kind=BundleSourceKind.GITHUB, url="not-a-repo!!"
         )
 
 
@@ -148,12 +228,12 @@ async def test_get_import_missing_raises_expired():
 
 
 async def test_get_import_pod_mismatch_raises_expired():
-    uc, store, staging, queue = _use_cases()
+    uc, store, _, _ = _use_cases()
     pod_id, user_id = uuid4(), uuid4()
-    state = await uc.start_upload_import(
-        pod_id=pod_id, user_id=user_id, filename="crm.zip", data=_zip_bytes()
+    state = await uc.start_import(
+        pod_id=pod_id, user_id=user_id, kind=BundleSourceKind.GITHUB,
+        url="https://github.com/acme/crm",
     )
-    # A different pod must not see this import (avoids cross-pod leakage).
     with pytest.raises(BundleJobExpiredError):
         await uc.get_import(pod_id=uuid4(), import_id=state.import_id, user_id=user_id)
 
@@ -163,45 +243,9 @@ async def test_duplicate_enqueue_raises_conflict():
 
     uc, *_ = _use_cases(duplicate=True)
     with pytest.raises(BundleJobConflictError):
-        await uc.start_upload_import(
-            pod_id=uuid4(), user_id=uuid4(), filename="crm.zip", data=_zip_bytes()
-        )
-
-
-# --- github ------------------------------------------------------------------
-
-
-async def test_start_github_import_enqueues():
-    uc, store, _, queue = _use_cases()
-    pod_id, user_id = uuid4(), uuid4()
-    state = await uc.start_github_import(
-        pod_id=pod_id,
-        user_id=user_id,
-        repo_url="https://github.com/acme/crm",
-        owner=None,
-        repo=None,
-        ref="main",
-    )
-    assert state.status == ImportStatus.QUEUED
-    assert state.source.kind == "github"
-    assert state.source.repo_url.endswith("acme/crm")
-    assert queue.calls[0][0] == "import_pod_github"
-    assert queue.calls[0][1]["owner"] == "acme"
-    assert queue.calls[0][1]["repo"] == "crm"
-
-
-async def test_start_github_import_bad_ref_rejected():
-    from app.modules.pod_bundle.domain.errors import BundleInvalidError
-
-    uc, *_ = _use_cases()
-    with pytest.raises(BundleInvalidError):
-        await uc.start_github_import(
-            pod_id=uuid4(),
-            user_id=uuid4(),
-            repo_url="not-a-repo!!",
-            owner=None,
-            repo=None,
-            ref=None,
+        await uc.start_import(
+            pod_id=uuid4(), user_id=uuid4(), kind=BundleSourceKind.GITHUB,
+            url="https://github.com/acme/crm",
         )
 
 
@@ -226,7 +270,7 @@ def _awaiting_state(pod_id, user_id, *, steps=None, variables=None):
         import_id=uuid4(),
         pod_id=pod_id,
         user_id=user_id,
-        source=BundleSource(kind="upload"),
+        source=BundleSource(kind="URL"),
         status=ImportStatus.AWAITING_CONFIRMATION,
         plan=plan,
     )

@@ -132,8 +132,23 @@ class ImportPlan(BaseModel):
         return any(s.destructive and s.status == StepStatus.PENDING for s in self.steps)
 
 
+class BundleSourceKind(str, Enum):
+    """Where an imported bundle comes from — a CAPS wire enum.
+
+    ``URL`` covers any lemma-origin signed download URL (an export or an
+    uploaded ``.zip`` staged into our object storage); ``GITHUB`` is a public
+    repo fetched via the connector path.
+    """
+
+    URL = "URL"
+    GITHUB = "GITHUB"
+
+
 class BundleSource(BaseModel):
-    kind: Literal["upload", "github"]
+    kind: BundleSourceKind
+    # For kind=URL: the signed lemma download URL the bundle was imported from
+    # (kept for the recipe/provenance). For kind=GITHUB: repo_url is set instead.
+    url: str | None = None
     repo_url: str | None = None
     ref: str | None = None
     bundle_filename: str | None = None
@@ -183,8 +198,12 @@ class ExportState(_BundleJobState):
     status: ExportStatus = ExportStatus.QUEUED
     with_data: bool = True
     include: list[str] | None = None
+    ttl_seconds: int | None = None
     staging_key: str | None = None
     bundle_filename: str | None = None
+    download_url: str | None = None
+    expires_at: datetime | None = None
+    warnings: list[str] = Field(default_factory=list)
     progress: Progress = Field(default_factory=Progress)
 
     @property

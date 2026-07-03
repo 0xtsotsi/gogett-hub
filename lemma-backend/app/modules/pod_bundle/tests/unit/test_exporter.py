@@ -197,11 +197,12 @@ def patched_exporter(monkeypatch):
 
 async def _run_export(patched_exporter, *, with_data, include=None):
     progress: list[tuple[int, int]] = []
+    warnings_holder: list[list[str]] = []
 
     async def on_progress(done, total):
         progress.append((done, total))
 
-    filename, zip_bytes = await patched_exporter.export(
+    filename, zip_bytes, warnings = await patched_exporter.export(
         pod_id=uuid4(),
         user_id=uuid4(),
         with_data=with_data,
@@ -210,6 +211,8 @@ async def _run_export(patched_exporter, *, with_data, include=None):
         uow=object(),
         on_progress=on_progress,
     )
+    warnings_holder.append(warnings)
+    _run_export.last_warnings = warnings  # type: ignore[attr-defined]
     return filename, zip_bytes, progress
 
 
@@ -264,6 +267,47 @@ async def test_without_data_skips_data_csv(patched_exporter, tmp_path):
     assert not (root / "tables" / "leads" / "data.csv").exists()
     # Table schema is still exported without data.
     assert (root / "tables" / "leads" / "leads.json").is_file()
+
+
+async def test_per_table_record_cap_truncates_with_warning(patched_exporter, tmp_path, monkeypatch):
+    # leads has 2 rows; cap at 1 → data.csv has 1 row + a truncation warning.
+    monkeypatch.setattr(
+        exporter_mod.pod_bundle_settings, "pod_bundle_export_max_records_per_table", 1
+    )
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=True)
+    warnings = _run_export.last_warnings  # type: ignore[attr-defined]
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    data_rows = (root / "tables" / "leads" / "data.csv").read_text().splitlines()
+    assert len(data_rows) == 2  # header + 1 row
+    assert any("truncated to 1 of 2 rows" in w and "leads" in w for w in warnings)
+
+
+async def test_overall_record_budget_makes_later_tables_schema_only(
+    patched_exporter, tmp_path, monkeypatch
+):
+    # Total budget = 2: 'accounts' (sorted first) has no rows, 'leads' has 2 →
+    # leads still fits. Set budget to 0 so ALL table data is omitted.
+    monkeypatch.setattr(
+        exporter_mod.pod_bundle_settings, "pod_bundle_export_max_records_total", 0
+    )
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=True)
+    warnings = _run_export.last_warnings  # type: ignore[attr-defined]
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    assert not (root / "tables" / "leads" / "data.csv").exists()
+    assert (root / "tables" / "leads" / "leads.json").is_file()  # schema still exported
+    assert any("budget reached" in w and "leads" in w for w in warnings)
+
+
+def test_byte_budget_helper():
+    warnings: list[str] = []
+    budget = exporter_mod._ByteBudget(per_file=100, total=150, warnings=warnings)
+    assert budget.allow(name="a", size=80) is True
+    assert budget.allow(name="big", size=200) is False  # over per-file
+    assert budget.allow(name="b", size=80) is False  # over remaining (150-80=70)
+    assert any("big" in w and "per-file" in w for w in warnings)
+    assert any("budget reached" in w and "'b'" in w for w in warnings)
 
 
 async def test_include_filters_resource_types(patched_exporter, tmp_path):

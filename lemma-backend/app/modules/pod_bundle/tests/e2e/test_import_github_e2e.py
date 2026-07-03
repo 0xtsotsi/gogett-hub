@@ -101,12 +101,12 @@ async def test_github_import_plans_from_repo(
 ):
     pod_id = test_pod["id"]
     res = await authenticated_client.post(
-        f"/pods/{pod_id}/bundle/imports/github",
-        json={"repo_url": f"https://github.com/acme/crm-{uuid4().hex[:6]}"},
+        f"/pods/{pod_id}/bundle/imports",
+        json={"kind": "GITHUB", "url": f"https://github.com/acme/crm-{uuid4().hex[:6]}"},
     )
     assert res.status_code == status.HTTP_202_ACCEPTED, res.text
     body = res.json()
-    assert body["source_kind"] == "github"
+    assert body["source_kind"] == "GITHUB"
     import_id = body["import_id"]
 
     final = await _wait(
@@ -133,8 +133,8 @@ async def test_github_import_plans_from_repo(
 async def test_github_import_rejects_bad_repo(authenticated_client, test_pod, worker):
     pod_id = test_pod["id"]
     res = await authenticated_client.post(
-        f"/pods/{pod_id}/bundle/imports/github",
-        json={"repo_url": "definitely not a repo!!!"},
+        f"/pods/{pod_id}/bundle/imports",
+        json={"kind": "GITHUB", "url": "definitely not a repo!!!"},
     )
     assert res.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, res.text
     assert res.json()["code"] == "POD_BUNDLE_INVALID"

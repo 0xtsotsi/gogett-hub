@@ -11,7 +11,7 @@ that point the ``plan_pod_import`` worker is the only writer of the state doc.
 
 from __future__ import annotations
 
-import hashlib
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from app.core.authorization.permissions import Permissions
@@ -29,6 +29,7 @@ from app.modules.pod_bundle.domain.errors import (
 )
 from app.modules.pod_bundle.domain.state import (
     BundleSource,
+    BundleSourceKind,
     ImportState,
     ImportStatus,
     StepStatus,
@@ -41,6 +42,7 @@ from app.modules.pod_bundle.infrastructure.state_store import (
 
 PLAN_JOB_NAME = "plan_pod_import"
 GITHUB_JOB_NAME = "import_pod_github"
+URL_JOB_NAME = "import_pod_url"
 APPLY_JOB_NAME = "apply_pod_import"
 
 
@@ -54,6 +56,31 @@ _ZIP_MAGIC = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
 def import_plan_job_id(import_id: UUID) -> str:
     return f"pod-import-plan:{import_id}"
+
+
+def _resolve_lemma_url(url: str) -> tuple[str, UUID]:
+    """Extract + verify the signed token from a lemma download URL, returning the
+    staged object's ``(kind, id)``. Raises :class:`BundleInvalidError` (422) if
+    the URL isn't a lemma download link, or :class:`BundleJobExpiredError` (410)
+    if the token is bad/expired."""
+    from urllib.parse import parse_qs, urlparse
+
+    from app.modules.pod_bundle.infrastructure.download_url import (
+        DOWNLOAD_PATH,
+        verify_download_token,
+    )
+
+    parsed = urlparse(url)
+    if not parsed.path.endswith(DOWNLOAD_PATH):
+        raise BundleInvalidError(
+            "kind=URL requires a lemma bundle download URL "
+            "(export it or upload a .zip first)."
+        )
+    token = (parse_qs(parsed.query).get("token") or [None])[0]
+    if not token:
+        raise BundleInvalidError("The download URL is missing its token.")
+    kind, job_id = verify_download_token(token)
+    return kind, job_id
 
 
 class ImportUseCases:
@@ -70,15 +97,12 @@ class ImportUseCases:
         self._staging = staging or BundleStagingStorage()
         self._job_queue = job_queue or get_streaq_job_queue()
 
-    async def start_upload_import(
+    async def stage_upload(
         self, *, pod_id: UUID, user_id: UUID, filename: str | None, data: bytes
-    ) -> ImportState:
-        """Authorize POD_UPDATE, stage the uploaded archive, and enqueue planning.
-
-        Raises :class:`BundleTooLargeError` (413) over the size cap and
-        :class:`BundleInvalidError` (422) for a non-zip payload — both before any
-        object-storage write.
-        """
+    ) -> tuple[str, datetime]:
+        """Stage a locally-uploaded ``.zip`` and return a signed lemma download
+        URL to feed the URL-based import. The only multipart entry point; carries
+        no orchestration. Raises 413 over the size cap / 422 for a non-zip."""
         if len(data) > pod_bundle_settings.pod_bundle_max_archive_bytes:
             raise BundleTooLargeError(
                 "The uploaded bundle exceeds the maximum allowed size."
@@ -88,76 +112,96 @@ class ImportUseCases:
 
         await self._authorize(pod_id=pod_id, user_id=user_id, action=Permissions.POD_UPDATE)
 
-        import_id = uuid4()
-        staging_key = await self._staging.put_archive("pod-imports", import_id, data)
-        state = ImportState(
-            import_id=import_id,
-            pod_id=pod_id,
-            user_id=user_id,
-            status=ImportStatus.QUEUED,
-            staging_key=staging_key,
-            source=BundleSource(
-                kind="upload",
-                bundle_filename=filename,
-                bundle_sha256=hashlib.sha256(data).hexdigest(),
-            ),
-        )
-        await self._state_store.save_import(state)
+        from datetime import datetime, timedelta, timezone
 
-        job = await self._job_queue.enqueue(
-            PLAN_JOB_NAME,
-            context={
-                "import_id": str(import_id),
-                "pod_id": str(pod_id),
-                "user_id": str(user_id),
-            },
-            _job_id=import_plan_job_id(import_id),
+        from app.modules.pod_bundle.infrastructure.download_url import (
+            build_download_url,
         )
-        if job is None:
-            raise BundleJobConflictError("This import is already being planned.")
-        return state
 
-    async def start_github_import(
+        upload_id = uuid4()
+        await self._staging.put_archive("pod-imports", upload_id, data)
+        ttl = pod_bundle_settings.pod_bundle_state_ttl_seconds
+        url = build_download_url(kind="pod-imports", job_id=upload_id, ttl_seconds=ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+        return url, expires_at
+
+    async def start_import(
         self,
         *,
         pod_id: UUID,
         user_id: UUID,
-        repo_url: str | None,
-        owner: str | None,
-        repo: str | None,
-        ref: str | None,
+        kind: BundleSourceKind,
+        url: str | None = None,
+        owner: str | None = None,
+        repo: str | None = None,
+        ref: str | None = None,
+        account_id: UUID | None = None,
     ) -> ImportState:
-        """Authorize POD_UPDATE, validate the repo reference, and enqueue the
-        GitHub import job (fetch → stage → plan under one import_id)."""
-        from app.modules.pod_bundle.infrastructure.github_fetcher import parse_repo_ref
+        """Single URL-based import entry point.
 
+        ``URL``: verify the lemma signed download token (410 on bad/expired) and
+        enqueue ``import_pod_url`` with the resolved source object — the worker
+        reads it straight from object storage (no server-side fetch, no SSRF).
+        ``GITHUB``: parse the repo reference and enqueue ``import_pod_github``.
+        The request carries no bytes either way.
+        """
         await self._authorize(pod_id=pod_id, user_id=user_id, action=Permissions.POD_UPDATE)
-        owner, repo = parse_repo_ref(repo_url=repo_url, owner=owner, repo=repo)
-
         import_id = uuid4()
-        state = ImportState(
-            import_id=import_id,
-            pod_id=pod_id,
-            user_id=user_id,
-            status=ImportStatus.QUEUED,
-            source=BundleSource(
-                kind="github",
-                repo_url=repo_url or f"https://github.com/{owner}/{repo}",
-                ref=ref,
-            ),
-        )
-        await self._state_store.save_import(state)
-        job = await self._job_queue.enqueue(
-            GITHUB_JOB_NAME,
-            context={
-                "import_id": str(import_id),
-                "pod_id": str(pod_id),
-                "user_id": str(user_id),
-                "owner": owner,
-                "repo": repo,
-            },
-            _job_id=import_plan_job_id(import_id),
-        )
+
+        if kind == BundleSourceKind.URL:
+            if not url:
+                raise BundleInvalidError("A url is required for kind=URL.")
+            src_kind, src_id = _resolve_lemma_url(url)
+            state = ImportState(
+                import_id=import_id,
+                pod_id=pod_id,
+                user_id=user_id,
+                status=ImportStatus.QUEUED,
+                source=BundleSource(kind=BundleSourceKind.URL, url=url),
+            )
+            await self._state_store.save_import(state)
+            job = await self._job_queue.enqueue(
+                URL_JOB_NAME,
+                context={
+                    "import_id": str(import_id),
+                    "pod_id": str(pod_id),
+                    "user_id": str(user_id),
+                    "source_kind": src_kind,
+                    "source_id": str(src_id),
+                },
+                _job_id=import_plan_job_id(import_id),
+            )
+        else:  # GITHUB
+            from app.modules.pod_bundle.infrastructure.github_fetcher import (
+                parse_repo_ref,
+            )
+
+            owner, repo = parse_repo_ref(repo_url=url, owner=owner, repo=repo)
+            state = ImportState(
+                import_id=import_id,
+                pod_id=pod_id,
+                user_id=user_id,
+                status=ImportStatus.QUEUED,
+                source=BundleSource(
+                    kind=BundleSourceKind.GITHUB,
+                    repo_url=url or f"https://github.com/{owner}/{repo}",
+                    ref=ref,
+                ),
+            )
+            await self._state_store.save_import(state)
+            job = await self._job_queue.enqueue(
+                GITHUB_JOB_NAME,
+                context={
+                    "import_id": str(import_id),
+                    "pod_id": str(pod_id),
+                    "user_id": str(user_id),
+                    "owner": owner,
+                    "repo": repo,
+                    "account_id": str(account_id) if account_id else None,
+                },
+                _job_id=import_plan_job_id(import_id),
+            )
+
         if job is None:
             raise BundleJobConflictError("This import is already being planned.")
         return state

@@ -97,22 +97,30 @@ Apply-step idempotency is load-bearing: each applier **re-checks existence by na
 
 `GET …/{id}/events` follows the existing conversation-stream shape (`stream_conversation`): subscribe to the Redis channel first, authorize in a short UoW, then stream `text/event-stream` **holding no DB connection**. On connect the endpoint emits one `snapshot` frame from the current Redis state (with its `seq`), then live frames; clients discard frames with `seq ≤` the snapshot's, so reconnects and late joins are always coherent. `GET …/{id}` (pure Redis read) is the polling fallback — no DB is touched to check progress, ever.
 
-### API surface (mounted by the `pod_bundle` module; API_VERSION 3.2.0 → 3.3.0)
+### API surface — URL-based (mounted by the `pod_bundle` module)
+
+The orchestration API carries **no zip bytes**. Import takes a URL; export returns a signed, authenticated download URL. Bytes move only through the workers and two dumb byte endpoints (the uploads primitive and the download stream), neither holding a pooled connection. `kind` is the CAPS enum `BundleSourceKind` (`URL` | `GITHUB`).
+
+**Why the download URL is backend-served, not a raw bucket URL:** it must be gated to *authenticated lemma users*, and a raw GCS/LocalStore URL carries only a signature — it can't check lemma auth. So the download is an endpoint that requires `CurrentUser` (any logged-in user, not pod-scoped) **and** verifies a signed token (stateless, HMAC via the `app/core/crypto` signer, purpose `pod-bundle-download-url`, embeds `(kind, id, expiry)`). Because the token names a staged object, the import worker verifies it and reads the object **straight from object storage** — no server-side HTTP fetch, so `kind=URL` has **no SSRF surface** (lemma-origin only).
 
 | Endpoint | Guard | Semantics |
 |---|---|---|
-| `POST /pods/{pod_id}/bundle/imports` | POD_UPDATE | multipart zip → stage → `202 {import_id}`; `413` oversize, `422` not-a-zip |
-| `POST /pods/{pod_id}/bundle/imports/github` | POD_UPDATE | `{repo_url\|owner+repo, ref?, account_id?}` → `202` |
-| `POST /pods/bundle/imports` | POD_CREATE | new-pod install: create empty pod (short UoW), then same pipeline |
+| `POST /pods/{pod_id}/bundle/imports` | POD_UPDATE | `{kind, url?, owner?, repo?, ref?, account_id?}` → `202 {import_id}`. `URL`: verify the lemma signed download token (`410` bad/expired, `422` non-lemma URL) → `import_pod_url` job. `GITHUB`: repo → `import_pod_github` job (`account_id` for private). |
+| `POST /pods/{pod_id}/bundle/uploads` | POD_UPDATE | multipart `.zip` → stage → `201 {url, expires_at}` (a signed lemma URL to pass as `kind=URL`); `413` oversize, `422` not-a-zip. The only multipart endpoint. |
 | `GET /pods/{pod_id}/bundle/imports/{id}` | POD_READ | Redis-only read; `410` expired |
-| `POST …/{id}/apply` | POD_UPDATE | `{variables, confirm_destructive, skip_steps?}`; `409` unless `awaiting_confirmation\|failed`; `422` unconfirmed destructive / missing vars; dedup-`None` ⇒ `409` already running |
+| `POST …/{id}/apply` | POD_UPDATE | `{variables, confirm_destructive}`; `409` unless `awaiting_confirmation\|failed`; `422` unconfirmed destructive / missing vars; dedup-`None` ⇒ `409` |
 | `POST …/{id}/replan` | POD_UPDATE | re-plan against staged bundle; `410` if swept |
 | `DELETE …/{id}` | POD_UPDATE | abort jobs, delete state + staging |
 | `GET …/{id}/events` | POD_READ | SSE: `snapshot`, `status`, `step`, `progress`, `completed`, `error`, `expired` |
-| `POST /pods/{pod_id}/bundle/exports` | POD_READ | `{include?, with_data?}` → `202 {export_id}` |
-| `GET …/exports/{id}` / `…/download` | POD_READ | status / `StreamingResponse` from object store (no DB during stream) |
+| `POST /pods/{pod_id}/bundle/exports` | POD_READ | `{include?, with_data?, ttl_seconds?}` → `202 {export_id}` (ttl clamped to max) |
+| `GET /pods/{pod_id}/bundle/exports/{id}` | POD_READ | status; when READY: signed `download_url`, `expires_at`, and `warnings` (data-cap notices) |
+| `GET /pods/bundle/download?token=…` | CurrentUser (any user) + token | stream the archive (application/zip); not pod-scoped; `410` bad/expired token or swept archive |
 | `POST /pods/{pod_id}/bundle/publishes` | POD_READ | `{repo_name, private, account_id, ai_readme}` → `202`; GitHub authority comes from the user's own connector account |
 | `GET …/publishes/{id}` (+`/events`) | POD_READ | status / SSE |
+
+**Export data limits (never dump GBs):** the schema always exports in full; row data + file/asset bytes are bounded best-effort with warnings — per-table record cap, overall record cap (later tables go schema-only), per-file byte cap, and total-file-bytes budget, all config-driven.
+
+**Retention:** exports (and their download URLs) live to the export TTL (config, default 24h, capped ~7d) via a longer state TTL; imports stay ~6h. The sweep cron reclaims an archive once its state has expired.
 
 ### The shared library: `lemma-pod-bundle`
 

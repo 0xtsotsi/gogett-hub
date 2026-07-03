@@ -53,9 +53,15 @@ def _make_bundle(
 
 
 async def _upload(client, pod_id, zip_bytes) -> str:
-    res = await client.post(
-        f"/pods/{pod_id}/bundle/imports",
+    # Local .zip → uploads primitive → signed URL → URL-based import.
+    up = await client.post(
+        f"/pods/{pod_id}/bundle/uploads",
         files={"data": ("bundle.zip", zip_bytes, "application/zip")},
+    )
+    assert up.status_code == status.HTTP_201_CREATED, up.text
+    url = up.json()["url"]
+    res = await client.post(
+        f"/pods/{pod_id}/bundle/imports", json={"kind": "URL", "url": url}
     )
     assert res.status_code == status.HTTP_202_ACCEPTED, res.text
     return res.json()["import_id"]
@@ -127,7 +133,7 @@ async def test_apply_creates_resources_and_records_recipe(
     # Recipe recorded on the pod config.
     pod = await authenticated_client.get(f"/pods/{pod_id}")
     recipes = pod.json()["config"].get("recipes", [])
-    assert any(r["kind"] == "upload" for r in recipes), pod.json()["config"]
+    assert any(r["kind"] == "URL" for r in recipes), pod.json()["config"]
 
 
 async def test_apply_idempotent_on_reapply(authenticated_client, test_pod, worker, tmp_path):
@@ -221,25 +227,29 @@ async def test_export_then_import_apply_roundtrip(
         follow_redirects=True,
     )
 
-    # Export the source pod.
+    # Export the source pod and take its signed download URL.
     start = await authenticated_client.post(
         f"/pods/{source_id}/bundle/exports", json={"with_data": True}
     )
     export_id = start.json()["export_id"]
+    export_final = None
     for _ in range(60):
         st = await authenticated_client.get(f"/pods/{source_id}/bundle/exports/{export_id}")
-        if st.json()["status"] in ("READY", "FAILED"):
+        export_final = st.json()
+        if export_final["status"] in ("READY", "FAILED"):
             break
         await asyncio.sleep(1)
-    assert st.json()["status"] == "READY"
-    dl = await authenticated_client.get(
-        f"/pods/{source_id}/bundle/exports/{export_id}/download"
-    )
-    assert dl.status_code == status.HTTP_200_OK
+    assert export_final["status"] == "READY"
+    download_url = export_final["download_url"]
 
-    # Import into a fresh pod and apply.
+    # The flywheel: import into a fresh pod straight from the export URL (no
+    # re-download / re-upload), then apply.
     target_id = await _new_pod(authenticated_client, fixed_test_org["id"])
-    import_id = await _upload(authenticated_client, target_id, dl.content)
+    res = await authenticated_client.post(
+        f"/pods/{target_id}/bundle/imports", json={"kind": "URL", "url": download_url}
+    )
+    assert res.status_code == status.HTTP_202_ACCEPTED, res.text
+    import_id = res.json()["import_id"]
     await _wait(authenticated_client, target_id, import_id, until={"AWAITING_CONFIRMATION"})
     await authenticated_client.post(
         f"/pods/{target_id}/bundle/imports/{import_id}/apply", json={}

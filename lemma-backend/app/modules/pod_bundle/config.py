@@ -49,5 +49,46 @@ class PodBundleSettings(BaseSettings):
         description="HTTP timeout (seconds) for fetching a GitHub repo zipball.",
     )
 
+    # --- Export download URL retention -----------------------------------
+    pod_bundle_export_url_ttl_seconds: int = Field(
+        default=24 * 60 * 60,
+        description=(
+            "Default lifetime (seconds) of an export's signed download URL, and "
+            "the retention horizon of the staged export archive + its Redis "
+            "state. Longer than the ~6h import horizon so a shared export stays "
+            "fetchable; re-export is cheap when it expires."
+        ),
+    )
+    pod_bundle_export_url_max_ttl_seconds: int = Field(
+        default=7 * 24 * 60 * 60,
+        description="Hard ceiling (seconds) on a caller-requested export URL TTL.",
+    )
+
+    # --- Export data/asset caps (never dump GBs) -------------------------
+    # The schema always exports in full; only row data and file/asset BYTES are
+    # bounded, best-effort with warnings surfaced on the export status.
+    pod_bundle_export_max_records_per_table: int = Field(
+        default=5000,
+        description="Max rows written to a table's data.csv seed (per table).",
+    )
+    pod_bundle_export_max_records_total: int = Field(
+        default=50000,
+        description=(
+            "Max rows across all tables in one export; once reached, remaining "
+            "tables export schema-only (no data.csv)."
+        ),
+    )
+    pod_bundle_export_max_file_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        description="Skip any single exported file/asset larger than this (bytes).",
+    )
+    pod_bundle_export_max_files_total_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        description=(
+            "Running byte budget for included files/assets in one export; stop "
+            "adding once reached."
+        ),
+    )
+
 
 pod_bundle_settings = PodBundleSettings()

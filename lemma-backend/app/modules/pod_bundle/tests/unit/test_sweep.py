@@ -47,7 +47,7 @@ def _state(status, *, age_seconds=0) -> ImportState:
         import_id=uuid4(),
         pod_id=uuid4(),
         user_id=uuid4(),
-        source=BundleSource(kind="upload"),
+        source=BundleSource(kind="URL"),
         status=status,
     )
     s.updated_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)

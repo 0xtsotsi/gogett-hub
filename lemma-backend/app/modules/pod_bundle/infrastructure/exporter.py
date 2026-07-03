@@ -50,6 +50,7 @@ from app.core.authorization.context import Context
 from app.core.helpers.slug import slugify
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.core.log.log import get_logger
+from app.modules.pod_bundle.config import pod_bundle_settings
 
 logger = get_logger(__name__)
 
@@ -66,13 +67,64 @@ _EXPORT_RESOURCE_TYPES = (
     "apps",
 )
 
-# Ceiling on rows dumped per table under ``with_data`` — matches the CLI's
-# RECORD_EXPORT_DEFAULT_LIMIT so both exporters cap identically.
-_RECORD_EXPORT_LIMIT = 10_000
 _RECORD_EXPORT_PAGE = 1_000
 
 
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+
+
+class _RecordBudget:
+    """Bounds exported seed rows: a per-table cap and a running total across all
+    tables. When exhausted, remaining tables export schema-only. Trips append a
+    human warning so the export status can tell the caller what was dropped."""
+
+    def __init__(self, *, per_table: int, total: int, warnings: list[str]):
+        self._per_table = max(0, per_table)
+        self._remaining = max(0, total)
+        self._warnings = warnings
+
+    def table_cap(self) -> int:
+        return min(self._per_table, self._remaining)
+
+    def note_written(self, *, table: str, written: int, available: int) -> None:
+        self._remaining -= written
+        if available > written:
+            self._warnings.append(
+                f"table '{table}' seed data truncated to {written} of "
+                f"{available} rows (export record cap)"
+            )
+
+    def note_skipped(self, *, table: str) -> None:
+        self._warnings.append(
+            f"table '{table}' seed data omitted: export record budget reached"
+        )
+
+
+class _ByteBudget:
+    """Bounds exported file/asset bytes: a per-file ceiling and a running total.
+    ``allow(name, size)`` records a skip warning and returns ``False`` when a
+    file is too large or the budget is spent. (Consumed when file/asset bytes
+    are added to the bundle.)"""
+
+    def __init__(self, *, per_file: int, total: int, warnings: list[str]):
+        self._per_file = max(0, per_file)
+        self._remaining = max(0, total)
+        self._warnings = warnings
+
+    def allow(self, *, name: str, size: int) -> bool:
+        if size > self._per_file:
+            self._warnings.append(
+                f"file '{name}' skipped: {size} bytes exceeds the per-file limit "
+                f"({self._per_file} bytes)"
+            )
+            return False
+        if size > self._remaining:
+            self._warnings.append(
+                f"file '{name}' skipped: export file-size budget reached"
+            )
+            return False
+        self._remaining -= size
+        return True
 
 
 def _dump_response(response: Any) -> dict[str, Any]:
@@ -104,14 +156,27 @@ class BundleExporter:
         ctx: Context,
         uow: SqlAlchemyUnitOfWork,
         on_progress: ProgressCallback,
-    ) -> tuple[str, bytes]:
-        """Assemble the bundle and return ``(bundle_filename, zip_bytes)``.
+    ) -> tuple[str, bytes, list[str]]:
+        """Assemble the bundle and return ``(bundle_filename, zip_bytes, warnings)``.
 
         All ``list`` + ``get`` reads run against the live ``uow``/``ctx``; the
         zip is built in a temp dir with no DB. ``on_progress(done, total)`` is
         awaited as each resource type completes so the job can refresh Redis.
+        The schema always exports fully; only row data + file/asset bytes are
+        bounded (best-effort), with each cap that trips noted in ``warnings``.
         """
         selected = _normalize_include(include)
+        warnings: list[str] = []
+        record_budget = _RecordBudget(
+            per_table=pod_bundle_settings.pod_bundle_export_max_records_per_table,
+            total=pod_bundle_settings.pod_bundle_export_max_records_total,
+            warnings=warnings,
+        )
+        _byte_budget = _ByteBudget(  # noqa: F841 - consumed when file/asset bytes are added
+            per_file=pod_bundle_settings.pod_bundle_export_max_file_bytes,
+            total=pod_bundle_settings.pod_bundle_export_max_files_total_bytes,
+            warnings=warnings,
+        )
 
         # Lazy imports (avoid import cycles + keep the module import cheap).
         from app.modules.agent.api.dependencies import get_agent_service
@@ -171,14 +236,22 @@ class BundleExporter:
                         _normalize_table_payload(_table_response_dict(table)),
                     )
                     if with_data and record_service is not None:
-                        await self._export_table_data(
-                            record_service=record_service,
-                            table_context=TableContext.from_table_entity(
-                                table, schema_name, events_enabled=False
-                            ),
-                            user_id=user_id,
-                            dest=dir_ / TABLE_DATA_FILE,
-                        )
+                        cap = record_budget.table_cap()
+                        if cap <= 0:
+                            record_budget.note_skipped(table=table_name)
+                        else:
+                            written, available = await self._export_table_data(
+                                record_service=record_service,
+                                table_context=TableContext.from_table_entity(
+                                    table, schema_name, events_enabled=False
+                                ),
+                                user_id=user_id,
+                                dest=dir_ / TABLE_DATA_FILE,
+                                cap=cap,
+                            )
+                            record_budget.note_written(
+                                table=table_name, written=written, available=available
+                            )
                 done += 1
                 await on_progress(done, total)
 
@@ -311,7 +384,7 @@ class BundleExporter:
 
         bundle_filename = f"{slugify(pod_name) or 'pod'}.zip"
         await on_progress(total, total)
-        return bundle_filename, zip_bytes
+        return bundle_filename, zip_bytes, warnings
 
     async def _export_table_data(
         self,
@@ -320,25 +393,29 @@ class BundleExporter:
         table_context: Any,
         user_id: UUID,
         dest: Path,
-    ) -> None:
-        """Page a table's rows (up to the export cap) and write ``data.csv`` the
-        same way the CLI's record IO does — skipped when the table is empty."""
+        cap: int,
+    ) -> tuple[int, int]:
+        """Page up to ``cap`` rows and write ``data.csv`` (CLI record-IO cell
+        semantics); skipped when the table is empty. Returns
+        ``(rows_written, total_available)`` so the caller can warn on truncation."""
         from lemma_pod_bundle.normalize import _SEED_STRIP_COLUMNS
 
         rows: list[dict[str, Any]] = []
         offset = 0
-        while len(rows) < _RECORD_EXPORT_LIMIT:
-            want = min(_RECORD_EXPORT_PAGE, _RECORD_EXPORT_LIMIT - len(rows))
-            items, _total = await record_service.list_records(
+        available = 0
+        while len(rows) < cap:
+            want = min(_RECORD_EXPORT_PAGE, cap - len(rows))
+            items, total = await record_service.list_records(
                 table_context, user_id, limit=want, offset=offset
             )
+            available = int(total or 0)
             batch = [dict(item.data) for item in items]
             rows.extend(batch)
             offset += len(batch)
             if not batch or len(batch) < want:
                 break
         if not rows:
-            return
+            return 0, available
         # Drop audit/ownership columns so a re-import re-owns rows to the importer,
         # matching the CLI seed contract.
         cleaned = [
@@ -346,6 +423,7 @@ class BundleExporter:
             for row in rows
         ]
         _write_export_csv(dest, cleaned)
+        return len(rows), max(available, len(rows))
 
     async def _export_surfaces(
         self, root: Path, uow: SqlAlchemyUnitOfWork, pod_id: UUID

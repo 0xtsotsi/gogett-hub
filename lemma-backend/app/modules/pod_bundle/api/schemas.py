@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.modules.pod_bundle.domain.state import (
+    BundleSourceKind,
     ExportState,
     ExportStatus,
     ImportPlan,
@@ -32,6 +34,13 @@ class ExportStartRequest(BaseModel):
             "'agents']). Omit to export every supported resource type."
         ),
     )
+    ttl_seconds: int | None = Field(
+        default=None,
+        description=(
+            "Requested lifetime (seconds) of the signed download URL + archive "
+            "retention. Clamped to the configured maximum; omit for the default."
+        ),
+    )
 
 
 class ExportProgressResponse(BaseModel):
@@ -52,23 +61,30 @@ class ExportStatusResponse(BaseModel):
     bundle_filename: str | None = None
     download_url: str | None = Field(
         default=None,
-        description="Relative download path; present once the export is READY.",
+        description=(
+            "Signed, authenticated download URL; present once the export is "
+            "READY. Requires a logged-in lemma user to fetch."
+        ),
+    )
+    expires_at: datetime | None = Field(
+        default=None, description="When the download URL (and archive) expires."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Data/asset-cap notices (e.g. truncated seed rows, skipped files).",
     )
     error: str | None = None
 
     @classmethod
     def from_state(cls, state: ExportState) -> "ExportStatusResponse":
-        download_url: str | None = None
-        if state.status == ExportStatus.READY:
-            download_url = (
-                f"/pods/{state.pod_id}/bundle/exports/{state.export_id}/download"
-            )
         return cls(
             export_id=state.export_id,
             status=state.status,
             progress=ExportProgressResponse.from_domain(state.progress),
             bundle_filename=state.bundle_filename,
-            download_url=download_url,
+            download_url=state.download_url,
+            expires_at=state.expires_at,
+            warnings=state.warnings,
             error=state.error,
         )
 
@@ -136,15 +152,32 @@ class ImportPlanResponse(BaseModel):
         )
 
 
-class GithubImportRequest(BaseModel):
-    """Body for importing a pod from a public GitHub repo."""
+class ImportStartRequest(BaseModel):
+    """Body for starting a URL-based import."""
 
-    repo_url: str | None = Field(
-        default=None, description="Public repo URL, e.g. https://github.com/owner/repo."
+    kind: BundleSourceKind = Field(
+        ..., description="URL (a lemma signed download URL) or GITHUB (a public repo)."
     )
-    owner: str | None = Field(default=None, description="Repo owner (alternative to repo_url).")
-    repo: str | None = Field(default=None, description="Repo name (alternative to repo_url).")
-    ref: str | None = Field(default=None, description="Branch, tag, or commit sha (optional).")
+    url: str | None = Field(
+        default=None,
+        description=(
+            "For URL: a lemma bundle download URL (from an export or an upload). "
+            "For GITHUB: the repo URL (alternative to owner+repo)."
+        ),
+    )
+    owner: str | None = Field(default=None, description="GITHUB repo owner.")
+    repo: str | None = Field(default=None, description="GITHUB repo name.")
+    ref: str | None = Field(default=None, description="GITHUB branch/tag/sha (optional).")
+    account_id: UUID | None = Field(
+        default=None, description="Connector account for a private GitHub repo."
+    )
+
+
+class UploadResponse(BaseModel):
+    """Result of staging a local .zip: a signed URL to feed the URL-based import."""
+
+    url: str = Field(..., description="Signed lemma download URL (pass as kind=URL).")
+    expires_at: datetime
 
 
 class ApplyImportRequest(BaseModel):
@@ -178,7 +211,7 @@ class ImportStatusResponse(BaseModel):
             import_id=state.import_id,
             pod_id=state.pod_id,
             status=state.status,
-            source_kind=state.source.kind,
+            source_kind=state.source.kind.value,
             plan=ImportPlanResponse.from_domain(state.plan) if state.plan else None,
             progress=ExportProgressResponse.from_domain(state.progress),
             events_url=(

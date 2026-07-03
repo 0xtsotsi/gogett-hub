@@ -189,57 +189,64 @@ async def test_get_export_wrong_pod_raises_expired():
         )
 
 
-# --- open_download -----------------------------------------------------------
+# --- ttl clamp ---------------------------------------------------------------
 
 
-async def test_open_download_ready_returns_iterator():
+async def test_start_export_clamps_ttl_to_max():
+    store = _FakeStore()
+    use_cases = _use_cases(store=store)
+    from app.modules.pod_bundle.config import pod_bundle_settings
+
+    huge = pod_bundle_settings.pod_bundle_export_url_max_ttl_seconds + 10_000
+    state = await use_cases.start_export(
+        pod_id=uuid4(), user_id=uuid4(), with_data=True, include=None, ttl_seconds=huge
+    )
+    assert state.ttl_seconds == pod_bundle_settings.pod_bundle_export_url_max_ttl_seconds
+
+
+async def test_start_export_default_ttl_when_omitted():
+    store = _FakeStore()
+    use_cases = _use_cases(store=store)
+    from app.modules.pod_bundle.config import pod_bundle_settings
+
+    state = await use_cases.start_export(
+        pod_id=uuid4(), user_id=uuid4(), with_data=True, include=None
+    )
+    assert state.ttl_seconds == pod_bundle_settings.pod_bundle_export_url_ttl_seconds
+
+
+# --- open_download_by_token --------------------------------------------------
+
+
+async def test_open_download_by_token_streams_archive():
+    from app.modules.pod_bundle.infrastructure.download_url import mint_download_token
+
     store = _FakeStore()
     sentinel = object()
     use_cases = _use_cases(store=store, staging=_FakeStaging(iterator=sentinel))
-    pod_id = uuid4()
+    export_id = uuid4()
     state = ExportState(
-        export_id=uuid4(),
-        pod_id=pod_id,
-        user_id=uuid4(),
-        status=ExportStatus.READY,
-        bundle_filename="crm.zip",
+        export_id=export_id, pod_id=uuid4(), user_id=uuid4(),
+        status=ExportStatus.READY, bundle_filename="crm.zip",
     )
     await store.save_export(state)
 
-    filename, iterator = await use_cases.open_download(
-        pod_id=pod_id, export_id=state.export_id, user_id=state.user_id
-    )
+    token = mint_download_token(kind="pod-exports", job_id=export_id, ttl_seconds=600)
+    filename, iterator = await use_cases.open_download_by_token(token)
     assert filename == "crm.zip"
     assert iterator is sentinel
 
 
-async def test_open_download_not_ready_raises_conflict():
-    store = _FakeStore()
-    use_cases = _use_cases(store=store)
-    pod_id = uuid4()
-    state = ExportState(
-        export_id=uuid4(), pod_id=pod_id, user_id=uuid4(), status=ExportStatus.EXPORTING
-    )
-    await store.save_export(state)
-    with pytest.raises(BundleJobConflictError):
-        await use_cases.open_download(
-            pod_id=pod_id, export_id=state.export_id, user_id=state.user_id
-        )
+async def test_open_download_by_token_bad_token_raises_expired():
+    use_cases = _use_cases()
+    with pytest.raises(BundleJobExpiredError):
+        await use_cases.open_download_by_token("garbage")
 
 
-async def test_open_download_swept_archive_raises_staging_missing():
-    store = _FakeStore()
-    use_cases = _use_cases(store=store, staging=_FakeStaging(iterator=None))
-    pod_id = uuid4()
-    state = ExportState(
-        export_id=uuid4(),
-        pod_id=pod_id,
-        user_id=uuid4(),
-        status=ExportStatus.READY,
-        bundle_filename="crm.zip",
-    )
-    await store.save_export(state)
+async def test_open_download_by_token_swept_archive_raises_staging_missing():
+    from app.modules.pod_bundle.infrastructure.download_url import mint_download_token
+
+    use_cases = _use_cases(staging=_FakeStaging(iterator=None))
+    token = mint_download_token(kind="pod-exports", job_id=uuid4(), ttl_seconds=600)
     with pytest.raises(BundleStagingMissingError):
-        await use_cases.open_download(
-            pod_id=pod_id, export_id=state.export_id, user_id=state.user_id
-        )
+        await use_cases.open_download_by_token(token)

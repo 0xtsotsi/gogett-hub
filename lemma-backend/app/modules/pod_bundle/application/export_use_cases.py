@@ -2,14 +2,13 @@
 
 Owns the phase sequencing across SHORT units of work — authorize + write the
 initial ``QUEUED`` state doc + enqueue in one short scope, read status in
-another, stream the download in a third. A pooled DB connection is never held
-across the archive assembly or the object-storage upload (those live in the
-worker job and the streaming response body respectively). Mirrors the
-``FunctionUseCases`` phase-split discipline.
+another. A pooled DB connection is never held across archive assembly or the
+object-storage upload (those live in the worker job and the streaming response
+body respectively). Mirrors the ``FunctionUseCases`` phase-split discipline.
 
-Single-writer contract: this class writes the initial ``ExportState`` and
-enqueues with the dedup job id ``pod-export:{export_id}``; from that point the
-worker is the only writer of the state doc.
+Download is URL-based: the job mints a signed, authenticated download URL onto
+the state; the download endpoint verifies the token (no pod scope) and streams
+the staged archive. ``open_download_by_token`` holds no DB at all.
 """
 
 from __future__ import annotations
@@ -22,12 +21,14 @@ from app.core.authorization.scope import context_scope, uow_scope
 from app.core.authorization.service import AuthorizationDataService
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.infrastructure.jobs.streaq_job_queue import get_streaq_job_queue
+from app.modules.pod_bundle.config import pod_bundle_settings
 from app.modules.pod_bundle.domain.errors import (
     BundleJobConflictError,
     BundleJobExpiredError,
     BundleStagingMissingError,
 )
 from app.modules.pod_bundle.domain.state import ExportState, ExportStatus
+from app.modules.pod_bundle.infrastructure.download_url import verify_download_token
 from app.modules.pod_bundle.infrastructure.staging import BundleStagingStorage
 from app.modules.pod_bundle.infrastructure.state_store import (
     PodBundleStateStore,
@@ -65,12 +66,11 @@ class ExportUseCases:
         user_id: UUID,
         with_data: bool,
         include: list[str] | None,
+        ttl_seconds: int | None = None,
     ) -> ExportState:
         """Authorize POD_READ, persist a ``QUEUED`` state doc, and enqueue the
-        export job. Returns the state (the API surfaces ``export_id`` + status).
-        """
-        # Short UoW: authorize as the requesting user, then release the
-        # connection — the job does all the heavy reads later.
+        export job. ``ttl_seconds`` (the download URL's validity + archive
+        retention) is clamped to the configured maximum."""
         async with uow_scope(self._uow_factory) as uow:
             ctx = await AuthorizationDataService(uow.session).build_user_context(
                 user_id=user_id, pod_id=pod_id
@@ -78,6 +78,7 @@ class ExportUseCases:
             async with context_scope(ctx):
                 await ctx.require(Permissions.POD_READ)
 
+        resolved_ttl = _clamp_ttl(ttl_seconds)
         export_id = uuid4()
         state = ExportState(
             export_id=export_id,
@@ -86,6 +87,7 @@ class ExportUseCases:
             status=ExportStatus.QUEUED,
             with_data=with_data,
             include=include,
+            ttl_seconds=resolved_ttl,
         )
         await self._state_store.save_export(state)
 
@@ -99,8 +101,6 @@ class ExportUseCases:
             _job_id=export_job_id(export_id),
         )
         if job is None:
-            # A fresh export_id can never collide, but keep the contract honest:
-            # a duplicate dedup id means an identical export is already queued.
             raise BundleJobConflictError("An identical export is already in progress.")
         return state
 
@@ -115,30 +115,25 @@ class ExportUseCases:
             raise BundleJobExpiredError()
         return state
 
-    async def open_download(
-        self, *, pod_id: UUID, export_id: UUID, user_id: UUID
+    async def open_download_by_token(
+        self, token: str
     ) -> tuple[str, AsyncIterator[bytes]]:
-        """Authorize POD_READ, ensure the export is ``READY``, and return
-        ``(bundle_filename, chunk_iterator)`` streaming the staged archive.
+        """Verify a signed download token and stream the staged archive.
 
-        The auth + state read happen in a short scope; the returned iterator
-        streams from object storage with no pooled connection held.
+        Authorization is the token itself (verified here) plus the endpoint's
+        ``CurrentUser`` gate — no pod scope, no DB. Raises
+        :class:`BundleJobExpiredError` (410) for a bad/expired token and
+        :class:`BundleStagingMissingError` (410) if the archive was swept.
         """
-        await self._authorize(pod_id=pod_id, user_id=user_id)
-        state = await self._state_store.get_export(export_id)
-        if state is None or state.pod_id != pod_id:
-            raise BundleJobExpiredError()
-        if state.status != ExportStatus.READY:
-            raise BundleJobConflictError(
-                f"Export is not ready to download (status: {state.status.value})."
-            )
-
-        iterator = await self._staging.iter_archive("pod-exports", export_id)
+        kind, job_id = verify_download_token(token)
+        iterator = await self._staging.iter_archive(kind, job_id)
         if iterator is None:
-            # State says READY but the archive was swept — surface the staging-gone
-            # condition so the caller re-runs the export.
             raise BundleStagingMissingError()
-        filename = state.bundle_filename or f"{export_id}.zip"
+        filename = f"{job_id}.zip"
+        if kind == "pod-exports":
+            state = await self._state_store.get_export(job_id)
+            if state is not None and state.bundle_filename:
+                filename = state.bundle_filename
         return filename, iterator
 
     async def _authorize(self, *, pod_id: UUID, user_id: UUID) -> None:
@@ -148,3 +143,11 @@ class ExportUseCases:
             )
             async with context_scope(ctx):
                 await ctx.require(Permissions.POD_READ)
+
+
+def _clamp_ttl(ttl_seconds: int | None) -> int:
+    default = pod_bundle_settings.pod_bundle_export_url_ttl_seconds
+    ceiling = pod_bundle_settings.pod_bundle_export_url_max_ttl_seconds
+    if ttl_seconds is None or ttl_seconds <= 0:
+        return default
+    return min(ttl_seconds, ceiling)

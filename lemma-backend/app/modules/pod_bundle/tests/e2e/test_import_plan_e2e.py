@@ -64,13 +64,19 @@ async def _new_pod(authenticated_client, org_id: str) -> str:
 
 
 async def _upload_import(authenticated_client, pod_id: str, zip_bytes: bytes) -> str:
+    # Local .zip → uploads primitive → signed URL → URL-based import.
+    up = await authenticated_client.post(
+        f"/pods/{pod_id}/bundle/uploads",
+        files={"data": ("bundle.zip", zip_bytes, "application/zip")},
+    )
+    assert up.status_code == status.HTTP_201_CREATED, up.text
     res = await authenticated_client.post(
         f"/pods/{pod_id}/bundle/imports",
-        files={"data": ("bundle.zip", zip_bytes, "application/zip")},
+        json={"kind": "URL", "url": up.json()["url"]},
     )
     assert res.status_code == status.HTTP_202_ACCEPTED, res.text
     body = res.json()
-    assert body["status"] in ("QUEUED", "PLANNING")
+    assert body["status"] in ("QUEUED", "FETCHING", "PLANNING")
     return body["import_id"]
 
 
@@ -165,11 +171,21 @@ async def test_get_import_expired_returns_410(authenticated_client, test_pod, wo
     assert res.json()["code"] == "POD_BUNDLE_EXPIRED"
 
 
-async def test_import_rejects_non_zip(authenticated_client, test_pod, worker):
+async def test_upload_rejects_non_zip(authenticated_client, test_pod, worker):
+    pod_id = test_pod["id"]
+    res = await authenticated_client.post(
+        f"/pods/{pod_id}/bundle/uploads",
+        files={"data": ("bundle.zip", b"not a zip", "application/zip")},
+    )
+    assert res.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, res.text
+    assert res.json()["code"] == "POD_BUNDLE_INVALID"
+
+
+async def test_import_url_rejects_non_lemma_url(authenticated_client, test_pod, worker):
     pod_id = test_pod["id"]
     res = await authenticated_client.post(
         f"/pods/{pod_id}/bundle/imports",
-        files={"data": ("bundle.zip", b"not a zip", "application/zip")},
+        json={"kind": "URL", "url": "https://evil.example.com/x.zip"},
     )
     assert res.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, res.text
     assert res.json()["code"] == "POD_BUNDLE_INVALID"

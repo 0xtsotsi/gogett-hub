@@ -1,20 +1,22 @@
 """Bundle export endpoints.
 
 ``POST`` enqueues a streaq job and returns ``202`` with an ``export_id``; the
-job assembles the archive and stages it in object storage. ``GET`` is a pure
-Redis status read (no DB touched for progress), and ``…/download`` streams the
-staged archive with no pooled connection held during the stream.
+job assembles the archive, stages it in object storage, and mints a signed
+download URL. ``GET`` is a pure Redis status read (no DB touched for progress)
+that surfaces the ``download_url``. ``GET /pods/bundle/download`` streams the
+archive: it requires an authenticated lemma user (any logged-in user, not
+pod-scoped) AND a valid signed token — a double gate — and holds no pooled
+connection during the stream.
 
 Domain errors (:class:`PodBundleDomainError` subclasses) carry their own HTTP
-status and are surfaced by the global ``DomainError`` handler — controllers just
-let them propagate.
+status and are surfaced by the global ``DomainError`` handler.
 """
 
 from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 from fastapi.responses import StreamingResponse
 
 from app.core.api.dependencies import CurrentUser
@@ -36,7 +38,7 @@ router = APIRouter(prefix="/pods", tags=["Pod Bundle"], redirect_slashes=False)
     summary="Start Pod Export",
     description=(
         "Enqueue a pod export. Returns 202 with an export_id; poll the status "
-        "endpoint until READY, then download the bundle archive."
+        "endpoint until READY, then fetch the signed download_url."
     ),
     dependencies=[PodViewerDep],
 )
@@ -51,6 +53,7 @@ async def start_export(
         user_id=user.id,
         with_data=data.with_data,
         include=data.include,
+        ttl_seconds=data.ttl_seconds,
     )
     return ExportStatusResponse.from_state(state)
 
@@ -61,7 +64,11 @@ async def start_export(
     status_code=status.HTTP_200_OK,
     operation_id="pod.bundle.export.get",
     summary="Get Pod Export Status",
-    description="Poll the status of a pod export (Redis-only; 410 when expired).",
+    description=(
+        "Poll the status of a pod export (Redis-only; 410 when expired). When "
+        "READY, includes the signed download_url, its expires_at, and any "
+        "data-cap warnings."
+    ),
     dependencies=[PodViewerDep],
 )
 async def get_export(
@@ -77,27 +84,25 @@ async def get_export(
 
 
 @router.get(
-    "/{pod_id}/bundle/exports/{export_id}/download",
-    operation_id="pod.bundle.export.download",
-    summary="Download Pod Export Bundle",
+    "/bundle/download",
+    operation_id="pod.bundle.download",
+    summary="Download A Bundle Archive",
     description=(
-        "Stream the exported bundle archive (application/zip). Available once the "
-        "export is READY; 410 if the staged archive was swept."
+        "Stream a bundle archive (application/zip) by signed token. Requires an "
+        "authenticated lemma user AND a valid token; not pod-scoped, so a share "
+        "link works for any signed-in user. 410 if the token is invalid/expired "
+        "or the archive was swept."
     ),
     response_class=StreamingResponse,
-    dependencies=[PodViewerDep],
+    # NOT pod-scoped: `user: CurrentUser` requires auth; the token is verified in
+    # the use case. Kept out of EXCLUDED_PATHS so the global auth gate applies.
 )
-async def download_export(
-    pod_id: UUID,
-    export_id: UUID,
+async def download_bundle(
     user: CurrentUser,
     use_cases: ExportUseCasesDep,
+    token: str = Query(..., description="Signed download token."),
 ) -> StreamingResponse:
-    # Authorization + state read happen in a short scope inside open_download;
-    # the returned iterator streams from object storage with no DB held.
-    filename, iterator = await use_cases.open_download(
-        pod_id=pod_id, export_id=export_id, user_id=user.id
-    )
+    filename, iterator = await use_cases.open_download_by_token(token)
     return StreamingResponse(
         iterator,
         media_type="application/zip",

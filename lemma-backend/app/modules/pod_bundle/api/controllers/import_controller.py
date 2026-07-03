@@ -31,8 +31,9 @@ from app.modules.pod.api.dependencies import PodEditorDep, PodViewerDep
 from app.modules.pod_bundle.api.dependencies import ImportUseCasesDep
 from app.modules.pod_bundle.api.schemas import (
     ApplyImportRequest,
-    GithubImportRequest,
+    ImportStartRequest,
     ImportStatusResponse,
+    UploadResponse,
 )
 from app.modules.pod_bundle.domain.state import IMPORT_TERMINAL_STATUSES
 from app.modules.pod_bundle.infrastructure.realtime import bundle_job_channel
@@ -54,52 +55,57 @@ _TERMINAL_EVENT_TYPES = {"completed", "error", "expired"}
     operation_id="pod.bundle.import.start",
     summary="Start Pod Import",
     description=(
-        "Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an "
-        "import_id; poll the status endpoint until AWAITING_CONFIRMATION, review "
-        "the plan, then apply."
+        "Import a pod bundle from a URL. kind=URL takes a lemma signed download "
+        "URL (from an export, or from POST …/bundle/uploads); kind=GITHUB takes a "
+        "public repo (repo_url or owner+repo, with account_id for private repos). "
+        "Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, "
+        "review the plan, then apply."
     ),
     dependencies=[PodEditorDep],
 )
 async def start_import(
     pod_id: UUID,
+    data: ImportStartRequest,
     user: CurrentUser,
     use_cases: ImportUseCasesDep,
-    data: UploadFile = File(...),
 ) -> ImportStatusResponse:
-    content = await data.read()
-    state = await use_cases.start_upload_import(
-        pod_id=pod_id, user_id=user.id, filename=data.filename, data=content
+    state = await use_cases.start_import(
+        pod_id=pod_id,
+        user_id=user.id,
+        kind=data.kind,
+        url=data.url,
+        owner=data.owner,
+        repo=data.repo,
+        ref=data.ref,
+        account_id=data.account_id,
     )
     return ImportStatusResponse.from_state(state)
 
 
 @router.post(
-    "/{pod_id}/bundle/imports/github",
-    response_model=ImportStatusResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    operation_id="pod.bundle.import.github",
-    summary="Import Pod From GitHub",
+    "/{pod_id}/bundle/uploads",
+    response_model=UploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="pod.bundle.upload",
+    summary="Stage A Local Bundle Upload",
     description=(
-        "Import a pod bundle from a public GitHub repository. Returns 202 with an "
-        "import_id; the bundle is fetched, planned, and awaits confirmation."
+        "Upload a local .zip bundle and receive a signed lemma download URL to "
+        "pass to POST …/bundle/imports as kind=URL. The only multipart endpoint; "
+        "it stages bytes and mints a URL, nothing more."
     ),
     dependencies=[PodEditorDep],
 )
-async def start_github_import(
+async def upload_bundle(
     pod_id: UUID,
-    data: GithubImportRequest,
     user: CurrentUser,
     use_cases: ImportUseCasesDep,
-) -> ImportStatusResponse:
-    state = await use_cases.start_github_import(
-        pod_id=pod_id,
-        user_id=user.id,
-        repo_url=data.repo_url,
-        owner=data.owner,
-        repo=data.repo,
-        ref=data.ref,
+    data: UploadFile = File(...),
+) -> UploadResponse:
+    content = await data.read()
+    url, expires_at = await use_cases.stage_upload(
+        pod_id=pod_id, user_id=user.id, filename=data.filename, data=content
     )
-    return ImportStatusResponse.from_state(state)
+    return UploadResponse(url=url, expires_at=expires_at)
 
 
 @router.get(

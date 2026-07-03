@@ -96,9 +96,17 @@ async def {func_name}(ctx: FunctionContext, data: UppercaseInput) -> UppercaseRe
     assert res.status_code == status.HTTP_201_CREATED, res.text
 
 
+def _download_path(download_url: str) -> str:
+    """The path+query of an absolute lemma download URL, for the ASGI client."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(download_url)
+    return f"{parts.path}?{parts.query}" if parts.query else parts.path
+
+
 @pytest.mark.workspace
 async def test_export_pod_bundle_roundtrip(
-    authenticated_client, test_pod, worker, workspace_api, tmp_path
+    authenticated_client, async_client, test_pod, worker, workspace_api, tmp_path
 ):
     pod_id = test_pod["id"]
     table_name = f"leads_{uuid4().hex[:8]}"
@@ -122,12 +130,17 @@ async def test_export_pod_bundle_roundtrip(
     final = await _wait_for_export_ready(authenticated_client, pod_id, export_id)
     assert final["status"] == "READY", final
     assert final["bundle_filename"].endswith(".zip")
-    assert final["download_url"].endswith(f"/bundle/exports/{export_id}/download")
+    assert "/pods/bundle/download?token=" in final["download_url"]
+    assert final["expires_at"]
 
-    # Download + extract.
-    download = await authenticated_client.get(
-        f"/pods/{pod_id}/bundle/exports/{export_id}/download"
-    )
+    dl_path = _download_path(final["download_url"])
+
+    # The signed download URL requires an authenticated lemma user.
+    anon = await async_client.get(dl_path)
+    assert anon.status_code in (401, 403), anon.status_code
+
+    # Download + extract with the authenticated client.
+    download = await authenticated_client.get(dl_path)
     assert download.status_code == status.HTTP_200_OK, download.text
     assert download.headers["content-type"] == "application/zip"
     assert "attachment" in download.headers["content-disposition"]
@@ -189,9 +202,7 @@ async def test_export_without_data_omits_data_csv(authenticated_client, test_pod
     final = await _wait_for_export_ready(authenticated_client, pod_id, export_id)
     assert final["status"] == "READY", final
 
-    download = await authenticated_client.get(
-        f"/pods/{pod_id}/bundle/exports/{export_id}/download"
-    )
+    download = await authenticated_client.get(_download_path(final["download_url"]))
     root = extract_bundle(download.content, tmp_path / "bundle")
     assert (root / "tables" / table_name / f"{table_name}.json").is_file()
     assert not (root / "tables" / table_name / "data.csv").exists()

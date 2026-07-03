@@ -101,7 +101,7 @@ async def export_pod_bundle(context: dict[str, str | None]) -> None:
                 user_id=user_id, pod_id=pod_id
             )
             async with context_scope(ctx):
-                bundle_filename, zip_bytes = await BundleExporter().export(
+                bundle_filename, zip_bytes, warnings = await BundleExporter().export(
                     pod_id=pod_id,
                     user_id=user_id,
                     with_data=state.with_data,
@@ -114,18 +114,32 @@ async def export_pod_bundle(context: dict[str, str | None]) -> None:
         # (c) upload — no DB connection held.
         staging_key = await staging.put_archive("pod-exports", export_id, zip_bytes)
 
-        # (d) READY
+        # (d) READY — mint the signed download URL + retain state/archive for its TTL.
+        from datetime import timedelta
+
+        from app.modules.pod_bundle.config import pod_bundle_settings
+        from app.modules.pod_bundle.infrastructure.download_url import build_download_url
+
+        ttl = state.ttl_seconds or pod_bundle_settings.pod_bundle_export_url_ttl_seconds
         state.status = ExportStatus.READY
         state.staging_key = staging_key
         state.bundle_filename = bundle_filename
+        state.warnings = warnings
+        state.download_url = build_download_url(
+            kind="pod-exports", job_id=export_id, ttl_seconds=ttl
+        )
+        state.expires_at = _now() + timedelta(seconds=ttl)
         state.completed_at = _now()
-        await store.save_export(state)
+        # Retain the READY export state (and thus its archive) for the URL's TTL,
+        # longer than the default import horizon, so a shared link stays valid.
+        await store.save_export(state, ttl_seconds=ttl)
         await publish_bundle_event(
             export_id,
             completed_payload(
                 state.status.value,
                 state.seq,
                 bundle_filename=bundle_filename,
+                download_url=state.download_url,
             ),
         )
     except DomainError as exc:
@@ -286,6 +300,51 @@ async def import_pod_github(context: dict[str, str | None]) -> None:
     except Exception as exc:
         await _fail_import(store, state, "GitHub import failed due to a transient error.")
         logger.error("GitHub import %s failed (retryable): %s", import_id, exc)
+        raise
+
+
+@streaq_task(name="import_pod_url")
+async def import_pod_url(context: dict[str, str | None]) -> None:
+    """Copy a lemma-origin source object (an export or an uploaded bundle) into
+    this import's own staging, then plan — one job per ``import_id``. The source
+    is read straight from object storage (verified at start), so there is no
+    server-side HTTP fetch and no SSRF surface. Making the import self-contained
+    lets the source expire independently."""
+    worker_ctx: AppWorkerContext = streaq_worker.context
+    import_id = UUID(str(context["import_id"]))
+    source_kind = str(context["source_kind"])
+    source_id = UUID(str(context["source_id"]))
+
+    store = get_pod_bundle_state_store()
+    staging = BundleStagingStorage()
+
+    state = await store.get_import(import_id)
+    if state is None:
+        logger.info("Import state missing; skipping url job %s", import_id)
+        return
+    if state.is_terminal or state.status == ImportStatus.AWAITING_CONFIRMATION:
+        return
+
+    try:
+        state.status = ImportStatus.FETCHING
+        await store.save_import(state)
+        await publish_bundle_event(import_id, status_payload(state.status.value, state.seq))
+
+        data = await staging.get_archive(source_kind, source_id)  # type: ignore[arg-type]
+        if data is None:
+            raise BundleStagingMissingError(
+                "The source bundle is no longer available; export or upload it again."
+            )
+        state.staging_key = await staging.put_archive("pod-imports", import_id, data)
+        await store.save_import(state)
+
+        await _plan_from_staging(worker_ctx, store, staging, state)
+    except DomainError as exc:
+        await _fail_import(store, state, str(exc))
+        logger.warning("URL import %s failed (terminal): %s", import_id, exc)
+    except Exception as exc:
+        await _fail_import(store, state, "URL import failed due to a transient error.")
+        logger.error("URL import %s failed (retryable): %s", import_id, exc)
         raise
 
 
@@ -451,7 +510,7 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
                 user_id=user_id, pod_id=pod_id
             )
             async with context_scope(ctx):
-                pod_name, zip_bytes = await BundleExporter().export(
+                pod_name, zip_bytes, _warnings = await BundleExporter().export(
                     pod_id=pod_id,
                     user_id=user_id,
                     with_data=True,
@@ -599,9 +658,9 @@ async def _record_recipe(worker_ctx: AppWorkerContext, state: ImportState) -> No
     )
 
     recipe = PodRecipe(
-        kind=state.source.kind,
+        kind=state.source.kind.value,
         name=(state.plan.bundle_name if state.plan else None),
-        repo_url=state.source.repo_url,
+        repo_url=state.source.repo_url or state.source.url,
         format_version=(state.plan.format_version if state.plan else None),
         imported_at=datetime.now(timezone.utc),
         imported_by=state.user_id,
@@ -669,6 +728,10 @@ async def sweep_pod_bundle_staging() -> None:
 
 
 async def _sweep(store, staging) -> tuple[int, int]:
+    # Per-kind retention is driven by the state TTL, not this cron: a READY
+    # export is written with the export TTL (default 24h) while imports use the
+    # default ~6h, so an export's state (and thus its archive, reclaimed only
+    # once the state is gone) naturally outlives an import's.
     from datetime import timedelta
 
     cutoff = _now() - timedelta(seconds=_STUCK_AFTER_SECONDS)

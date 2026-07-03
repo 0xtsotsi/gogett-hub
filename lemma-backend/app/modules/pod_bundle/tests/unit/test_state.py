@@ -23,7 +23,7 @@ def _import_state(**overrides) -> ImportState:
         import_id=uuid4(),
         pod_id=uuid4(),
         user_id=uuid4(),
-        source=BundleSource(kind="upload", bundle_filename="crm.zip"),
+        source=BundleSource(kind="URL", bundle_filename="crm.zip"),
     )
     defaults.update(overrides)
     return ImportState(**defaults)

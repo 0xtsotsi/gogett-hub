@@ -40,7 +40,7 @@ def _state() -> ImportState:
         import_id=uuid4(),
         pod_id=uuid4(),
         user_id=uuid4(),
-        source=BundleSource(kind="upload"),
+        source=BundleSource(kind="URL"),
     )
 
 

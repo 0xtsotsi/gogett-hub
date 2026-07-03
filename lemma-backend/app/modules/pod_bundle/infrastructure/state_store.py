@@ -46,11 +46,15 @@ class PodBundleStateStore:
             return None
         return model.model_validate(raw)
 
-    async def _save(self, kind: str, job_id: UUID, state: BaseModel) -> None:
+    async def _save(
+        self, kind: str, job_id: UUID, state: BaseModel, ttl_seconds: int | None = None
+    ) -> None:
         # touch() bumps seq/updated_at exactly once per durable write, so SSE
         # consumers can totally order events against a replayed snapshot.
         state.touch()  # type: ignore[attr-defined]
-        await self._cache.set_json(f"{kind}:{job_id}", state.model_dump(mode="json"))
+        await self._cache.set_json(
+            f"{kind}:{job_id}", state.model_dump(mode="json"), ttl_seconds=ttl_seconds
+        )
 
     async def _delete(self, kind: str, job_id: UUID) -> None:
         await self._cache.delete(f"{kind}:{job_id}")
@@ -71,8 +75,10 @@ class PodBundleStateStore:
     async def get_export(self, export_id: UUID) -> ExportState | None:
         return await self._get("export", export_id, ExportState)
 
-    async def save_export(self, state: ExportState) -> None:
-        await self._save("export", state.export_id, state)
+    async def save_export(
+        self, state: ExportState, *, ttl_seconds: int | None = None
+    ) -> None:
+        await self._save("export", state.export_id, state, ttl_seconds=ttl_seconds)
 
     async def delete_export(self, export_id: UUID) -> None:
         await self._delete("export", export_id)

@@ -42,7 +42,7 @@ def _state(pod_id, *, seq=3, status=ImportStatus.AWAITING_CONFIRMATION) -> Impor
         import_id=uuid4(),
         pod_id=pod_id,
         user_id=uuid4(),
-        source=BundleSource(kind="upload"),
+        source=BundleSource(kind="URL"),
         status=status,
         plan=ImportPlan(format_version=2, steps=[]),
     )

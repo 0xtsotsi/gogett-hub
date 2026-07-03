@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import datetime
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import UUID
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from dateutil.parser import isoparse
 
 from ..models.export_status import ExportStatus
 from ..types import UNSET, Unset
@@ -25,9 +27,12 @@ class ExportStatusResponse:
         export_id (UUID):
         status (ExportStatus):
         bundle_filename (None | str | Unset):
-        download_url (None | str | Unset): Relative download path; present once the export is READY.
+        download_url (None | str | Unset): Signed, authenticated download URL; present once the export is READY.
+            Requires a logged-in lemma user to fetch.
         error (None | str | Unset):
+        expires_at (datetime.datetime | None | Unset): When the download URL (and archive) expires.
         progress (ExportProgressResponse | Unset):
+        warnings (list[str] | Unset): Data/asset-cap notices (e.g. truncated seed rows, skipped files).
     """
 
     export_id: UUID
@@ -35,7 +40,9 @@ class ExportStatusResponse:
     bundle_filename: None | str | Unset = UNSET
     download_url: None | str | Unset = UNSET
     error: None | str | Unset = UNSET
+    expires_at: datetime.datetime | None | Unset = UNSET
     progress: ExportProgressResponse | Unset = UNSET
+    warnings: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,9 +68,21 @@ class ExportStatusResponse:
         else:
             error = self.error
 
+        expires_at: None | str | Unset
+        if isinstance(self.expires_at, Unset):
+            expires_at = UNSET
+        elif isinstance(self.expires_at, datetime.datetime):
+            expires_at = self.expires_at.isoformat()
+        else:
+            expires_at = self.expires_at
+
         progress: dict[str, Any] | Unset = UNSET
         if not isinstance(self.progress, Unset):
             progress = self.progress.to_dict()
+
+        warnings: list[str] | Unset = UNSET
+        if not isinstance(self.warnings, Unset):
+            warnings = self.warnings
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -79,8 +98,12 @@ class ExportStatusResponse:
             field_dict["download_url"] = download_url
         if error is not UNSET:
             field_dict["error"] = error
+        if expires_at is not UNSET:
+            field_dict["expires_at"] = expires_at
         if progress is not UNSET:
             field_dict["progress"] = progress
+        if warnings is not UNSET:
+            field_dict["warnings"] = warnings
 
         return field_dict
 
@@ -120,6 +143,23 @@ class ExportStatusResponse:
 
         error = _parse_error(d.pop("error", UNSET))
 
+        def _parse_expires_at(data: object) -> datetime.datetime | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                expires_at_type_0 = isoparse(data)
+
+                return expires_at_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(datetime.datetime | None | Unset, data)
+
+        expires_at = _parse_expires_at(d.pop("expires_at", UNSET))
+
         _progress = d.pop("progress", UNSET)
         progress: ExportProgressResponse | Unset
         if isinstance(_progress, Unset):
@@ -127,13 +167,17 @@ class ExportStatusResponse:
         else:
             progress = ExportProgressResponse.from_dict(_progress)
 
+        warnings = cast(list[str], d.pop("warnings", UNSET))
+
         export_status_response = cls(
             export_id=export_id,
             status=status,
             bundle_filename=bundle_filename,
             download_url=download_url,
             error=error,
+            expires_at=expires_at,
             progress=progress,
+            warnings=warnings,
         )
 
         export_status_response.additional_properties = d

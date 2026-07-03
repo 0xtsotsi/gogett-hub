@@ -1,27 +1,29 @@
 from http import HTTPStatus
 from typing import Any, cast
-from urllib.parse import quote
-from uuid import UUID
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...types import Response
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
-    pod_id: UUID,
-    export_id: UUID,
+    *,
+    token: str,
 ) -> dict[str, Any]:
+
+    params: dict[str, Any] = {}
+
+    params["token"] = token
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
-        "url": "/pods/{pod_id}/bundle/exports/{export_id}/download".format(
-            pod_id=quote(str(pod_id), safe=""),
-            export_id=quote(str(export_id), safe=""),
-        ),
+        "url": "/pods/bundle/download",
+        "params": params,
     }
 
     return _kwargs
@@ -57,19 +59,18 @@ def _build_response(
 
 
 def sync_detailed(
-    pod_id: UUID,
-    export_id: UUID,
     *,
     client: AuthenticatedClient | Client,
+    token: str,
 ) -> Response[Any | ErrorResponse]:
-    """Download Pod Export Bundle
+    """Download A Bundle Archive
 
-     Stream the exported bundle archive (application/zip). Available once the export is READY; 410 if the
-    staged archive was swept.
+     Stream a bundle archive (application/zip) by signed token. Requires an authenticated lemma user AND
+    a valid token; not pod-scoped, so a share link works for any signed-in user. 410 if the token is
+    invalid/expired or the archive was swept.
 
     Args:
-        pod_id (UUID):
-        export_id (UUID):
+        token (str): Signed download token.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -80,8 +81,7 @@ def sync_detailed(
     """
 
     kwargs = _get_kwargs(
-        pod_id=pod_id,
-        export_id=export_id,
+        token=token,
     )
 
     response = client.get_httpx_client().request(
@@ -92,19 +92,18 @@ def sync_detailed(
 
 
 def sync(
-    pod_id: UUID,
-    export_id: UUID,
     *,
     client: AuthenticatedClient | Client,
+    token: str,
 ) -> Any | ErrorResponse | None:
-    """Download Pod Export Bundle
+    """Download A Bundle Archive
 
-     Stream the exported bundle archive (application/zip). Available once the export is READY; 410 if the
-    staged archive was swept.
+     Stream a bundle archive (application/zip) by signed token. Requires an authenticated lemma user AND
+    a valid token; not pod-scoped, so a share link works for any signed-in user. 410 if the token is
+    invalid/expired or the archive was swept.
 
     Args:
-        pod_id (UUID):
-        export_id (UUID):
+        token (str): Signed download token.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,26 +114,24 @@ def sync(
     """
 
     return sync_detailed(
-        pod_id=pod_id,
-        export_id=export_id,
         client=client,
+        token=token,
     ).parsed
 
 
 async def asyncio_detailed(
-    pod_id: UUID,
-    export_id: UUID,
     *,
     client: AuthenticatedClient | Client,
+    token: str,
 ) -> Response[Any | ErrorResponse]:
-    """Download Pod Export Bundle
+    """Download A Bundle Archive
 
-     Stream the exported bundle archive (application/zip). Available once the export is READY; 410 if the
-    staged archive was swept.
+     Stream a bundle archive (application/zip) by signed token. Requires an authenticated lemma user AND
+    a valid token; not pod-scoped, so a share link works for any signed-in user. 410 if the token is
+    invalid/expired or the archive was swept.
 
     Args:
-        pod_id (UUID):
-        export_id (UUID):
+        token (str): Signed download token.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -145,8 +142,7 @@ async def asyncio_detailed(
     """
 
     kwargs = _get_kwargs(
-        pod_id=pod_id,
-        export_id=export_id,
+        token=token,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -155,19 +151,18 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    pod_id: UUID,
-    export_id: UUID,
     *,
     client: AuthenticatedClient | Client,
+    token: str,
 ) -> Any | ErrorResponse | None:
-    """Download Pod Export Bundle
+    """Download A Bundle Archive
 
-     Stream the exported bundle archive (application/zip). Available once the export is READY; 410 if the
-    staged archive was swept.
+     Stream a bundle archive (application/zip) by signed token. Requires an authenticated lemma user AND
+    a valid token; not pod-scoped, so a share link works for any signed-in user. 410 if the token is
+    invalid/expired or the archive was swept.
 
     Args:
-        pod_id (UUID):
-        export_id (UUID):
+        token (str): Signed download token.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -179,8 +174,7 @@ async def asyncio(
 
     return (
         await asyncio_detailed(
-            pod_id=pod_id,
-            export_id=export_id,
             client=client,
+            token=token,
         )
     ).parsed

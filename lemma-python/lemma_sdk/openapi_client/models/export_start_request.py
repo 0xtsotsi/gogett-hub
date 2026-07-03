@@ -18,10 +18,13 @@ class ExportStartRequest:
     Attributes:
         include (list[str] | None | Unset): Optional list of resource types to include (e.g. ['tables', 'agents']). Omit
             to export every supported resource type.
+        ttl_seconds (int | None | Unset): Requested lifetime (seconds) of the signed download URL + archive retention.
+            Clamped to the configured maximum; omit for the default.
         with_data (bool | Unset): Include table row data (data.csv per table) in the bundle. Default: True.
     """
 
     include: list[str] | None | Unset = UNSET
+    ttl_seconds: int | None | Unset = UNSET
     with_data: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -35,6 +38,12 @@ class ExportStartRequest:
         else:
             include = self.include
 
+        ttl_seconds: int | None | Unset
+        if isinstance(self.ttl_seconds, Unset):
+            ttl_seconds = UNSET
+        else:
+            ttl_seconds = self.ttl_seconds
+
         with_data = self.with_data
 
         field_dict: dict[str, Any] = {}
@@ -42,6 +51,8 @@ class ExportStartRequest:
         field_dict.update({})
         if include is not UNSET:
             field_dict["include"] = include
+        if ttl_seconds is not UNSET:
+            field_dict["ttl_seconds"] = ttl_seconds
         if with_data is not UNSET:
             field_dict["with_data"] = with_data
 
@@ -68,10 +79,20 @@ class ExportStartRequest:
 
         include = _parse_include(d.pop("include", UNSET))
 
+        def _parse_ttl_seconds(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        ttl_seconds = _parse_ttl_seconds(d.pop("ttl_seconds", UNSET))
+
         with_data = d.pop("with_data", UNSET)
 
         export_start_request = cls(
             include=include,
+            ttl_seconds=ttl_seconds,
             with_data=with_data,
         )
 

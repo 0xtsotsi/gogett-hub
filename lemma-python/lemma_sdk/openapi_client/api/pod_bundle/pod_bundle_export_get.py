@@ -66,7 +66,8 @@ def sync_detailed(
 ) -> Response[ErrorResponse | ExportStatusResponse]:
     """Get Pod Export Status
 
-     Poll the status of a pod export (Redis-only; 410 when expired).
+     Poll the status of a pod export (Redis-only; 410 when expired). When READY, includes the signed
+    download_url, its expires_at, and any data-cap warnings.
 
     Args:
         pod_id (UUID):
@@ -100,7 +101,8 @@ def sync(
 ) -> ErrorResponse | ExportStatusResponse | None:
     """Get Pod Export Status
 
-     Poll the status of a pod export (Redis-only; 410 when expired).
+     Poll the status of a pod export (Redis-only; 410 when expired). When READY, includes the signed
+    download_url, its expires_at, and any data-cap warnings.
 
     Args:
         pod_id (UUID):
@@ -129,7 +131,8 @@ async def asyncio_detailed(
 ) -> Response[ErrorResponse | ExportStatusResponse]:
     """Get Pod Export Status
 
-     Poll the status of a pod export (Redis-only; 410 when expired).
+     Poll the status of a pod export (Redis-only; 410 when expired). When READY, includes the signed
+    download_url, its expires_at, and any data-cap warnings.
 
     Args:
         pod_id (UUID):
@@ -161,7 +164,8 @@ async def asyncio(
 ) -> ErrorResponse | ExportStatusResponse | None:
     """Get Pod Export Status
 
-     Poll the status of a pod export (Redis-only; 410 when expired).
+     Poll the status of a pod export (Redis-only; 410 when expired). When READY, includes the signed
+    download_url, its expires_at, and any data-cap warnings.
 
     Args:
         pod_id (UUID):

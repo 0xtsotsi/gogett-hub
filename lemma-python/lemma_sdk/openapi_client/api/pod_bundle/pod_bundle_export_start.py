@@ -74,7 +74,7 @@ def sync_detailed(
     """Start Pod Export
 
      Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then
-    download the bundle archive.
+    fetch the signed download_url.
 
     Args:
         pod_id (UUID):
@@ -109,7 +109,7 @@ def sync(
     """Start Pod Export
 
      Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then
-    download the bundle archive.
+    fetch the signed download_url.
 
     Args:
         pod_id (UUID):
@@ -139,7 +139,7 @@ async def asyncio_detailed(
     """Start Pod Export
 
      Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then
-    download the bundle archive.
+    fetch the signed download_url.
 
     Args:
         pod_id (UUID):
@@ -172,7 +172,7 @@ async def asyncio(
     """Start Pod Export
 
      Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then
-    download the bundle archive.
+    fetch the signed download_url.
 
     Args:
         pod_id (UUID):

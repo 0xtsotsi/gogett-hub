@@ -82,12 +82,13 @@ _NAME_TO_MODULE = {
     'BodyFileUpdate': 'body_file_update',
     'BodyFileUpload': 'body_file_upload',
     'BodyIconUpload': 'body_icon_upload',
-    'BodyPodBundleImportStart': 'body_pod_bundle_import_start',
+    'BodyPodBundleUpload': 'body_pod_bundle_upload',
     'BulkCreateRecordsRequest': 'bulk_create_records_request',
     'BulkCreateRecordsRequestRecordsItem': 'bulk_create_records_request_records_item',
     'BulkDeleteRecordsRequest': 'bulk_delete_records_request',
     'BulkUpdateRecordsRequest': 'bulk_update_records_request',
     'BulkUpdateRecordsRequestRecordsItem': 'bulk_update_records_request_records_item',
+    'BundleSourceKind': 'bundle_source_kind',
     'ColumnSchema': 'column_schema',
     'ColumnSchemaTypeParamsType0': 'column_schema_type_params_type_0',
     'ComposioProviderCapabilityResponseSchema': 'composio_provider_capability_response_schema',
@@ -229,10 +230,10 @@ _NAME_TO_MODULE = {
     'FunctionSummaryResponse': 'function_summary_response',
     'FunctionSummaryResponseConfigType0': 'function_summary_response_config_type_0',
     'FunctionType': 'function_type',
-    'GithubImportRequest': 'github_import_request',
     'HarnessKind': 'harness_kind',
     'IconUploadResponse': 'icon_upload_response',
     'ImportPlanResponse': 'import_plan_response',
+    'ImportStartRequest': 'import_start_request',
     'ImportStatus': 'import_status',
     'ImportStatusResponse': 'import_status_response',
     'InstalledAppSummary': 'installed_app_summary',
@@ -392,6 +393,7 @@ _NAME_TO_MODULE = {
     'UpdateScheduleRequestFilterOutputSchemaType0': 'update_schedule_request_filter_output_schema_type_0',
     'UpdateTableRequest': 'update_table_request',
     'UpdateTableRequestConfigType0': 'update_table_request_config_type_0',
+    'UploadResponse': 'upload_response',
     'UsageLimitScopeResponse': 'usage_limit_scope_response',
     'UsageLimitsResponse': 'usage_limits_response',
     'UsageListResponse': 'usage_list_response',
@@ -520,12 +522,13 @@ if TYPE_CHECKING:
     from .body_file_update import BodyFileUpdate
     from .body_file_upload import BodyFileUpload
     from .body_icon_upload import BodyIconUpload
-    from .body_pod_bundle_import_start import BodyPodBundleImportStart
+    from .body_pod_bundle_upload import BodyPodBundleUpload
     from .bulk_create_records_request import BulkCreateRecordsRequest
     from .bulk_create_records_request_records_item import BulkCreateRecordsRequestRecordsItem
     from .bulk_delete_records_request import BulkDeleteRecordsRequest
     from .bulk_update_records_request import BulkUpdateRecordsRequest
     from .bulk_update_records_request_records_item import BulkUpdateRecordsRequestRecordsItem
+    from .bundle_source_kind import BundleSourceKind
     from .column_schema import ColumnSchema
     from .column_schema_type_params_type_0 import ColumnSchemaTypeParamsType0
     from .composio_provider_capability_response_schema import ComposioProviderCapabilityResponseSchema
@@ -667,10 +670,10 @@ if TYPE_CHECKING:
     from .function_summary_response import FunctionSummaryResponse
     from .function_summary_response_config_type_0 import FunctionSummaryResponseConfigType0
     from .function_type import FunctionType
-    from .github_import_request import GithubImportRequest
     from .harness_kind import HarnessKind
     from .icon_upload_response import IconUploadResponse
     from .import_plan_response import ImportPlanResponse
+    from .import_start_request import ImportStartRequest
     from .import_status import ImportStatus
     from .import_status_response import ImportStatusResponse
     from .installed_app_summary import InstalledAppSummary
@@ -830,6 +833,7 @@ if TYPE_CHECKING:
     from .update_schedule_request_filter_output_schema_type_0 import UpdateScheduleRequestFilterOutputSchemaType0
     from .update_table_request import UpdateTableRequest
     from .update_table_request_config_type_0 import UpdateTableRequestConfigType0
+    from .upload_response import UploadResponse
     from .usage_limit_scope_response import UsageLimitScopeResponse
     from .usage_limits_response import UsageLimitsResponse
     from .usage_list_response import UsageListResponse
@@ -971,12 +975,13 @@ __all__ = [
     'BodyFileUpdate',
     'BodyFileUpload',
     'BodyIconUpload',
-    'BodyPodBundleImportStart',
+    'BodyPodBundleUpload',
     'BulkCreateRecordsRequest',
     'BulkCreateRecordsRequestRecordsItem',
     'BulkDeleteRecordsRequest',
     'BulkUpdateRecordsRequest',
     'BulkUpdateRecordsRequestRecordsItem',
+    'BundleSourceKind',
     'ColumnSchema',
     'ColumnSchemaTypeParamsType0',
     'ComposioProviderCapabilityResponseSchema',
@@ -1118,10 +1123,10 @@ __all__ = [
     'FunctionSummaryResponse',
     'FunctionSummaryResponseConfigType0',
     'FunctionType',
-    'GithubImportRequest',
     'HarnessKind',
     'IconUploadResponse',
     'ImportPlanResponse',
+    'ImportStartRequest',
     'ImportStatus',
     'ImportStatusResponse',
     'InstalledAppSummary',
@@ -1281,6 +1286,7 @@ __all__ = [
     'UpdateScheduleRequestFilterOutputSchemaType0',
     'UpdateTableRequest',
     'UpdateTableRequestConfigType0',
+    'UploadResponse',
     'UsageLimitScopeResponse',
     'UsageLimitsResponse',
     'UsageListResponse',

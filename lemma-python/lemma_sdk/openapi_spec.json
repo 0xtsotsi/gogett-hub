@@ -2179,6 +2179,15 @@
         "title": "BulkUpdateRecordsRequest",
         "type": "object"
       },
+      "BundleSourceKind": {
+        "description": "Where an imported bundle comes from \u2014 a CAPS wire enum.\n\n``URL`` covers any lemma-origin signed download URL (an export or an\nuploaded ``.zip`` staged into our object storage); ``GITHUB`` is a public\nrepo fetched via the connector path.",
+        "enum": [
+          "URL",
+          "GITHUB"
+        ],
+        "title": "BundleSourceKind",
+        "type": "string"
+      },
       "ColumnSchema": {
         "description": "Schema for a datastore table column.",
         "properties": {
@@ -4550,6 +4559,18 @@
             "description": "Optional list of resource types to include (e.g. ['tables', 'agents']). Omit to export every supported resource type.",
             "title": "Include"
           },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Requested lifetime (seconds) of the signed download URL + archive retention. Clamped to the configured maximum; omit for the default.",
+            "title": "Ttl Seconds"
+          },
           "with_data": {
             "default": true,
             "description": "Include table row data (data.csv per table) in the bundle.",
@@ -4593,7 +4614,7 @@
                 "type": "null"
               }
             ],
-            "description": "Relative download path; present once the export is READY.",
+            "description": "Signed, authenticated download URL; present once the export is READY. Requires a logged-in lemma user to fetch.",
             "title": "Download Url"
           },
           "error": {
@@ -4607,6 +4628,19 @@
             ],
             "title": "Error"
           },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the download URL (and archive) expires.",
+            "title": "Expires At"
+          },
           "export_id": {
             "format": "uuid",
             "title": "Export Id",
@@ -4617,6 +4651,14 @@
           },
           "status": {
             "$ref": "#/components/schemas/ExportStatus"
+          },
+          "warnings": {
+            "description": "Data/asset-cap notices (e.g. truncated seed rows, skipped files).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -6717,61 +6759,6 @@
         "title": "FunctionType",
         "type": "string"
       },
-      "GithubImportRequest": {
-        "description": "Body for importing a pod from a public GitHub repo.",
-        "properties": {
-          "owner": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Repo owner (alternative to repo_url).",
-            "title": "Owner"
-          },
-          "ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Branch, tag, or commit sha (optional).",
-            "title": "Ref"
-          },
-          "repo": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Repo name (alternative to repo_url).",
-            "title": "Repo"
-          },
-          "repo_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Public repo URL, e.g. https://github.com/owner/repo.",
-            "title": "Repo Url"
-          }
-        },
-        "title": "GithubImportRequest",
-        "type": "object"
-      },
       "HarnessKind": {
         "description": "Runtime framework used to execute an agent.",
         "enum": [
@@ -6871,6 +6858,81 @@
           "format_version"
         ],
         "title": "ImportPlanResponse",
+        "type": "object"
+      },
+      "ImportStartRequest": {
+        "description": "Body for starting a URL-based import.",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Connector account for a private GitHub repo.",
+            "title": "Account Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BundleSourceKind",
+            "description": "URL (a lemma signed download URL) or GITHUB (a public repo)."
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "GITHUB repo owner.",
+            "title": "Owner"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "GITHUB branch/tag/sha (optional).",
+            "title": "Ref"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "GITHUB repo name.",
+            "title": "Repo"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For URL: a lemma bundle download URL (from an export or an upload). For GITHUB: the repo URL (alternative to owner+repo).",
+            "title": "Url"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ImportStartRequest",
         "type": "object"
       },
       "ImportStatus": {
@@ -11656,6 +11718,27 @@
         "title": "UpdateTableRequest",
         "type": "object"
       },
+      "UploadResponse": {
+        "description": "Result of staging a local .zip: a signed URL to feed the URL-based import.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "url": {
+            "description": "Signed lemma download URL (pass as kind=URL).",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "title": "UploadResponse",
+        "type": "object"
+      },
       "UsageLimitScopeResponse": {
         "properties": {
           "allowed": {
@@ -13835,7 +13918,7 @@
         "title": "WorkspaceMeSession",
         "type": "object"
       },
-      "start": {
+      "fastapi___compat__v2__Body_pod__bundle__upload": {
         "properties": {
           "data": {
             "contentMediaType": "application/octet-stream",
@@ -13846,7 +13929,7 @@
         "required": [
           "data"
         ],
-        "title": "Body_pod.bundle.import.start",
+        "title": "Body_pod.bundle.upload",
         "type": "object"
       },
       "update": {
@@ -16651,6 +16734,51 @@
         }
       }
     },
+    "/pods/bundle/download": {
+      "get": {
+        "description": "Stream a bundle archive (application/zip) by signed token. Requires an authenticated lemma user AND a valid token; not pod-scoped, so a share link works for any signed-in user. 410 if the token is invalid/expired or the archive was swept.",
+        "operationId": "pod.bundle.download",
+        "parameters": [
+          {
+            "description": "Signed download token.",
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "description": "Signed download token.",
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download A Bundle Archive",
+        "tags": [
+          "Pod Bundle"
+        ],
+        "x-lemma": {
+          "kind": "query",
+          "paginates": false,
+          "resource": "pod.bundle",
+          "result": "entity",
+          "verb": "download"
+        }
+      }
+    },
     "/pods/organization/{organization_id}": {
       "get": {
         "description": "List all pods in an organization",
@@ -18058,7 +18186,7 @@
     },
     "/pods/{pod_id}/bundle/exports": {
       "post": {
-        "description": "Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then download the bundle archive.",
+        "description": "Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then fetch the signed download_url.",
         "operationId": "pod.bundle.export.start",
         "parameters": [
           {
@@ -18122,7 +18250,7 @@
     },
     "/pods/{pod_id}/bundle/exports/{export_id}": {
       "get": {
-        "description": "Poll the status of a pod export (Redis-only; 410 when expired).",
+        "description": "Poll the status of a pod export (Redis-only; 410 when expired). When READY, includes the signed download_url, its expires_at, and any data-cap warnings.",
         "operationId": "pod.bundle.export.get",
         "parameters": [
           {
@@ -18181,63 +18309,9 @@
         }
       }
     },
-    "/pods/{pod_id}/bundle/exports/{export_id}/download": {
-      "get": {
-        "description": "Stream the exported bundle archive (application/zip). Available once the export is READY; 410 if the staged archive was swept.",
-        "operationId": "pod.bundle.export.download",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "pod_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Pod Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "export_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Export Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Download Pod Export Bundle",
-        "tags": [
-          "Pod Bundle"
-        ],
-        "x-lemma": {
-          "kind": "query",
-          "paginates": false,
-          "resource": "pod.bundle.export",
-          "result": "entity",
-          "verb": "download"
-        }
-      }
-    },
     "/pods/{pod_id}/bundle/imports": {
       "post": {
-        "description": "Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an import_id; poll the status endpoint until AWAITING_CONFIRMATION, review the plan, then apply.",
+        "description": "Import a pod bundle from a URL. kind=URL takes a lemma signed download URL (from an export, or from POST \u2026/bundle/uploads); kind=GITHUB takes a public repo (repo_url or owner+repo, with account_id for private repos). Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, review the plan, then apply.",
         "operationId": "pod.bundle.import.start",
         "parameters": [
           {
@@ -18253,9 +18327,9 @@
         ],
         "requestBody": {
           "content": {
-            "multipart/form-data": {
+            "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/start"
+                "$ref": "#/components/schemas/ImportStartRequest"
               }
             }
           },
@@ -18296,70 +18370,6 @@
           "resource": "pod.bundle.import",
           "result": "entity",
           "verb": "start"
-        }
-      }
-    },
-    "/pods/{pod_id}/bundle/imports/github": {
-      "post": {
-        "description": "Import a pod bundle from a public GitHub repository. Returns 202 with an import_id; the bundle is fetched, planned, and awaits confirmation.",
-        "operationId": "pod.bundle.import.github",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "pod_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Pod Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GithubImportRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ImportStatusResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Import Pod From GitHub",
-        "tags": [
-          "Pod Bundle"
-        ],
-        "x-lemma": {
-          "invalidates": [
-            "pod.bundle.import"
-          ],
-          "kind": "mutation",
-          "paginates": false,
-          "resource": "pod.bundle.import",
-          "result": "entity",
-          "verb": "github"
         }
       }
     },
@@ -18847,6 +18857,70 @@
           "resource": "pod.bundle.publish",
           "result": "entity",
           "verb": "events"
+        }
+      }
+    },
+    "/pods/{pod_id}/bundle/uploads": {
+      "post": {
+        "description": "Upload a local .zip bundle and receive a signed lemma download URL to pass to POST \u2026/bundle/imports as kind=URL. The only multipart endpoint; it stages bytes and mints a URL, nothing more.",
+        "operationId": "pod.bundle.upload",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pod_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pod Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/fastapi___compat__v2__Body_pod__bundle__upload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stage A Local Bundle Upload",
+        "tags": [
+          "Pod Bundle"
+        ],
+        "x-lemma": {
+          "invalidates": [
+            "pod.bundle"
+          ],
+          "kind": "mutation",
+          "paginates": false,
+          "resource": "pod.bundle",
+          "result": "entity",
+          "verb": "upload"
         }
       }
     },

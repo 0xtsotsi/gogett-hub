@@ -7,29 +7,27 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.body_pod_bundle_upload import BodyPodBundleUpload
 from ...models.error_response import ErrorResponse
-from ...models.github_import_request import GithubImportRequest
-from ...models.import_status_response import ImportStatusResponse
+from ...models.upload_response import UploadResponse
 from ...types import Response
 
 
 def _get_kwargs(
     pod_id: UUID,
     *,
-    body: GithubImportRequest,
+    body: BodyPodBundleUpload,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/pods/{pod_id}/bundle/imports/github".format(
+        "url": "/pods/{pod_id}/bundle/uploads".format(
             pod_id=quote(str(pod_id), safe=""),
         ),
     }
 
-    _kwargs["json"] = body.to_dict()
-
-    headers["Content-Type"] = "application/json"
+    _kwargs["files"] = body.to_multipart()
 
     _kwargs["headers"] = headers
     return _kwargs
@@ -37,11 +35,11 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorResponse | ImportStatusResponse | None:
-    if response.status_code == 202:
-        response_202 = ImportStatusResponse.from_dict(response.json())
+) -> ErrorResponse | UploadResponse | None:
+    if response.status_code == 201:
+        response_201 = UploadResponse.from_dict(response.json())
 
-        return response_202
+        return response_201
 
     if response.status_code == 422:
         response_422 = ErrorResponse.from_dict(response.json())
@@ -56,7 +54,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorResponse | ImportStatusResponse]:
+) -> Response[ErrorResponse | UploadResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -69,23 +67,23 @@ def sync_detailed(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: GithubImportRequest,
-) -> Response[ErrorResponse | ImportStatusResponse]:
-    """Import Pod From GitHub
+    body: BodyPodBundleUpload,
+) -> Response[ErrorResponse | UploadResponse]:
+    """Stage A Local Bundle Upload
 
-     Import a pod bundle from a public GitHub repository. Returns 202 with an import_id; the bundle is
-    fetched, planned, and awaits confirmation.
+     Upload a local .zip bundle and receive a signed lemma download URL to pass to POST …/bundle/imports
+    as kind=URL. The only multipart endpoint; it stages bytes and mints a URL, nothing more.
 
     Args:
         pod_id (UUID):
-        body (GithubImportRequest): Body for importing a pod from a public GitHub repo.
+        body (BodyPodBundleUpload):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | ImportStatusResponse]
+        Response[ErrorResponse | UploadResponse]
     """
 
     kwargs = _get_kwargs(
@@ -104,23 +102,23 @@ def sync(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: GithubImportRequest,
-) -> ErrorResponse | ImportStatusResponse | None:
-    """Import Pod From GitHub
+    body: BodyPodBundleUpload,
+) -> ErrorResponse | UploadResponse | None:
+    """Stage A Local Bundle Upload
 
-     Import a pod bundle from a public GitHub repository. Returns 202 with an import_id; the bundle is
-    fetched, planned, and awaits confirmation.
+     Upload a local .zip bundle and receive a signed lemma download URL to pass to POST …/bundle/imports
+    as kind=URL. The only multipart endpoint; it stages bytes and mints a URL, nothing more.
 
     Args:
         pod_id (UUID):
-        body (GithubImportRequest): Body for importing a pod from a public GitHub repo.
+        body (BodyPodBundleUpload):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | ImportStatusResponse
+        ErrorResponse | UploadResponse
     """
 
     return sync_detailed(
@@ -134,23 +132,23 @@ async def asyncio_detailed(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: GithubImportRequest,
-) -> Response[ErrorResponse | ImportStatusResponse]:
-    """Import Pod From GitHub
+    body: BodyPodBundleUpload,
+) -> Response[ErrorResponse | UploadResponse]:
+    """Stage A Local Bundle Upload
 
-     Import a pod bundle from a public GitHub repository. Returns 202 with an import_id; the bundle is
-    fetched, planned, and awaits confirmation.
+     Upload a local .zip bundle and receive a signed lemma download URL to pass to POST …/bundle/imports
+    as kind=URL. The only multipart endpoint; it stages bytes and mints a URL, nothing more.
 
     Args:
         pod_id (UUID):
-        body (GithubImportRequest): Body for importing a pod from a public GitHub repo.
+        body (BodyPodBundleUpload):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | ImportStatusResponse]
+        Response[ErrorResponse | UploadResponse]
     """
 
     kwargs = _get_kwargs(
@@ -167,23 +165,23 @@ async def asyncio(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: GithubImportRequest,
-) -> ErrorResponse | ImportStatusResponse | None:
-    """Import Pod From GitHub
+    body: BodyPodBundleUpload,
+) -> ErrorResponse | UploadResponse | None:
+    """Stage A Local Bundle Upload
 
-     Import a pod bundle from a public GitHub repository. Returns 202 with an import_id; the bundle is
-    fetched, planned, and awaits confirmation.
+     Upload a local .zip bundle and receive a signed lemma download URL to pass to POST …/bundle/imports
+    as kind=URL. The only multipart endpoint; it stages bytes and mints a URL, nothing more.
 
     Args:
         pod_id (UUID):
-        body (GithubImportRequest): Body for importing a pod from a public GitHub repo.
+        body (BodyPodBundleUpload):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | ImportStatusResponse
+        ErrorResponse | UploadResponse
     """
 
     return (

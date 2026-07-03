@@ -8,11 +8,11 @@ from attrs import field as _attrs_field
 
 from .. import types
 
-T = TypeVar("T", bound="BodyPodBundleImportStart")
+T = TypeVar("T", bound="BodyPodBundleUpload")
 
 
 @_attrs_define
-class BodyPodBundleImportStart:
+class BodyPodBundleUpload:
     """
     Attributes:
         data (str):
@@ -49,12 +49,12 @@ class BodyPodBundleImportStart:
         d = dict(src_dict)
         data = d.pop("data")
 
-        body_pod_bundle_import_start = cls(
+        body_pod_bundle_upload = cls(
             data=data,
         )
 
-        body_pod_bundle_import_start.additional_properties = d
-        return body_pod_bundle_import_start
+        body_pod_bundle_upload.additional_properties = d
+        return body_pod_bundle_upload
 
     @property
     def additional_keys(self) -> list[str]:

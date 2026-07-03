@@ -7,8 +7,8 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.body_pod_bundle_import_start import BodyPodBundleImportStart
 from ...models.error_response import ErrorResponse
+from ...models.import_start_request import ImportStartRequest
 from ...models.import_status_response import ImportStatusResponse
 from ...types import Response
 
@@ -16,7 +16,7 @@ from ...types import Response
 def _get_kwargs(
     pod_id: UUID,
     *,
-    body: BodyPodBundleImportStart,
+    body: ImportStartRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -27,7 +27,9 @@ def _get_kwargs(
         ),
     }
 
-    _kwargs["files"] = body.to_multipart()
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
 
     _kwargs["headers"] = headers
     return _kwargs
@@ -67,16 +69,18 @@ def sync_detailed(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: BodyPodBundleImportStart,
+    body: ImportStartRequest,
 ) -> Response[ErrorResponse | ImportStatusResponse]:
     """Start Pod Import
 
-     Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an import_id; poll the status
-    endpoint until AWAITING_CONFIRMATION, review the plan, then apply.
+     Import a pod bundle from a URL. kind=URL takes a lemma signed download URL (from an export, or from
+    POST …/bundle/uploads); kind=GITHUB takes a public repo (repo_url or owner+repo, with account_id for
+    private repos). Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, review the
+    plan, then apply.
 
     Args:
         pod_id (UUID):
-        body (BodyPodBundleImportStart):
+        body (ImportStartRequest): Body for starting a URL-based import.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -102,16 +106,18 @@ def sync(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: BodyPodBundleImportStart,
+    body: ImportStartRequest,
 ) -> ErrorResponse | ImportStatusResponse | None:
     """Start Pod Import
 
-     Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an import_id; poll the status
-    endpoint until AWAITING_CONFIRMATION, review the plan, then apply.
+     Import a pod bundle from a URL. kind=URL takes a lemma signed download URL (from an export, or from
+    POST …/bundle/uploads); kind=GITHUB takes a public repo (repo_url or owner+repo, with account_id for
+    private repos). Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, review the
+    plan, then apply.
 
     Args:
         pod_id (UUID):
-        body (BodyPodBundleImportStart):
+        body (ImportStartRequest): Body for starting a URL-based import.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -132,16 +138,18 @@ async def asyncio_detailed(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: BodyPodBundleImportStart,
+    body: ImportStartRequest,
 ) -> Response[ErrorResponse | ImportStatusResponse]:
     """Start Pod Import
 
-     Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an import_id; poll the status
-    endpoint until AWAITING_CONFIRMATION, review the plan, then apply.
+     Import a pod bundle from a URL. kind=URL takes a lemma signed download URL (from an export, or from
+    POST …/bundle/uploads); kind=GITHUB takes a public repo (repo_url or owner+repo, with account_id for
+    private repos). Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, review the
+    plan, then apply.
 
     Args:
         pod_id (UUID):
-        body (BodyPodBundleImportStart):
+        body (ImportStartRequest): Body for starting a URL-based import.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -165,16 +173,18 @@ async def asyncio(
     pod_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-    body: BodyPodBundleImportStart,
+    body: ImportStartRequest,
 ) -> ErrorResponse | ImportStatusResponse | None:
     """Start Pod Import
 
-     Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an import_id; poll the status
-    endpoint until AWAITING_CONFIRMATION, review the plan, then apply.
+     Import a pod bundle from a URL. kind=URL takes a lemma signed download URL (from an export, or from
+    POST …/bundle/uploads); kind=GITHUB takes a public repo (repo_url or owner+repo, with account_id for
+    private repos). Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, review the
+    plan, then apply.
 
     Args:
         pod_id (UUID):
-        body (BodyPodBundleImportStart):
+        body (ImportStartRequest): Body for starting a URL-based import.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

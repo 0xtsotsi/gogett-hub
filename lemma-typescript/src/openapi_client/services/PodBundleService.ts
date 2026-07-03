@@ -5,18 +5,40 @@
 import type { ApplyImportRequest } from '../models/ApplyImportRequest.js';
 import type { ExportStartRequest } from '../models/ExportStartRequest.js';
 import type { ExportStatusResponse } from '../models/ExportStatusResponse.js';
-import type { GithubImportRequest } from '../models/GithubImportRequest.js';
+import type { fastapi___compat__v2__Body_pod__bundle__upload } from '../models/fastapi___compat__v2__Body_pod__bundle__upload.js';
+import type { ImportStartRequest } from '../models/ImportStartRequest.js';
 import type { ImportStatusResponse } from '../models/ImportStatusResponse.js';
 import type { PublishStartRequest } from '../models/PublishStartRequest.js';
 import type { PublishStatusResponse } from '../models/PublishStatusResponse.js';
-import type { start } from '../models/start.js';
+import type { UploadResponse } from '../models/UploadResponse.js';
 import type { CancelablePromise } from '../core/CancelablePromise.js';
 import { OpenAPI } from '../core/OpenAPI.js';
 import { request as __request } from '../core/request.js';
 export class PodBundleService {
     /**
+     * Download A Bundle Archive
+     * Stream a bundle archive (application/zip) by signed token. Requires an authenticated lemma user AND a valid token; not pod-scoped, so a share link works for any signed-in user. 410 if the token is invalid/expired or the archive was swept.
+     * @param token Signed download token.
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static podBundleDownload(
+        token: string,
+    ): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/pods/bundle/download',
+            query: {
+                'token': token,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Start Pod Export
-     * Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then download the bundle archive.
+     * Enqueue a pod export. Returns 202 with an export_id; poll the status endpoint until READY, then fetch the signed download_url.
      * @param podId
      * @param requestBody
      * @returns ExportStatusResponse Successful Response
@@ -41,7 +63,7 @@ export class PodBundleService {
     }
     /**
      * Get Pod Export Status
-     * Poll the status of a pod export (Redis-only; 410 when expired).
+     * Poll the status of a pod export (Redis-only; 410 when expired). When READY, includes the signed download_url, its expires_at, and any data-cap warnings.
      * @param podId
      * @param exportId
      * @returns ExportStatusResponse Successful Response
@@ -64,69 +86,20 @@ export class PodBundleService {
         });
     }
     /**
-     * Download Pod Export Bundle
-     * Stream the exported bundle archive (application/zip). Available once the export is READY; 410 if the staged archive was swept.
-     * @param podId
-     * @param exportId
-     * @returns any Successful Response
-     * @throws ApiError
-     */
-    public static podBundleExportDownload(
-        podId: string,
-        exportId: string,
-    ): CancelablePromise<any> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/pods/{pod_id}/bundle/exports/{export_id}/download',
-            path: {
-                'pod_id': podId,
-                'export_id': exportId,
-            },
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * Start Pod Import
-     * Upload a pod bundle (.zip) and enqueue planning. Returns 202 with an import_id; poll the status endpoint until AWAITING_CONFIRMATION, review the plan, then apply.
-     * @param podId
-     * @param formData
-     * @returns ImportStatusResponse Successful Response
-     * @throws ApiError
-     */
-    public static podBundleImportStart(
-        podId: string,
-        formData: start,
-    ): CancelablePromise<ImportStatusResponse> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/pods/{pod_id}/bundle/imports',
-            path: {
-                'pod_id': podId,
-            },
-            formData: formData,
-            mediaType: 'multipart/form-data',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * Import Pod From GitHub
-     * Import a pod bundle from a public GitHub repository. Returns 202 with an import_id; the bundle is fetched, planned, and awaits confirmation.
+     * Import a pod bundle from a URL. kind=URL takes a lemma signed download URL (from an export, or from POST …/bundle/uploads); kind=GITHUB takes a public repo (repo_url or owner+repo, with account_id for private repos). Returns 202 with an import_id; poll status until AWAITING_CONFIRMATION, review the plan, then apply.
      * @param podId
      * @param requestBody
      * @returns ImportStatusResponse Successful Response
      * @throws ApiError
      */
-    public static podBundleImportGithub(
+    public static podBundleImportStart(
         podId: string,
-        requestBody: GithubImportRequest,
+        requestBody: ImportStartRequest,
     ): CancelablePromise<ImportStatusResponse> {
         return __request(OpenAPI, {
             method: 'POST',
-            url: '/pods/{pod_id}/bundle/imports/github',
+            url: '/pods/{pod_id}/bundle/imports',
             path: {
                 'pod_id': podId,
             },
@@ -329,6 +302,31 @@ export class PodBundleService {
                 'pod_id': podId,
                 'publish_id': publishId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Stage A Local Bundle Upload
+     * Upload a local .zip bundle and receive a signed lemma download URL to pass to POST …/bundle/imports as kind=URL. The only multipart endpoint; it stages bytes and mints a URL, nothing more.
+     * @param podId
+     * @param formData
+     * @returns UploadResponse Successful Response
+     * @throws ApiError
+     */
+    public static podBundleUpload(
+        podId: string,
+        formData: fastapi___compat__v2__Body_pod__bundle__upload,
+    ): CancelablePromise<UploadResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/pods/{pod_id}/bundle/uploads',
+            path: {
+                'pod_id': podId,
+            },
+            formData: formData,
+            mediaType: 'multipart/form-data',
             errors: {
                 422: `Validation Error`,
             },

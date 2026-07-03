@@ -11,6 +11,10 @@ export type ExportStartRequest = {
      */
     include?: (Array<string> | null);
     /**
+     * Requested lifetime (seconds) of the signed download URL + archive retention. Clamped to the configured maximum; omit for the default.
+     */
+    ttl_seconds?: (number | null);
+    /**
      * Include table row data (data.csv per table) in the bundle.
      */
     with_data?: boolean;

@@ -1,0 +1,21 @@
+{
+  "name": "reviewer_agent",
+  "description": "Moderation reviewer that screens submissions and recommends actions.",
+  "instruction": {"$file": "instruction.md"},
+  "toolsets": ["POD", "USER_INTERACTION"],
+  "visibility": "POD",
+  "permissions": {
+    "grants": [
+      {
+        "resource_type": "function",
+        "resource_name": "flag_content",
+        "permission_ids": ["function.read", "function.execute"]
+      },
+      {
+        "resource_type": "datastore_table",
+        "resource_name": "submissions",
+        "permission_ids": ["datastore.table.read", "datastore.record.read"]
+      }
+    ]
+  }
+}

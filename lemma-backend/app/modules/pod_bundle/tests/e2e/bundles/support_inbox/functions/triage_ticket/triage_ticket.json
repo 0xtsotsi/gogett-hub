@@ -1,0 +1,19 @@
+{
+  "name": "triage_ticket",
+  "description": "Classify an inbound support email by urgency and file it as a ticket.",
+  "code": {"$file": "code.py"},
+  "visibility": "POD",
+  "permissions": {
+    "grants": [
+      {
+        "resource_type": "datastore_table",
+        "resource_name": "tickets",
+        "permission_ids": [
+          "datastore.table.read",
+          "datastore.record.read",
+          "datastore.record.write"
+        ]
+      }
+    ]
+  }
+}

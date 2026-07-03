@@ -1,0 +1,21 @@
+{
+  "name": "screen_flow",
+  "description": "Screen a single submission supplied in the run payload.",
+  "start": {"type": "MANUAL"},
+  "nodes": [
+    {
+      "id": "screen",
+      "type": "FUNCTION",
+      "label": "Screen submission",
+      "config": {
+        "function_name": "flag_content",
+        "input_mapping": {
+          "content": {"type": "expression", "value": "start.payload.content"},
+          "author": {"type": "expression", "value": "start.payload.author"}
+        }
+      }
+    },
+    {"id": "end", "type": "END", "label": "Done"}
+  ],
+  "edges": [{"id": "e1", "source": "screen", "target": "end"}]
+}

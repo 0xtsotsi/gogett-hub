@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import csv
 import io
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from lemma_pod_bundle import load_resource_payload
@@ -23,6 +24,9 @@ from lemma_pod_bundle.layout import TABLE_DATA_FILE
 from app.core.log.log import get_logger
 from app.modules.pod_bundle.domain.errors import PodBundleDomainError
 from app.modules.pod_bundle.domain.state import PlanStep, StepKind
+
+if TYPE_CHECKING:
+    from app.core.authorization.context import ResourceType
 
 logger = get_logger(__name__)
 
@@ -59,13 +63,14 @@ class BundleApplier:
             StepKind.TABLE_DATA: self._apply_table_data,
             StepKind.FUNCTION: self._apply_function,
             StepKind.AGENT: self._apply_agent,
+            StepKind.AGENT_GRANTS: self._apply_agent_grants,
             StepKind.SCHEDULE: self._apply_schedule,
             StepKind.WORKFLOW: self._apply_workflow,
         }.get(step.kind)
         if handler is None:
-            # app / surface / agent_grants are deferred: the connector/runtime
-            # dependencies they need are out of scope for this slice. Mark the
-            # step skipped-with-reason instead of failing the import.
+            # app / surface are deferred: the connector/runtime dependencies they
+            # need are out of scope for this slice. Mark the step
+            # skipped-with-reason instead of failing the import.
             raise StepNotApplicableError(
                 f"{step.kind.value} import is not supported yet; skipped."
             )
@@ -155,7 +160,10 @@ class BundleApplier:
 
     async def _apply_function(self, step: PlanStep) -> None:
         from app.modules.function.api.dependencies import build_function_service
-        from app.modules.function.domain.entities import FunctionEntity
+        from app.modules.function.domain.entities import (
+            FunctionEntity,
+            FunctionUpdateEntity,
+        )
 
         service = build_function_service(self._uow)
         payload = self._load("functions", step.name)
@@ -174,17 +182,40 @@ class BundleApplier:
                 config=payload.get("config"),
                 visibility=payload.get("visibility") or "POD",
             )
-            await service.create_function(
+            function = await service.create_function(
                 entity, self._user_id, code=code, ctx=self._ctx
             )
         else:
-            await service.update_function(
-                pod_id=self._pod_id,
-                name=step.name,
-                code=code,
-                description=payload.get("description"),
-                requester_user_id=self._user_id,
+            function = await service.update_function(
+                self._pod_id,
+                step.name,
+                FunctionUpdateEntity(
+                    description=payload.get("description"),
+                    icon_url=payload.get("icon_url"),
+                    code=code,
+                    config=payload.get("config"),
+                    visibility=payload.get("visibility"),
+                ),
+                self._user_id,
                 ctx=self._ctx,
+            )
+
+        # Resource grants (e.g. datastore-table read/write) are what let the
+        # function's LemmaDataStoreClient actually reach its tables at run time.
+        # Apply them in the same short UoW as the create/update so an imported
+        # function is executable immediately, then drop the delegated-token env
+        # cache so the new scopes take effect on the next run.
+        grants = _grants_from_payload(payload)
+        if grants and function.id is not None:
+            from app.modules.workspace.services.workspace_tool_runtime import (
+                invalidate_function_workspace_env_cache,
+            )
+
+            await self._apply_grants(
+                grantee_type="FUNCTION", grantee_id=function.id, grants=grants
+            )
+            await invalidate_function_workspace_env_cache(
+                pod_id=self._pod_id, function_id=function.id
             )
 
     # --- agents ----------------------------------------------------------
@@ -195,6 +226,10 @@ class BundleApplier:
         service = get_agent_service(self._uow)
         payload = self._load("agents", step.name)
         runtime = _agent_runtime(payload)
+        # Toolsets are what let an imported agent actually *use* tools (POD,
+        # WEB_SEARCH, …). Without them, a granted agent still can't act — so they
+        # travel with the agent, not the deferred grants step.
+        toolsets = _agent_toolsets(payload)
         existing = await _get_agent(service, self._pod_id, step.name, self._ctx)
         if existing is None:
             await service.create_agent(
@@ -205,6 +240,7 @@ class BundleApplier:
                 description=payload.get("description"),
                 icon_url=payload.get("icon_url"),
                 agent_runtime=runtime,
+                toolsets=toolsets,
                 input_schema=payload.get("input_schema"),
                 output_schema=payload.get("output_schema"),
                 visibility=payload.get("visibility"),
@@ -219,12 +255,63 @@ class BundleApplier:
                 description=payload.get("description"),
                 icon_url=payload.get("icon_url"),
                 agent_runtime=runtime,
+                toolsets=toolsets,
                 input_schema=payload.get("input_schema"),
                 output_schema=payload.get("output_schema"),
                 metadata=payload.get("metadata"),
                 requester_user_id=self._user_id,
                 ctx=self._ctx,
             )
+
+    async def _apply_agent_grants(self, step: PlanStep) -> None:
+        """Deferred grant step: replace an agent's resource permission grants once
+        every resource it references (tables, functions) has been applied."""
+        from app.modules.agent.api.dependencies import get_agent_service
+
+        payload = self._load("agents", step.name)
+        grants = _grants_from_payload(payload)
+        if not grants:
+            return
+        service = get_agent_service(self._uow)
+        agent = await _get_agent(service, self._pod_id, step.name, self._ctx)
+        if agent is None or agent.id is None:
+            raise PodBundleDomainError(
+                f"Agent '{step.name}' must exist before applying its grants.",
+                code="POD_BUNDLE_STEP_ORDER",
+            )
+        await self._apply_grants(
+            grantee_type="AGENT", grantee_id=agent.id, grants=grants
+        )
+
+    # --- grants ----------------------------------------------------------
+
+    async def _apply_grants(
+        self, *, grantee_type: str, grantee_id: UUID, grants: list[_GrantInput]
+    ) -> None:
+        """Validate + normalize (resource_name -> id) + replace the grantee's
+        resource grants, on the step's own short UoW session. Mirrors the
+        function/agent controllers' inline-grants path so imported workloads get
+        the same executable permissions a hand-authored one would."""
+        if not grants:
+            return
+        from app.core.authorization.grants import (
+            normalize_pod_resource_grants,
+            replace_grantee_resource_grants,
+            validate_pod_resource_grant_permissions,
+        )
+
+        validate_pod_resource_grant_permissions(grants)
+        normalized = await normalize_pod_resource_grants(
+            self._uow.session, pod_id=self._pod_id, grants=grants
+        )
+        await replace_grantee_resource_grants(
+            self._uow.session,
+            pod_id=self._pod_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            grants=normalized,
+            created_by_user_id=self._user_id,
+        )
 
     # --- schedules -------------------------------------------------------
 
@@ -279,6 +366,52 @@ class BundleApplier:
 # --- module helpers ----------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _GrantInput:
+    """Adapts a bundle manifest grant entry to the ``ResourceGrantInputProtocol``
+    the shared authorization layer expects (``resource_type`` / ``resource_name``
+    / ``permission_ids``). ``resource_type`` holds a ``ResourceType`` enum — the
+    annotation stays a string thanks to ``from __future__ import annotations`` so
+    the module import stays lazy/cycle-free."""
+
+    resource_type: ResourceType
+    resource_name: str
+    permission_ids: list[str]
+
+
+def _grants_from_payload(payload: dict[str, Any]) -> list[_GrantInput]:
+    """Read ``permissions.grants`` (or a bare top-level ``grants`` list) off a
+    resource manifest into typed grant inputs. Entries whose ``resource_type`` is
+    not a known :class:`ResourceType` or that omit a ``resource_name`` are
+    skipped with a warning rather than failing the whole import."""
+    from app.core.authorization.context import ResourceType
+
+    perms = payload.get("permissions")
+    raw = perms.get("grants") if isinstance(perms, dict) else payload.get("grants")
+    grants: list[_GrantInput] = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        raw_type = entry.get("resource_type")
+        try:
+            resource_type = ResourceType(str(raw_type))
+        except ValueError:
+            logger.warning("Skipping grant with unknown resource_type %r", raw_type)
+            continue
+        resource_name = entry.get("resource_name")
+        if not resource_name:
+            logger.warning("Skipping grant without a resource_name: %r", entry)
+            continue
+        grants.append(
+            _GrantInput(
+                resource_type=resource_type,
+                resource_name=str(resource_name),
+                permission_ids=[str(p) for p in entry.get("permission_ids") or []],
+            )
+        )
+    return grants
+
+
 def _is_system_column(column: dict[str, Any]) -> bool:
     from lemma_pod_bundle.diff import _is_system_table_column
 
@@ -292,6 +425,25 @@ def _agent_runtime(payload: dict[str, Any]):
     if isinstance(raw, dict) and raw.get("profile_id"):
         return AgentRuntimeConfig.model_validate(raw)
     return None
+
+
+def _agent_toolsets(payload: dict[str, Any]) -> list[Any]:
+    """Map the manifest's ``toolsets`` list to :class:`AgentToolset` values,
+    dropping any the runtime doesn't recognize (forward-compat) and the reserved
+    ``VIEW_IMAGE`` toolset, which is never persisted."""
+    from app.modules.agent.domain.value_objects import AgentToolset
+
+    toolsets: list[AgentToolset] = []
+    for raw in payload.get("toolsets") or []:
+        try:
+            toolset = AgentToolset(str(raw))
+        except ValueError:
+            logger.warning("Skipping unknown agent toolset %r", raw)
+            continue
+        if toolset is AgentToolset.VIEW_IMAGE:
+            continue
+        toolsets.append(toolset)
+    return toolsets
 
 
 async def _get_table(service, pod_id, name, ctx):
@@ -319,9 +471,10 @@ async def _get_schedule(service, pod_id, name, ctx):
 
 
 async def _flow_exists(service, pod_id, name, ctx) -> bool:
+    # get_flow_by_name RETURNS None for a missing flow (it does not raise), so a
+    # bare try/except would treat "not found" as "exists" and skip the create.
     try:
-        await service.get_flow_by_name(pod_id, name, ctx=ctx)
-        return True
+        return await service.get_flow_by_name(pod_id, name, ctx=ctx) is not None
     except Exception:
         return False
 

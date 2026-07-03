@@ -1,0 +1,6 @@
+{
+  "name": "Lead Scoring",
+  "description": "Score inbound sales leads by firmographics and plan interest, record them, and re-score nightly.",
+  "format_version": 2,
+  "variables": {}
+}

@@ -106,7 +106,7 @@ def _download_path(download_url: str) -> str:
 
 @pytest.mark.workspace
 async def test_export_pod_bundle_roundtrip(
-    authenticated_client, async_client, test_pod, worker, workspace_api, tmp_path
+    authenticated_client, test_pod, worker, workspace_api, tmp_path
 ):
     pod_id = test_pod["id"]
     table_name = f"leads_{uuid4().hex[:8]}"
@@ -135,8 +135,14 @@ async def test_export_pod_bundle_roundtrip(
 
     dl_path = _download_path(final["download_url"])
 
-    # The signed download URL requires an authenticated lemma user.
-    anon = await async_client.get(dl_path)
+    # The signed download URL requires an authenticated lemma user: a fresh
+    # client over the same app with no Authorization header must be rejected.
+    from httpx import AsyncClient
+
+    async with AsyncClient(
+        transport=authenticated_client._transport, base_url="http://testserver"
+    ) as anon_client:
+        anon = await anon_client.get(dl_path)
     assert anon.status_code in (401, 403), anon.status_code
 
     # Download + extract with the authenticated client.

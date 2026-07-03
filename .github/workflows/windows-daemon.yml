@@ -102,7 +102,11 @@ jobs:
       - name: Unit tests — cross-platform process helpers (real Windows)
         run: |
           $ErrorActionPreference = "Stop"
-          pip install -e ./lemma-python -e ./lemma-cli pytest pytest-asyncio
+          # Plain pip (unlike uv) ignores [tool.uv.sources], so it cannot resolve
+          # the CLI's local-only deps from their sibling checkouts. Install every
+          # unpublished path package explicitly (lemma-pod-bundle, lemma-sdk)
+          # alongside the CLI, or pip tries PyPI and fails on lemma-pod-bundle.
+          pip install -e ./lemma-pod-bundle -e ./lemma-python -e ./lemma-cli pytest pytest-asyncio
           pytest lemma-cli/tests/test_daemon_process.py -q
           if ($LASTEXITCODE -ne 0) { throw "daemon process unit tests failed ($LASTEXITCODE)" }
           exit 0

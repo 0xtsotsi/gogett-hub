@@ -369,11 +369,12 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
     if state.status == ImportStatus.COMPLETED:
         return
 
+    from app.modules.pod_bundle.infrastructure.app_builder import AppStepRunner
     from app.modules.pod_bundle.infrastructure.applier import (
         BundleApplier,
         StepNotApplicableError,
     )
-    from app.modules.pod_bundle.domain.state import StepStatus
+    from app.modules.pod_bundle.domain.state import StepKind, StepStatus
 
     try:
         state.status = ImportStatus.APPLYING
@@ -384,7 +385,18 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
         if archive is None:
             raise BundleStagingMissingError()
 
-        replacements = dict(state.variables_provided or {})
+        # Resolve ${var} placeholders from the plan's defaults first, then the
+        # importer-provided values (which win). Required variables are validated at
+        # apply-request time, so anything still unresolved here is an optional var
+        # with no default and is dropped by the service layer.
+        replacements = {
+            v.name: v.default for v in state.plan.variables if v.default is not None
+        }
+        replacements.update(state.variables_provided or {})
+
+        # APP steps build in the agentbox and must not hold a pooled DB connection,
+        # so they run through a self-scoped runner instead of the per-step uow_scope.
+        app_runner = AppStepRunner(uow_factory=worker_ctx.uow_factory)
 
         with tempfile.TemporaryDirectory(prefix="lemma-pod-apply-") as tmp:
             from lemma_pod_bundle import extract_bundle
@@ -401,28 +413,41 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
             while (step := state.plan.next_pending_step()) is not None:
                 step.status = StepStatus.RUNNING
                 try:
-                    async with uow_scope(worker_ctx.uow_factory) as uow:
-                        ctx = await AuthorizationDataService(
-                            uow.session
-                        ).build_user_context(user_id=user_id, pod_id=pod_id)
-                        async with context_scope(ctx):
-                            applier = BundleApplier(
-                                uow=uow,
-                                ctx=ctx,
-                                pod_id=pod_id,
-                                user_id=user_id,
-                                bundle_root=bundle_root,
-                                replacements=replacements,
-                            )
-                            await applier.apply_step(step)
-                            # Commit the step before checkpointing it DONE: the
-                            # bare UoW rolls back on error but does NOT auto-commit
-                            # on success, so uncommitted writes (e.g. a workflow a
-                            # later schedule step must resolve) would otherwise be
-                            # lost — and a DONE checkpoint on lost data would break
-                            # crash-resume. Idempotent when the service already
-                            # committed internally.
-                            await uow.commit()
+                    if step.kind is StepKind.APP:
+                        # Self-scoped: creates the app, builds it in the agentbox
+                        # (no connection held), then deploys — managing its own short
+                        # UoWs. Idempotent-by-name + dist sha256 dedup, so a replay
+                        # after a crash converges.
+                        await app_runner.run(
+                            step,
+                            pod_id=pod_id,
+                            user_id=user_id,
+                            bundle_root=bundle_root,
+                            replacements=replacements,
+                        )
+                    else:
+                        async with uow_scope(worker_ctx.uow_factory) as uow:
+                            ctx = await AuthorizationDataService(
+                                uow.session
+                            ).build_user_context(user_id=user_id, pod_id=pod_id)
+                            async with context_scope(ctx):
+                                applier = BundleApplier(
+                                    uow=uow,
+                                    ctx=ctx,
+                                    pod_id=pod_id,
+                                    user_id=user_id,
+                                    bundle_root=bundle_root,
+                                    replacements=replacements,
+                                )
+                                await applier.apply_step(step)
+                                # Commit the step before checkpointing it DONE: the
+                                # bare UoW rolls back on error but does NOT auto-commit
+                                # on success, so uncommitted writes (e.g. a workflow a
+                                # later schedule step must resolve) would otherwise be
+                                # lost — and a DONE checkpoint on lost data would break
+                                # crash-resume. Idempotent when the service already
+                                # committed internally.
+                                await uow.commit()
                     step.status = StepStatus.DONE
                 except StepNotApplicableError as exc:
                     # Deferred kind (app/surface/grants) — skip, don't fail.

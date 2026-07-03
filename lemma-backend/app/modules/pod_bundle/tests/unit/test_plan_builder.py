@@ -156,15 +156,23 @@ async def test_variables_classified(tmp):
             "acct": {"type": "account", "source_value": "x"},
             "owner": {"type": "member", "source_value": "y"},
             "region": {"type": "string", "source_value": "z"},
+            "app_slug": {"type": "app_slug", "source_value": "s", "default": "s"},
         },
     )
     plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
     by_name = {v.name: v for v in plan.variables}
+    # Connector accounts must be supplied by the importer -> required.
     assert by_name["acct"].kind == "account"
-    assert by_name["acct"].required is False
+    assert by_name["acct"].required is True
+    # Pod members auto-resolve to the importing user -> not required.
     assert by_name["owner"].kind == "pod_member"
+    assert by_name["owner"].required is False
+    # A free var with no default is required; the app slug has a default, so not.
     assert by_name["region"].kind == "free"
     assert by_name["region"].required is True
+    assert by_name["app_slug"].kind == "free"
+    assert by_name["app_slug"].required is False
+    assert by_name["app_slug"].default == "s"
 
 
 async def test_agent_grants_step_deferred_after_resources(tmp):

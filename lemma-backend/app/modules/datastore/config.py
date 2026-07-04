@@ -10,7 +10,7 @@ test infra mutates it on the shared settings object. Embedding settings also sta
 in core (consumed by ``app/core/embeddings``).
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -78,7 +78,59 @@ class DatastoreSettings(BaseSettings):
             "characters per page it is treated as scanned (force OCR, 300-DPI "
             "images); otherwise native (no forced OCR, 150-DPI images). The "
             "layout/table config is applied to both so every doc gets rich "
-            "markdown — only force_ocr and image DPI differ."
+            "markdown — only force_ocr and image DPI differ. Only consulted when "
+            "``document_processing_ocr_enabled`` is true."
+        ),
+    )
+    document_processing_ocr_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt-in switch for the heavy scanned-PDF path (Kreuzberg only). When "
+            "false (the default), every document is extracted with the fast "
+            "digital-first config — layout + tables + 150-DPI images, no OCR — so "
+            "processing stays ~10-20s and bounded in RAM: the up-front pypdfium "
+            "scanned-vs-native probe AND the reactive forced-OCR retry are both "
+            "skipped. When true, scanned PDFs are detected and OCR'd at 300 DPI "
+            "(Tesseract), which is the real resource/latency spike. Scanned docs "
+            "under the default degrade to their text layer; bring your own "
+            "markdown for those, or flip this on. Env: "
+            "``DOCUMENT_PROCESSING_OCR_ENABLED``."
+        ),
+    )
+
+    # Document-processor adapter selection
+    document_processor: Literal["auto", "kreuzberg", "markitdown", "docling"] = Field(
+        default="auto",
+        description=(
+            "Which document-processor adapter converts non-markdown files to "
+            "markdown. 'markitdown' runs IN-PROCESS (optional dep; MIT; light, no "
+            "models; strongest on office formats, weaker on PDFs). 'docling' calls "
+            "a Docling Serve container OVER HTTP (MIT; beautiful research-paper/"
+            "book markdown with tables; ML-heavy + GPU-oriented, so it runs as "
+            "its own service and the backend stays lean — opt-in only, set this "
+            "to 'docling' + DOCLING_SERVE_URL). 'kreuzberg' calls the Kreuzberg "
+            "REST container. 'auto' (the default) uses 'kreuzberg' when "
+            "KREUZBERG_URL is set, else the in-process 'markitdown'; it never "
+            "auto-selects docling. Env: ``DOCUMENT_PROCESSOR``."
+        ),
+    )
+
+    # Docling Serve (over-HTTP document processor; MIT-licensed alternative to
+    # Kreuzberg — runs as its own container, keeps the backend torch-free).
+    docling_serve_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Docling Serve base URL (e.g. http://localhost:5001) for the 'docling' "
+            "document processor. Unset by default; set it (or DOCUMENT_PROCESSOR="
+            "docling) to route conversion to a Docling Serve container."
+        ),
+    )
+    docling_request_timeout_seconds: float = Field(
+        default=300.0,
+        description=(
+            "HTTP timeout (seconds) for a Docling Serve /v1/convert/file request. "
+            "Higher than Kreuzberg's since Docling's layout+table models are CPU-"
+            "heavier per document."
         ),
     )
 
@@ -175,6 +227,22 @@ class DatastoreSettings(BaseSettings):
             "secrets.token_urlsafe(9) yields a 12-character code."
         ),
     )
+
+
+    def effective_document_processor(self) -> str:
+        """Resolve ``document_processor`` to a concrete adapter name.
+
+        'auto' uses Kreuzberg when a Kreuzberg URL is configured, otherwise the
+        in-process 'markitdown' adapter — so a stack that drops the Kreuzberg
+        container (KREUZBERG_URL="") still converts documents in-process.
+
+        Docling is intentionally NOT auto-selected: it is GPU-oriented (slow on
+        CPU) so it is opt-in only via an explicit ``DOCUMENT_PROCESSOR=docling``
+        (plus ``DOCLING_SERVE_URL``).
+        """
+        if self.document_processor != "auto":
+            return self.document_processor
+        return "kreuzberg" if (self.kreuzberg_url or "").strip() else "markitdown"
 
 
 datastore_settings = DatastoreSettings()

@@ -65,6 +65,13 @@ gcp-kms = [
 keychain = [
     "keyring>=25.0.0",
 ]
+# In-process document processor (DOCUMENT_PROCESSOR=markitdown), so a
+# deployment can convert docs to markdown without the Kreuzberg container. Kept
+# optional so OSS/pip installs stay lean; the released backend image installs it
+# (see lemma-backend/Dockerfile) because the local stack defaults to it.
+markitdown = [
+    "markitdown[docx,pptx,xlsx,xls,pdf,outlook]>=0.1.0",
+]
 
 [dependency-groups]
 dev = [

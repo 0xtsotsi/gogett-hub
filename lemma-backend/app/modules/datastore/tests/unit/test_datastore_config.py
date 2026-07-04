@@ -19,6 +19,8 @@ EXPECTED = [
     ("document_processing_debounce_seconds", "DOCUMENT_PROCESSING_DEBOUNCE_SECONDS", 300),
     ("pdf_ocr_detection_sample_pages", "PDF_OCR_DETECTION_SAMPLE_PAGES", 5),
     ("pdf_ocr_detection_min_chars_per_page", "PDF_OCR_DETECTION_MIN_CHARS_PER_PAGE", 100),
+    ("docling_serve_url", "DOCLING_SERVE_URL", None),
+    ("docling_request_timeout_seconds", "DOCLING_REQUEST_TIMEOUT_SECONDS", 300.0),
     ("kreuzberg_url", "KREUZBERG_URL", "http://localhost:8002"),
     ("kreuzberg_request_timeout_seconds", "KREUZBERG_REQUEST_TIMEOUT_SECONDS", 180.0),
     ("kreuzberg_transient_retry_attempts", "KREUZBERG_TRANSIENT_RETRY_ATTEMPTS", 5),
@@ -40,6 +42,13 @@ EXPECTED = [
     ("datastore_signed_url_code_bytes", "DATASTORE_SIGNED_URL_CODE_BYTES", 9),
 ]
 
+# Non-numeric fields (bool / Literal) that the "env=7" parametrization below
+# cannot exercise — validated with dedicated tests instead.
+EXTRA_FIELDS = [
+    ("document_processing_ocr_enabled", "DOCUMENT_PROCESSING_OCR_ENABLED", False),
+    ("document_processor", "DOCUMENT_PROCESSOR", "auto"),
+]
+
 
 def _clear(monkeypatch):
     for _, env, _default in EXPECTED:
@@ -48,12 +57,54 @@ def _clear(monkeypatch):
 
 def test_datastore_settings_defaults():
     # Declared defaults only — immune to a developer's local .env / os.environ.
-    for field, _env, default in EXPECTED:
+    for field, _env, default in [*EXPECTED, *EXTRA_FIELDS]:
         assert DatastoreSettings.model_fields[field].default == default, field
 
 
 def test_datastore_settings_field_set_is_exact():
-    assert set(DatastoreSettings.model_fields) == {f for f, _e, _d in EXPECTED}
+    assert set(DatastoreSettings.model_fields) == {
+        f for f, _e, _d in [*EXPECTED, *EXTRA_FIELDS]
+    }
+
+
+def test_document_processing_ocr_enabled_reads_env(monkeypatch):
+    monkeypatch.setenv("DOCUMENT_PROCESSING_OCR_ENABLED", "true")
+    assert DatastoreSettings().document_processing_ocr_enabled is True
+    monkeypatch.setenv("DOCUMENT_PROCESSING_OCR_ENABLED", "false")
+    assert DatastoreSettings().document_processing_ocr_enabled is False
+
+
+def test_effective_document_processor_auto_follows_kreuzberg_url(monkeypatch):
+    monkeypatch.delenv("DOCUMENT_PROCESSOR", raising=False)
+    with_url = DatastoreSettings(kreuzberg_url="http://kreuzberg:8000")
+    assert with_url.effective_document_processor() == "kreuzberg"
+    without_url = DatastoreSettings(kreuzberg_url="")
+    assert without_url.effective_document_processor() == "markitdown"
+
+
+def test_effective_document_processor_explicit_wins(monkeypatch):
+    monkeypatch.setenv("DOCUMENT_PROCESSOR", "markitdown")
+    # Explicit choice is honoured even though a Kreuzberg URL is present.
+    assert DatastoreSettings().effective_document_processor() == "markitdown"
+    monkeypatch.setenv("DOCUMENT_PROCESSOR", "kreuzberg")
+    assert (
+        DatastoreSettings(kreuzberg_url="").effective_document_processor()
+        == "kreuzberg"
+    )
+
+
+def test_effective_document_processor_auto_never_selects_docling(monkeypatch):
+    monkeypatch.delenv("DOCUMENT_PROCESSOR", raising=False)
+    # Docling is opt-in only: auto ignores it even when DOCLING_SERVE_URL is set.
+    settings = DatastoreSettings(
+        kreuzberg_url="", docling_serve_url="http://docling:5001"
+    )
+    assert settings.effective_document_processor() == "markitdown"
+    # ...but an explicit choice activates it.
+    assert (
+        DatastoreSettings(document_processor="docling").effective_document_processor()
+        == "docling"
+    )
 
 
 @pytest.mark.parametrize("field,env,_default", EXPECTED)

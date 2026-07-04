@@ -14,6 +14,7 @@ from app.modules.datastore.domain.document_processing import (
     DocumentImage,
     DocumentPage,
 )
+from app.modules.datastore.domain.errors import DatastoreObjectNotFoundError
 from app.modules.datastore.services.file_processing_service import (
     DatastoreFileProcessingService,
 )
@@ -141,6 +142,191 @@ async def test_process_file_async_writes_child_container_and_indexes_chunks():
         "markdown",
         "image",
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_file_async_indexes_user_markdown_without_processor():
+    """A file flagged markdown_source=user is indexed from its stored source.md
+    — chunked in-process — with NO document-processor call, and source.md is
+    re-persisted so it survives the projection rewrite."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="scan.pdf",
+        path="/manuals/scan.pdf",
+        mime_type="application/pdf",
+        file_metadata={"markdown_source": "user"},
+    )
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult(), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+    pod_id = service.pod_id
+    user_md = b"<!-- PAGE 1 -->\n\n# User Authored\n\nHand-written body."
+    service.storage.download_file.return_value = user_md
+
+    await service.process_file_async(file_id)
+
+    # No extraction, and the only download was the user's source.md.
+    service.document_processor.extract.assert_not_awaited()
+    service.storage.download_file.assert_awaited_once_with(
+        f"pods/{pod_id}/files/manuals/.scan.pdf/source.md"
+    )
+    uploaded_paths = [c.args[0] for c in service.storage.upload_file.await_args_list]
+    assert uploaded_paths == [
+        f"pods/{pod_id}/files/manuals/.scan.pdf/document.md",
+        f"pods/{pod_id}/files/manuals/.scan.pdf/source.md",
+        f"pods/{pod_id}/files/manuals/.scan.pdf/manifest.json",
+    ]
+    # document.md and re-persisted source.md are the user markdown verbatim.
+    assert service.storage.upload_file.await_args_list[0].args[1] == user_md
+    assert service.storage.upload_file.await_args_list[1].args[1] == user_md
+    manifest = json.loads(service.storage.upload_file.await_args_list[-1].args[1])
+    assert manifest["markdown_source"] == "user"
+    assert manifest["extraction_mode"] == "user_markdown"
+    # Chunks come from the user markdown, carrying its page span.
+    indexed_chunks = service.search_service.index_file_chunks.await_args.args[1]
+    assert indexed_chunks and indexed_chunks[0]["metadata"]["page_number"] == 1
+
+
+@pytest.mark.asyncio
+async def test_process_file_async_user_markdown_with_companion_images():
+    """A BYO markdown doc with companion images stores the images as sibling
+    child artifacts, lists them in the manifest, and rewrites the markdown image
+    references to their basenames so they resolve via the children endpoint."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="scan.pdf",
+        path="/manuals/scan.pdf",
+        mime_type="application/pdf",
+        file_metadata={
+            "markdown_source": "user",
+            "markdown_asset_names": ["fig1.png"],
+        },
+    )
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult(), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+    pod_id = service.pod_id
+    source_md = b"<!-- PAGE 1 -->\n\n# Doc\n\n![diagram](images/fig1.png)"
+
+    async def _download(key):
+        if key.endswith("/.scan.pdf/source.md"):
+            return source_md
+        if key.endswith("/.scan.pdf/fig1.png"):
+            return b"PNGDATA"
+        raise AssertionError(f"unexpected download {key}")
+
+    service.storage.download_file.side_effect = _download
+
+    await service.process_file_async(file_id)
+
+    service.document_processor.extract.assert_not_awaited()
+    uploaded = {c.args[0]: c.args[1] for c in service.storage.upload_file.await_args_list}
+    prefix = f"pods/{pod_id}/files/manuals/.scan.pdf"
+    # document.md + re-persisted source.md + the companion image + manifest.
+    assert set(uploaded) == {
+        f"{prefix}/document.md",
+        f"{prefix}/source.md",
+        f"{prefix}/fig1.png",
+        f"{prefix}/manifest.json",
+    }
+    assert uploaded[f"{prefix}/fig1.png"] == b"PNGDATA"
+    # The markdown reference is rewritten to the sibling basename.
+    assert b"![diagram](fig1.png)" in uploaded[f"{prefix}/document.md"]
+    manifest = json.loads(uploaded[f"{prefix}/manifest.json"])
+    assert manifest["markdown_source"] == "user"
+    kinds = [a["kind"] for a in manifest["artifacts"]]
+    assert "image" in kinds
+
+
+@pytest.mark.asyncio
+async def test_process_file_async_byo_holds_no_db_session_during_io():
+    """The bring-your-own path must also release the DB connection during the
+    source.md download + chunking + index (no session held across slow I/O)."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="scan.pdf",
+        path="/manuals/scan.pdf",
+        mime_type="application/pdf",
+        file_metadata={"markdown_source": "user"},
+    )
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult(), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+
+    def _assert_no_open_session():
+        assert factory.active == 0, "DB session held during external I/O"
+
+    async def _download(*_a, **_k):
+        _assert_no_open_session()
+        return b"<!-- PAGE 1 -->\n\n# User MD\n\nBody."
+
+    async def _upload(*_a, **_k):
+        _assert_no_open_session()
+
+    async def _index(*_a, **_k):
+        _assert_no_open_session()
+
+    service.storage.download_file.side_effect = _download
+    service.storage.upload_file.side_effect = _upload
+    service.search_service.index_file_chunks.side_effect = _index
+
+    await service.process_file_async(file_id)
+
+    service.document_processor.extract.assert_not_awaited()
+    # get_model, claim, mark_completed — all short UoWs, none left open.
+    assert factory.opened == 3
+    assert factory.active == 0
+
+
+@pytest.mark.asyncio
+async def test_process_file_async_falls_back_to_extraction_when_source_md_missing():
+    """markdown_source=user but source.md is gone → fall back to extraction."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="scan.pdf",
+        path="/manuals/scan.pdf",
+        mime_type="application/pdf",
+        file_metadata={"markdown_source": "user"},
+    )
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult(), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+    # First download (source.md) 404s; second (the original) returns bytes.
+    service.storage.download_file.side_effect = [
+        DatastoreObjectNotFoundError("missing"),
+        b"pdf-bytes",
+    ]
+    service.document_processor.extract.return_value = DocumentExtraction(
+        markdown="extracted text",
+        chunks=[DocumentChunk(text="extracted text")],
+        extraction_mode="direct",
+    )
+
+    await service.process_file_async(file_id)
+
+    service.document_processor.extract.assert_awaited_once()
+    manifest = json.loads(service.storage.upload_file.await_args_list[-1].args[1])
+    assert manifest["markdown_source"] == "extracted"
 
 
 @pytest.mark.asyncio

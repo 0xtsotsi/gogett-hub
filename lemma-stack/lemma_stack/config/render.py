@@ -72,6 +72,11 @@ def backend_env(doc: TOMLDocument, paths: LocalPaths) -> dict[str, str]:
         "SUPERTOKENS_CORE_URL": "http://supertokens:3567",
         "LOCAL_KREUZBERG_ENABLED": "true" if kreuzberg_enabled else "false",
         "KREUZBERG_URL": "http://kreuzberg:8000" if kreuzberg_enabled else "",
+        # Pick the document-processor adapter to match the running services: the
+        # Kreuzberg REST adapter when its container is up, else the in-process
+        # markitdown adapter (shipped in the backend image) so document
+        # conversion works with one fewer container.
+        "DOCUMENT_PROCESSOR": "kreuzberg" if kreuzberg_enabled else "markitdown",
         # agentbox manager
         "AGENTBOX_API_URL": "http://agentbox:8000",
         "AGENTBOX_API_KEY": store.agentbox_api_key(doc),

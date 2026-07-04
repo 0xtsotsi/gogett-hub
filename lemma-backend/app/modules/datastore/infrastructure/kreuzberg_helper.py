@@ -224,8 +224,14 @@ class KreuzbergHelper:
         # + image refs); scanned → force_ocr=True + 300 DPI. The structure/table
         # config is kept on both paths. Any probe failure falls back to the native
         # (direct) path — the prior default behavior.
+        #
+        # OCR is opt-in: with document_processing_ocr_enabled off (the default)
+        # we skip the probe entirely and always take the fast native path, so no
+        # document ever incurs the 300-DPI Tesseract spike. Scanned docs then
+        # degrade to their text layer (see _should_retry_with_forced_ocr).
+        ocr_enabled = datastore_settings.document_processing_ocr_enabled
         initial_force_ocr = False
-        if mime_type == "application/pdf":
+        if ocr_enabled and mime_type == "application/pdf":
             initial_force_ocr = await self._pdf_needs_ocr(file_content)
 
         async with aiohttp.ClientSession(timeout=self.request_timeout) as session:
@@ -246,8 +252,11 @@ class KreuzbergHelper:
 
             # Safety net: something we classified as native that extracted no text
             # at all (misclassification / odd encoding) gets one forced-OCR retry.
-            if not initial_force_ocr and self._should_retry_with_forced_ocr(
-                extraction, mime_type
+            # Also gated on OCR being enabled — with it off we never escalate.
+            if (
+                ocr_enabled
+                and not initial_force_ocr
+                and self._should_retry_with_forced_ocr(extraction, mime_type)
             ):
                 config = self._build_extract_config(
                     mime_type,

@@ -310,6 +310,43 @@ class DatastoreApi:
         assert response.status_code == expected_status, response.text
         return response.json() if response.content else {}
 
+    async def attach_markdown(
+        self,
+        path: str,
+        markdown: bytes,
+        *,
+        images: list[tuple[str, bytes]] | None = None,
+        filename: str = "document.md",
+        expected_status: int = status.HTTP_200_OK,
+    ) -> dict:
+        """Attach a user-authored markdown version (+ referenced images) to a
+        document via ``PUT .../files/by-path/markdown``."""
+        files: list = [("data", (filename, markdown, "text/markdown"))]
+        for image_name, image_bytes in images or []:
+            files.append(("images", (image_name, image_bytes, "image/png")))
+        response = await self.request(
+            "PUT",
+            f"/pods/{self.pod_id}/datastore/files/by-path/markdown",
+            data={"path": path},
+            files=files,
+        )
+        assert response.status_code == expected_status, response.text
+        return response.json() if response.content else {}
+
+    async def detach_markdown(
+        self,
+        path: str,
+        *,
+        expected_status: int = status.HTTP_200_OK,
+    ) -> dict:
+        response = await self.request(
+            "DELETE",
+            f"/pods/{self.pod_id}/datastore/files/by-path/markdown",
+            params={"path": path},
+        )
+        assert response.status_code == expected_status, response.text
+        return response.json() if response.content else {}
+
     async def list_children(
         self,
         path: str,

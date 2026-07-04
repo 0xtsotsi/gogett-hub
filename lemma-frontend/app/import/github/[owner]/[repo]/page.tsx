@@ -58,7 +58,7 @@ function ImportGithubLanding({ owner, repo }: { owner: string; repo: string }) {
         >
             <div className="space-y-5">
                 {/* Source card */}
-                <div className="flex flex-col items-center gap-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-8 text-center">
+                <div className="surface-panel flex flex-col items-center gap-3 p-8 text-center">
                     <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--surface-2)]">
                         <Github className="h-6 w-6 text-[var(--text-primary)]" />
                     </div>
@@ -75,7 +75,7 @@ function ImportGithubLanding({ owner, repo }: { owner: string; repo: string }) {
                 </div>
 
                 {/* Create a new pod */}
-                <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-4">
+                <section className="surface-panel p-4">
                     <div className="flex items-start gap-2.5">
                         <Plus className="mt-0.5 h-4 w-4 shrink-0 text-[var(--action-primary)]" />
                         <div className="min-w-0 flex-1">
@@ -111,7 +111,7 @@ function ImportGithubLanding({ owner, repo }: { owner: string; repo: string }) {
                 </section>
 
                 {/* Install into an existing pod */}
-                <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-4">
+                <section className="surface-panel p-4">
                     <div className="flex items-start gap-2.5">
                         <Download className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-tertiary)]" />
                         <div className="min-w-0 flex-1">

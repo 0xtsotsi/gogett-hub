@@ -67,8 +67,8 @@ type ImportSource =
     | { mode: 'github'; owner: string; repo: string; ref?: string };
 
 const ACTION_STYLES: Record<StepAction, { label: string; className: string }> = {
-    CREATE: { label: 'New', className: 'text-[var(--state-success)] bg-[color:color-mix(in_srgb,var(--state-success)_14%,transparent)]' },
-    UPDATE: { label: 'Update', className: 'text-[var(--state-warning)] bg-[color:color-mix(in_srgb,var(--state-warning)_14%,transparent)]' },
+    CREATE: { label: 'New', className: 'state-surface-success' },
+    UPDATE: { label: 'Update', className: 'state-surface-warning' },
     SKIP: { label: 'Skip', className: 'text-[var(--text-tertiary)] bg-[var(--surface-2)]' },
 };
 
@@ -101,7 +101,7 @@ function StepRow({ step }: { step: PlanStep }) {
             {step.destructive ? (
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[var(--state-error)]" aria-label="Destructive" />
             ) : null}
-            <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase', action.className)}>
+            <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-xs font-medium uppercase', action.className)}>
                 {action.label}
             </span>
         </div>
@@ -641,7 +641,7 @@ export function ImportDialog({
                             ) : null}
 
                             {plan.has_destructive_steps ? (
-                                <label className="flex items-start gap-2 rounded-md border border-[color:color-mix(in_srgb,var(--state-error)_40%,transparent)] bg-[color:color-mix(in_srgb,var(--state-error)_8%,transparent)] p-3">
+                                <label className="state-surface-error flex items-start gap-2 rounded-md p-3">
                                     <Checkbox
                                         checked={confirmDestructive}
                                         onCheckedChange={(v) => setConfirmDestructive(v === true)}
@@ -695,7 +695,7 @@ export function ImportDialog({
                     {step === 'done' ? (
                         <div className="flex flex-col items-center gap-6 py-6 text-center">
                             <div className="flex flex-col items-center gap-3">
-                                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--state-success)_16%,transparent)]">
+                                <div className="state-surface-success flex h-14 w-14 items-center justify-center rounded-full">
                                     <Sparkles className="h-7 w-7 text-[var(--state-success)]" />
                                 </div>
                                 <div>
@@ -744,7 +744,7 @@ export function ImportDialog({
                                             key={action.title}
                                             type="button"
                                             onClick={action.onClick}
-                                            className="flex flex-col items-start gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] p-4 text-left transition-colors hover:border-[var(--action-primary)] hover:bg-[var(--surface-2)]"
+                                            className="flex flex-col items-start gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-1)] p-4 text-left transition-colors hover:border-[var(--action-primary)] hover:bg-[var(--surface-2)]"
                                         >
                                             <action.icon className="h-5 w-5 text-[var(--action-primary)]" />
                                             <div>
@@ -774,7 +774,7 @@ export function ImportDialog({
                     {/* --- ERROR --- */}
                     {step === 'error' ? (
                         <div className="flex flex-col items-center gap-3 py-8 text-center">
-                            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--state-error)_14%,transparent)]">
+                            <div className="state-surface-error flex h-12 w-12 items-center justify-center rounded-full">
                                 <AlertTriangle className="h-6 w-6 text-[var(--state-error)]" />
                             </div>
                             <p className="text-sm text-[var(--text-secondary)]">

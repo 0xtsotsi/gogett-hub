@@ -252,7 +252,7 @@ export function AccountVariableField({
                                 </span>
                                 <span
                                     className={cn(
-                                        'shrink-0 text-[10px] font-medium uppercase',
+                                        'shrink-0 text-xs font-medium uppercase',
                                         meta.needsAttention
                                             ? 'text-[var(--state-warning)]'
                                             : 'text-[var(--text-tertiary)]',

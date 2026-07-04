@@ -227,6 +227,7 @@ def show(ctx: typer.Context) -> None:
                 "LEMMA_TOKEN": mask_token(os.getenv("LEMMA_TOKEN")),
                 "LEMMA_SERVER": os.getenv("LEMMA_SERVER"),
             },
+            "project_env": state.project_env,
             "auth": {"email": auth.get("email"), "user_id": auth.get("user_id")}
             if auth
             else None,

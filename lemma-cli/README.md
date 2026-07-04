@@ -36,9 +36,18 @@ lemma agent chat            # talk to the pod's default agent
 lemma pod init my-pod       # scaffold a new pod bundle on disk to import
 ```
 
+Working across several pods at once (e.g. a coding agent per repo)? Drop a committed
+`.lemma.env` at a project root and every command run from that tree targets it — no
+per-shell exports, no global switching:
+
+```bash
+echo 'LEMMA_POD_ID=pod_abc123' > .lemma.env   # optionally LEMMA_SERVER=...
+lemma config show                             # shows the resolved pod and its source
+```
+
 Add `--json` to any command for machine-readable output, and `--full` to expand folded fields.
-See [SETUP.md](SETUP.md) for cloud/local server configuration, environment variables, and the
-Textual TUI (`lemma tui`).
+See [SETUP.md](SETUP.md) for cloud/local server configuration, environment variables, project
+`.lemma.env` files, and the Textual TUI (`lemma tui`).
 
 ## Install Lemma skills into your coding agent
 

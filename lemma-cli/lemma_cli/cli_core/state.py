@@ -55,6 +55,9 @@ class CliState:
     server: str = "default"
     server_source: str = "config"
     server_read_only: bool = False
+    # Summary of a loaded project .lemma.env (path/local_path/applied keys), or
+    # None when no project file was found. Surfaced by `config show`.
+    project_env: dict[str, Any] | None = None
 
 
 def build_state(

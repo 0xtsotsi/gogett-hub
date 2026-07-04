@@ -102,6 +102,34 @@ Environment variables continue to work for humans, scripts, and agents:
 
 Command-line flags take precedence over environment variables.
 
+## Project folders (`.lemma.env`)
+
+Working across several pods — e.g. a coding agent (Claude Code, Codex) in a
+different repo per pod — no longer needs per-shell `export`s or mutating the global
+config. Drop a **`.lemma.env`** at a project root and every `lemma` command run from
+that tree targets that pod:
+
+```sh
+# .lemma.env — commit this. Dotenv syntax. NO secrets.
+LEMMA_SERVER=default          # which stored server to use (its saved login is reused)
+LEMMA_POD_ID=pod_abc123       # the pod this folder targets
+# LEMMA_ORG_ID=org_...        # optional — resolved from the pod if omitted
+```
+
+- The CLI loads the **nearest** `.lemma.env` walking up from the cwd (ceiling: the
+  git repo root, else `$HOME`), so it works from any subdirectory.
+- A gitignored sibling **`.env`** overrides `.lemma.env` per-machine (mirrors
+  `.env` / `.env.local`). Precedence: flag → real env → `.env` → `.lemma.env` →
+  stored default.
+- Only `LEMMA_*` keys are read; a real shell/agent env var always wins over the file.
+- **Don't commit tokens.** Auth normally comes from your stored login
+  (`lemma auth login`); `LEMMA_TOKEN` is an agentbox concept. If you ever need a
+  per-project token, put it only in the gitignored `.env`. A real `LEMMA_TOKEN` in
+  the environment makes the CLI ignore the project file entirely.
+- Only `LEMMA_POD_ID` is usually needed — org is resolved from the pod, and
+  `LEMMA_SERVER` can be omitted to use the active server.
+- `lemma config show` reports the loaded file and which keys it applied.
+
 ## Terminal UI
 
 Open the TUI:

@@ -176,4 +176,21 @@ export class LemmaClient {
   ): Promise<T> {
     return this._http.request<T>(method, path, options);
   }
+
+  /**
+   * Raw streaming request — escape hatch for `text/event-stream` (SSE) endpoints
+   * not covered by a namespace. Returns the response body; pair with `readSSE`.
+   */
+  stream(
+    path: string,
+    options?: {
+      method?: "GET" | "POST" | "PATCH";
+      params?: Record<string, string | number | boolean | undefined | null>;
+      body?: unknown;
+      headers?: HeadersInit;
+      signal?: AbortSignal;
+    },
+  ): Promise<ReadableStream<Uint8Array>> {
+    return this._http.stream(path, options);
+  }
 }

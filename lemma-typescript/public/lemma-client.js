@@ -15735,6 +15735,13 @@ var LemmaClient = (() => {
     request(method, path, options) {
       return this._http.request(method, path, options);
     }
+    /**
+     * Raw streaming request — escape hatch for `text/event-stream` (SSE) endpoints
+     * not covered by a namespace. Returns the response body; pair with `readSSE`.
+     */
+    stream(path, options) {
+      return this._http.stream(path, options);
+    }
   };
 
   // src/browser.ts

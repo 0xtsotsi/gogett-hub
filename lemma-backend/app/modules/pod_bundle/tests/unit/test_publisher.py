@@ -15,6 +15,7 @@ from app.modules.pod_bundle.infrastructure.readme import install_badge, render_r
 class FakeOps:
     def __init__(self, *, create_error=False, put_error_on=None):
         self.created = None
+        self.create_calls = 0
         self.puts: list[tuple[str, int]] = []
         self._create_error = create_error
         self._put_error_on = put_error_on
@@ -22,6 +23,7 @@ class FakeOps:
     async def create_repo(self, *, name, private, description):
         if self._create_error:
             raise RuntimeError("boom")
+        self.create_calls += 1
         self.created = (name, private)
         return RepoCreateResult(owner="acme", repo=name, html_url=f"https://github.com/acme/{name}")
 
@@ -43,15 +45,41 @@ def test_render_readme_has_badge_and_counts():
         repo="crm",
     )
     assert "# CRM" in r
-    assert "Leads pod" in r
+    assert "Leads pod" in r  # the description becomes the tagline
     assert "img.shields.io" in r
-    assert "**Tables:** 2" in r and "**Agents:** 1" in r
+    # "What's inside" is a table of the present resources.
+    assert "**Tables** | 2 |" in r and "**Agents** | 1 |" in r
     assert "Functions" not in r  # zero-count types omitted
 
 
-def test_install_badge_links_to_import_route():
+def test_render_readme_default_tagline_when_no_description():
+    r = render_readme(
+        pod_name="CRM", description=None, resource_counts={}, owner="acme", repo="crm"
+    )
+    assert "ready to install" in r  # falls back to a friendly default tagline
+
+
+def test_render_readme_includes_icon_when_provided():
+    r = render_readme(
+        pod_name="CRM",
+        description="Leads pod",
+        resource_counts={},
+        owner="acme",
+        repo="crm",
+        icon_url="https://cdn.example/icon.png",
+    )
+    assert '<img src="https://cdn.example/icon.png"' in r
+
+
+def test_install_button_is_big_branded_badge():
     badge = install_badge("acme", "crm")
+    # Links to the one-click importer for the real owner/repo...
     assert "/import/github/acme/crm" in badge
+    # ...as a big for-the-badge pill carrying the Lemma mark, sized up.
+    assert "img.shields.io" in badge
+    assert "for-the-badge" in badge
+    assert "logo=data%3Aimage" in badge  # url-encoded data: logo (the Lemma mark)
+    assert 'height="44"' in badge
 
 
 # --- publisher ---------------------------------------------------------------
@@ -71,6 +99,24 @@ async def test_publish_creates_repo_and_uploads_readme_first():
     paths = [p for p, _ in ops.puts]
     assert paths[0] == "README.md"
     assert "pod.json" in paths and "tables/leads/leads.json" in paths
+
+
+async def test_create_repo_then_publish_reuses_repo_without_recreating():
+    # The publish handler creates the repo first (to know the owner for the README),
+    # then pushes with already_created — the repo must not be created twice.
+    ops = FakeOps()
+    publisher = GithubPublisher(ops)
+    repo = await publisher.create_repo(repo_name="crm", private=False, description="d")
+    assert repo.owner == "acme"
+    await publisher.publish(
+        repo_name="crm",
+        private=False,
+        description="d",
+        files={"pod.json": b"{}"},
+        readme="img.shields.io",
+        already_created=repo,
+    )
+    assert ops.create_calls == 1  # created once, reused for the push
 
 
 async def test_publish_chunks_large_files():
@@ -147,3 +193,11 @@ async def test_polish_accepts_good_output():
 
     out = await polish_readme("original img.shields.io", polish_fn=good)
     assert "polished" in out
+
+
+async def test_polish_strips_wrapping_code_fence():
+    async def fenced(_):
+        return "```markdown\n# Polished img.shields.io\n```"
+
+    out = await polish_readme("original img.shields.io", polish_fn=fenced)
+    assert out == "# Polished img.shields.io"

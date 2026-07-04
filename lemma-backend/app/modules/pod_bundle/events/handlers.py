@@ -521,7 +521,10 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
     if state is None or state.status == PublishStatus.COMPLETED:
         return
 
-    from app.modules.pod_bundle.infrastructure.ai_readme import polish_readme
+    from app.modules.pod_bundle.infrastructure.ai_readme import (
+        build_system_polish_fn,
+        polish_readme,
+    )
     from app.modules.pod_bundle.infrastructure.exporter import BundleExporter
     from app.modules.pod_bundle.infrastructure.github_publisher import (
         ComposioGithubOps,
@@ -538,10 +541,12 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
         async def _noop_progress(done: int, total: int) -> None:
             return None
 
+        organization_id = None
         async with uow_scope(worker_ctx.uow_factory) as uow:
             ctx = await AuthorizationDataService(uow.session).build_user_context(
                 user_id=user_id, pod_id=pod_id
             )
+            organization_id = ctx.organization_id
             async with context_scope(ctx):
                 pod_name, zip_bytes, _warnings = await BundleExporter().export(
                     pod_id=pod_id,
@@ -555,17 +560,8 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
 
         files = _zip_to_files(zip_bytes)
         counts = _resource_counts(files)
-        owner_guess = state.repo_name  # refined from the created repo below
-        readme = render_readme(
-            pod_name=pod_name.removesuffix(".zip"),
-            description=None,
-            resource_counts=counts,
-            owner=owner_guess,
-            repo=state.repo_name,
-        )
-        if state.ai_readme:
-            readme = await polish_readme(readme, polish_fn=None)
-        state.readme = readme
+        pod_meta = _pod_meta_from_files(files)
+        repo_description = pod_meta.get("description")
 
         # (2) PUBLISHING — create the repo + push files via Composio (no DB held
         # across the HTTP calls beyond each short per-operation scope).
@@ -597,6 +593,36 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
 
         publisher = GithubPublisher(ComposioGithubOps(_run_op))
 
+        # Create the repo first so the README's install button carries the real
+        # GitHub owner (not the repo name), then render + optionally AI-polish the
+        # README and push everything.
+        repo = await publisher.create_repo(
+            repo_name=state.repo_name,
+            private=state.private,
+            description=repo_description,
+        )
+        state.repo_url = repo.html_url
+        state.repo_created = True
+        await store.save_publish(state)
+
+        readme = render_readme(
+            pod_name=pod_meta.get("name") or pod_name.removesuffix(".zip"),
+            description=repo_description,
+            resource_counts=counts,
+            owner=repo.owner,
+            repo=repo.repo,
+            icon_url=pod_meta.get("icon_url"),
+        )
+        if state.ai_readme:
+            polish_fn = build_system_polish_fn(
+                user_id=user_id,
+                organization_id=organization_id,
+                pod_id=pod_id,
+            )
+            readme = await polish_readme(readme, polish_fn=polish_fn)
+        state.readme = readme
+        await store.save_publish(state)
+
         async def _on_file(path: str, done: int, total: int) -> None:
             state.progress.done = done
             state.progress.total = total
@@ -608,10 +634,11 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
         repo = await publisher.publish(
             repo_name=state.repo_name,
             private=state.private,
-            description=None,
+            description=repo_description,
             files=files,
             readme=readme,
             on_progress=_on_file,
+            already_created=repo,
         )
 
         state.status = PublishStatus.COMPLETED
@@ -659,6 +686,27 @@ def _zip_to_files(zip_bytes: bytes) -> dict[str, bytes]:
                 continue
             files[name] = zf.read(info)
     return files
+
+
+def _pod_meta_from_files(files: dict[str, bytes]) -> dict[str, str | None]:
+    """Read the pod's name/description/icon_url from the bundle's ``pod.json`` so
+    the README uses the real pod identity (not the export filename)."""
+    import json
+
+    raw = files.get("pod.json")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - a malformed manifest just yields no meta
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "name": data.get("name"),
+        "description": data.get("description"),
+        "icon_url": data.get("icon_url"),
+    }
 
 
 def _resource_counts(files: dict[str, bytes]) -> dict[str, int]:

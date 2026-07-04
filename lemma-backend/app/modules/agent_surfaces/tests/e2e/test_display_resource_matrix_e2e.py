@@ -219,7 +219,10 @@ async def test_display_resource_slack_large_file_falls_back_to_link(
     # Never attempted a native upload — straight to the link card.
     assert message_store.get_all("SLACK_FILE_UPLOAD_URL") == []
     slack_messages = await wait_for_messages(message_store, "SLACK", min_count=1)
-    rendered = " ".join(m.get("text", "") for m in slack_messages)
+    # The deep-link URL rides in the card's Block Kit button (accessory), not the
+    # notification-fallback ``text`` — serialize the whole message to find it,
+    # like the Teams case below.
+    rendered = json.dumps(slack_messages)
     assert "app.example.test" in rendered
 
 

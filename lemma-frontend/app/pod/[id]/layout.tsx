@@ -9,6 +9,7 @@ import { HelpMenu } from "@/components/education/help-menu";
 import { PodAssistantSidebar } from "@/components/ai/pod-assistant";
 import { InlineLoader, PageLoader } from "@/components/brand/loader";
 import { AppProvider, useApp } from "@/components/app/app-context";
+import { AppFrameHost } from "@/components/app/app-frame-host";
 import { PodAppTabs } from "@/components/pod/pod-app-tabs";
 import { useOrganization } from "@/components/dashboard/org-context";
 import { PodTopbarProvider, type PodTopbarState } from "@/components/pod/pod-topbar-context";
@@ -736,6 +737,7 @@ function PodShell({
                         )}
                     </header>
                 ) : null}
+                <div className="relative flex min-h-0 flex-1 flex-col">
                 <PodTopbarProvider value={topbarContextValue}>
                     <div
                         className={cn(
@@ -759,6 +761,13 @@ function PodShell({
                         </div>
                     </div>
                 </PodTopbarProvider>
+                <AppFrameHost
+                    podId={pod.id}
+                    visible={isAppViewRoute}
+                    activeSlug={isAppViewRoute ? (searchParams.get("page") || null) : null}
+                    canUpdateApp={podAccess.can("app.update")}
+                />
+                </div>
             </main>
         </div>
     );

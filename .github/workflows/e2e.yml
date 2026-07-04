@@ -41,26 +41,43 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-e2e'
     runs-on: ubuntu-latest
     strategy:
-      # Run both suites even if one fails, so a red indexing job doesn't mask the
-      # fast job's result (and vice versa).
+      # Run every shard even if one fails, so one red shard doesn't mask others.
       fail-fast: false
       matrix:
+        # The fast suite is sharded across runners, each serial (E2E_WORKERS=1):
+        # parallelism is across machines, not xdist workers within one machine —
+        # which sidesteps the shared-container contention that makes -n2 flaky.
+        # Each shard runs `test-e2e-shard` scoped by E2E_ARGS; the union of all
+        # shard args equals the whole fast suite, with `rest` a catch-all via
+        # --ignore so a new module's e2e tests are never silently skipped.
+        # Shards are balanced by test count (~50-75 each); wall-clock ≈ the
+        # slowest shard. The indexing suite is its own shard (needs Kreuzberg).
         suite:
-          # Fast API suite — no Kreuzberg. Serial for now: at 2 xdist workers the
-          # heavy authz tests intermittently drop a connection to the shared
-          # SuperTokens/Postgres containers under contention (each worker is a
-          # full app+container stack; see db_pool_size docstring re: the 100-conn
-          # ceiling). Reliable > fast for a merge gate — revisit -n2 with pool/
-          # container tuning as a follow-up.
-          - name: mocked
-            target: test-e2e-fast
-            workers: 1
-          # Kreuzberg-backed indexing/search tests (still mocked LLM). Serial:
-          # the shared Kreuzberg container is memory-heavy and parallel indexing
-          # is contention-flaky.
+          - name: surfaces
+            target: test-e2e-shard
+            args: app/modules/agent_surfaces/tests/e2e
+          - name: pod
+            target: test-e2e-shard
+            args: app/modules/pod/tests/e2e
+          - name: datastore
+            target: test-e2e-shard
+            args: app/modules/datastore/tests/e2e app/modules/apps/tests/e2e
+          - name: connectors
+            target: test-e2e-shard
+            args: app/modules/connectors/tests/e2e app/modules/schedule/tests/e2e
+          - name: rest
+            target: test-e2e-shard
+            args: >-
+              app/modules app/core
+              --ignore=app/modules/agent_surfaces/tests/e2e
+              --ignore=app/modules/pod/tests/e2e
+              --ignore=app/modules/datastore/tests/e2e
+              --ignore=app/modules/apps/tests/e2e
+              --ignore=app/modules/connectors/tests/e2e
+              --ignore=app/modules/schedule/tests/e2e
           - name: indexing
             target: test-e2e-indexing
-            workers: 1
+            args: ""
     defaults:
       run:
         working-directory: lemma-backend
@@ -81,8 +98,9 @@ jobs:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      # Worker count is per-suite (see matrix). Both suites run serially today for
-      # reliability; they run on separate runners so the gate's wall-clock is the
-      # slower of the two, not their sum.
+      # Every shard runs serially (E2E_WORKERS=1) on its own runner; the shards
+      # run in parallel, so the gate's wall-clock is the slowest shard, not their
+      # sum. E2E_ARGS scopes each fast shard to its module paths (empty/ignored
+      # for the indexing shard, which selects by marker).
       - name: E2E tests (mocked LLM + fake AgentBox)
-        run: make ${{ matrix.suite.target }} E2E_WORKERS=${{ matrix.suite.workers }}
+        run: make ${{ matrix.suite.target }} E2E_ARGS="${{ matrix.suite.args }}" E2E_WORKERS=1

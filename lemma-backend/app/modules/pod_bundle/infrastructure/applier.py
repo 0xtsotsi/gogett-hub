@@ -367,19 +367,24 @@ class BundleApplier:
     # --- surfaces (connectors) -------------------------------------------
 
     async def _apply_surface(self, step: PlanStep) -> None:
-        """Create or update the pod's surface for a platform, binding the connector
-        ``account_id`` resolved from the required ``${..._account}`` variable. A
-        surface is unique per (pod, platform), so this is an idempotent upsert that
-        mirrors the ``agent.surface.upsert`` controller (reusing its config helpers)
-        so an imported connector behaves exactly like a hand-configured one."""
+        """Create or update a pod surface, binding the connector ``account_id``
+        resolved from the required ``${..._account}`` variable. A pod may have
+        several surfaces per platform, each addressed by a stable pod-unique
+        ``name`` (defaults to the lowercased platform), so import is an idempotent
+        upsert keyed by that name — mirroring the surface create/update
+        controllers (reusing their config helpers) so an imported connector
+        behaves exactly like a hand-configured one."""
         from app.modules.agent.api.dependencies import get_agent_service
         from app.modules.agent_surfaces.api.controllers.surface_controller import (
             _merge_surface_config,
             _resolve_surface_config,
         )
         from app.modules.agent_surfaces.api.dependencies import get_surface_service
-        from app.modules.agent_surfaces.api.schemas import SurfaceUpsertRequest
-        from app.modules.agent_surfaces.domain.entities import SurfacePlatform
+        from app.modules.agent_surfaces.api.schemas import SurfaceCreateRequest
+        from app.modules.agent_surfaces.domain.entities import (
+            AgentSurfaceEntity,
+            SurfacePlatform,
+        )
         from app.modules.agent_surfaces.domain.errors import AgentSurfaceNotFoundError
 
         payload = self._load("surfaces", step.name)
@@ -392,21 +397,33 @@ class BundleApplier:
                 code="POD_BUNDLE_SURFACE_PLATFORM",
             ) from exc
 
-        # Only the upsert-request fields (extra='forbid'); drop export-only keys
-        # like name/platform. account_id has already been substituted from the
-        # provided account variable by self._load.
-        request = SurfaceUpsertRequest.model_validate(
+        # The surface's pod-unique name (defaults to the lowercased platform);
+        # the upsert is keyed by it so several surfaces of the same platform
+        # round-trip.
+        resolved_name = (
+            str(payload.get("name") or "").strip()
+            or AgentSurfaceEntity.default_name_for(platform)
+        )
+
+        # Only the create-request fields (extra='forbid'); drop export-only keys.
+        # account_id has already been substituted from the provided account
+        # variable by self._load.
+        request = SurfaceCreateRequest.model_validate(
             {
-                key: value
-                for key, value in payload.items()
-                if key
-                in {
-                    "default_agent_name",
-                    "account_id",
-                    "credential_mode",
-                    "config",
-                    "is_enabled",
-                }
+                "platform": platform.value,
+                "name": resolved_name,
+                **{
+                    key: value
+                    for key, value in payload.items()
+                    if key
+                    in {
+                        "default_agent_name",
+                        "account_id",
+                        "credential_mode",
+                        "config",
+                        "is_enabled",
+                    }
+                },
             }
         )
 
@@ -420,8 +437,8 @@ class BundleApplier:
         )
 
         try:
-            existing = await service.get_surface_by_platform_in_pod(
-                pod_id=self._pod_id, platform=platform.value
+            existing = await service.get_surface_by_name_in_pod(
+                pod_id=self._pod_id, name=resolved_name
             )
         except AgentSurfaceNotFoundError:
             existing = None
@@ -437,6 +454,7 @@ class BundleApplier:
                 pod_id=self._pod_id,
                 agent_id=agent.id if agent else None,
                 platform=platform,
+                name=resolved_name,
                 config=config,
                 credential_mode=request.credential_mode,
                 account_id=request.account_id,

@@ -49,7 +49,10 @@ lemma pods describe        # full inventory: tables, agents, functions, workflow
 
 Workspace sessions inject `LEMMA_TOKEN`, `LEMMA_BASE_URL`, `LEMMA_ORG_ID`,
 `LEMMA_POD_ID` (and `LEMMA_WORKSPACE_URL`) — use them; never invent bootstrap
-config. Default output is a **compact, complete** table/detail view (schemas
+config. (Outside an injected workspace — e.g. running the CLI on a laptop — a
+project-root `.lemma.env` supplies the same `LEMMA_*` values for that folder;
+injected/real env always takes precedence.) Default output is a **compact,
+complete** table/detail view (schemas
 included) — prefer it; it costs far fewer tokens than JSON. Use `--output json`
 only to pipe/save, and `--full` to expand folded fields. Pass payloads with
 `--data '<json>'` (`-d`) or `--file path.json` (`-f`); target another pod with

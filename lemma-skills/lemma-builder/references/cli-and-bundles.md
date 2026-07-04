@@ -12,10 +12,12 @@ lemma orgs list             # select default org
 lemma pods list             # marks the currently active pod
 ```
 
-Config lives in `~/.lemma/config.json` (active server, token, default org/pod). Resolution precedence for org/pod: CLI flags (`--org`, `--pod`) → env vars → stored defaults → interactive selection.
+Config lives in `~/.lemma/config.json` (active server, token, default org/pod). Resolution precedence for org/pod: CLI flags (`--org`, `--pod`) → env vars → project `.lemma.env` → stored defaults → interactive selection.
 
 Environment variables (pre-set inside Lemma workspaces/sandboxes — use them, don't bootstrap):
 `LEMMA_TOKEN`, `LEMMA_BASE_URL`, `LEMMA_ORG_ID`, `LEMMA_POD_ID`, `LEMMA_SERVER`.
+
+Working across several pods locally? Drop a committed `.lemma.env` at a project root (dotenv syntax, no secrets — e.g. `LEMMA_POD_ID=…`, optional `LEMMA_SERVER=…`) and the CLI auto-loads its `LEMMA_*` values for any command run from that tree (nearest file wins, walking up to the git root / `$HOME`). A gitignored sibling `.env` overrides it per-machine; real environment variables always win, so injected workspace values are never overridden. `lemma config show` reports the loaded file.
 
 Scripting conventions:
 

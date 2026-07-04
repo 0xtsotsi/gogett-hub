@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,21 @@ from app.modules.datastore.infrastructure.markitdown_processor import (
 )
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "arxiv"
+
+
+def _pretend_markitdown_installed(monkeypatch):
+    """Make the adapter's importability check pass so the FACTORY ROUTING can be
+    tested without the optional `markitdown` dep installed (CI runs without it).
+    The adapter only imports markitdown lazily on extract(), which these tests
+    never call."""
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "markitdown":
+            return object()
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.util.find_spec", fake_find_spec)
 
 
 class _FakeResult:
@@ -40,11 +56,13 @@ def test_factory_returns_kreuzberg_when_selected(monkeypatch):
 
 
 def test_factory_returns_markitdown_when_selected(monkeypatch):
+    _pretend_markitdown_installed(monkeypatch)
     monkeypatch.setattr(dp_module.datastore_settings, "document_processor", "markitdown")
     assert isinstance(create_document_processor(), MarkItDownDocumentProcessor)
 
 
 def test_factory_auto_follows_kreuzberg_url(monkeypatch):
+    _pretend_markitdown_installed(monkeypatch)
     monkeypatch.setattr(dp_module.datastore_settings, "document_processor", "auto")
     monkeypatch.setattr(dp_module.datastore_settings, "kreuzberg_url", "http://kreuzberg:8000")
     assert isinstance(create_document_processor(), KreuzbergDocumentProcessor)

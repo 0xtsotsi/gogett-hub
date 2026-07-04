@@ -314,6 +314,55 @@ async def update_file(
     return response
 
 
+@router.put(
+    "/by-path/markdown",
+    response_model=FileDetailResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="file.markdown.attach",
+    summary="Attach Document Markdown",
+)
+async def attach_document_markdown(
+    pod_id: UUID,
+    file_service: FileServiceDep,
+    user: CurrentUser,
+    ctx: PodContextDep,
+    data: UploadFile = File(...),
+    path: str = Form(...),
+) -> FileDetailResponse:
+    """Attach (or replace) a user-authored markdown version of a document.
+
+    The uploaded markdown becomes the document's agent-facing ``document.md`` and
+    is chunked/indexed on the original's behalf; the source file is unchanged.
+    Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+    """
+    markdown_content = await data.read()
+    file_entity = await file_service.attach_user_markdown(
+        pod_id=pod_id, path=path, markdown_content=markdown_content, ctx=ctx
+    )
+    return await _file_detail_response(file_entity, user.id)
+
+
+@router.delete(
+    "/by-path/markdown",
+    response_model=FileDetailResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="file.markdown.detach",
+    summary="Detach Document Markdown",
+)
+async def detach_document_markdown(
+    pod_id: UUID,
+    file_service: FileServiceDep,
+    user: CurrentUser,
+    ctx: PodContextDep,
+    path: str = Query(...),
+) -> FileDetailResponse:
+    """Remove a document's user-provided markdown so it reverts to extraction."""
+    file_entity = await file_service.detach_user_markdown(
+        pod_id=pod_id, path=path, ctx=ctx
+    )
+    return await _file_detail_response(file_entity, user.id)
+
+
 @router.delete(
     "/by-path",
     status_code=status.HTTP_204_NO_CONTENT,

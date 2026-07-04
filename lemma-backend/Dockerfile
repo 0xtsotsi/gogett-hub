@@ -25,16 +25,18 @@ COPY agentbox-client /agentbox-client
 COPY lemma-backend/lemma-connectors ./lemma-connectors
 COPY lemma-skills ./lemma-skills
 
-# Install dependencies into /app/.venv
+# Install dependencies into /app/.venv. The markitdown extra ships in the image
+# so the local stack can run the in-process document processor
+# (DOCUMENT_PROCESSOR=markitdown) without the Kreuzberg container.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project --extra markitdown
 
 # Copy backend application code
 COPY lemma-backend/ ./
 
 # Sync the project itself
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --extra markitdown
 
 # Stage 2: Runtime stage
 FROM python:3.14-slim-bookworm

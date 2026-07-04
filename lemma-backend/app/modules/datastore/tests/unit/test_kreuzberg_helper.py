@@ -94,10 +94,13 @@ async def test_process_file_uses_native_pdf_config_with_150_dpi(monkeypatch):
 async def test_process_file_uses_heavy_pdf_config_for_scanned_pdf(monkeypatch):
     """A scanned PDF (no text layer, detected up front) gets the full heavy
     config — 300 DPI, RT-DETR layout + TATR table model + hierarchy + force_ocr
-    — in a single pass (no reactive re-extraction)."""
+    — in a single pass (no reactive re-extraction). Requires OCR opt-in."""
     helper = KreuzbergHelper()
     helper.base_url = "http://localhost:8002"
 
+    monkeypatch.setattr(
+        kreuzberg_module.datastore_settings, "document_processing_ocr_enabled", True
+    )
     monkeypatch.setattr(helper, "_pdf_needs_ocr", AsyncMock(return_value=True))
     extract_mock = AsyncMock(
         return_value=KreuzbergExtractionResult({"content": "ocr text", "chunks": None})
@@ -119,6 +122,55 @@ async def test_process_file_uses_heavy_pdf_config_for_scanned_pdf(monkeypatch):
     assert config["layout"]["table_model"] == "tatr"
     assert result.extraction_mode == "ocr"
     assert result.get_chunks() == [{"text": "ocr text", "metadata": {}}]
+
+
+@pytest.mark.asyncio
+async def test_process_file_ocr_disabled_by_default_skips_probe_and_uses_native(
+    monkeypatch,
+):
+    """With OCR off (the default), even a PDF that a probe WOULD call scanned is
+    extracted with the fast native config, and the probe is never invoked."""
+    helper = KreuzbergHelper()
+    helper.base_url = "http://localhost:8002"
+
+    # If this were consulted it would classify scanned — assert it is NOT.
+    probe = AsyncMock(return_value=True)
+    monkeypatch.setattr(helper, "_pdf_needs_ocr", probe)
+    extract_mock = AsyncMock(
+        return_value=KreuzbergExtractionResult({"content": "native text", "chunks": None})
+    )
+    monkeypatch.setattr("aiohttp.ClientSession", _fake_client_session_factory([]))
+    monkeypatch.setattr(helper, "_extract", extract_mock)
+    monkeypatch.setattr(helper, "_chunk_content", AsyncMock(return_value=[]))
+
+    result = await helper.process_file(b"pdf-bytes", "scan.pdf")
+
+    probe.assert_not_awaited()
+    assert extract_mock.await_count == 1
+    config = extract_mock.await_args.kwargs["config"]
+    assert "force_ocr" not in config
+    assert config["images"]["target_dpi"] == 150
+    assert result.extraction_mode == "direct"
+
+
+@pytest.mark.asyncio
+async def test_process_file_ocr_disabled_does_not_retry_on_empty_extract(monkeypatch):
+    """With OCR off, an empty native extraction is NOT re-run with forced OCR —
+    the scanned doc simply degrades to its (empty) text layer."""
+    helper = KreuzbergHelper()
+    helper.base_url = "http://localhost:8002"
+
+    extract_mock = AsyncMock(
+        return_value=KreuzbergExtractionResult({"content": "", "chunks": None})
+    )
+    monkeypatch.setattr("aiohttp.ClientSession", _fake_client_session_factory([]))
+    monkeypatch.setattr(helper, "_extract", extract_mock)
+    monkeypatch.setattr(helper, "_chunk_content", AsyncMock(return_value=[]))
+
+    result = await helper.process_file(b"pdf-bytes", "scan.pdf")
+
+    assert extract_mock.await_count == 1  # no forced-OCR retry
+    assert result.extraction_mode == "direct"
 
 
 def test_build_extract_config_native_pdf_uses_150_dpi_keeps_layout():
@@ -189,7 +241,10 @@ async def test_process_file_retries_with_forced_ocr_when_initial_pdf_extract_is_
     helper.base_url = "http://localhost:8002"
 
     # Classified native up front, but the first pass extracts no text at all →
-    # the safety-net retry forces OCR (and the heavy config).
+    # the safety-net retry forces OCR (and the heavy config). Requires OCR opt-in.
+    monkeypatch.setattr(
+        kreuzberg_module.datastore_settings, "document_processing_ocr_enabled", True
+    )
     monkeypatch.setattr(helper, "_pdf_needs_ocr", AsyncMock(return_value=False))
     extract_mock = AsyncMock(
         side_effect=[

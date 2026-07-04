@@ -190,6 +190,32 @@ class DatastoreFileService:
             visibility=visibility,
         )
 
+    async def attach_user_markdown(
+        self,
+        pod_id: UUID,
+        path: str,
+        markdown_content: bytes,
+        ctx: Context,
+    ) -> DatastoreFileEntity:
+        """Attach/replace a user-provided markdown version of a document, then
+        re-queue it so the user's markdown is chunked/indexed and served as the
+        agent-facing document.md."""
+        return await self._writer.attach_user_markdown(
+            pod_id, path, markdown_content, ctx.user_id, ctx=ctx
+        )
+
+    async def detach_user_markdown(
+        self,
+        pod_id: UUID,
+        path: str,
+        ctx: Context,
+    ) -> DatastoreFileEntity:
+        """Remove a document's user-provided markdown and re-queue it so it
+        falls back to document extraction."""
+        return await self._writer.detach_user_markdown(
+            pod_id, path, ctx.user_id, ctx=ctx
+        )
+
     async def resolve_update_file(
         self,
         pod_id: UUID,

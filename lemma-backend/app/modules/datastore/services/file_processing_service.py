@@ -8,12 +8,17 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
-from app.modules.datastore.domain.document_processing import DocumentExtraction
+from app.modules.datastore.domain.document_processing import (
+    DocumentExtraction,
+    DocumentPage,
+)
+from app.modules.datastore.domain.errors import DatastoreObjectNotFoundError
 from app.modules.datastore.domain.file_entities import FileStatus
 from app.modules.datastore.domain.ports import DocumentProcessorPort
 from app.modules.datastore.infrastructure.document_processor import (
     create_document_processor,
 )
+from app.modules.datastore.infrastructure.markdown_chunker import chunk_markdown
 from app.modules.datastore.infrastructure.models import DatastoreFile
 from app.modules.datastore.infrastructure.repositories.file_repository import (
     DatastoreFileRepository,
@@ -24,8 +29,10 @@ from app.modules.datastore.infrastructure.storage_paths import (
     build_datastore_child_artifact_key,
     build_datastore_child_manifest_key,
     build_datastore_child_markdown_key,
+    build_datastore_child_user_markdown_key,
     build_datastore_file_storage_key,
 )
+from app.modules.datastore.services.files.page_markers import parse_page_offsets
 from app.modules.datastore.services.files.projection import FileProjection
 from app.modules.datastore.services.search.postgres_search_service import (
     PostgresSearchService,
@@ -36,6 +43,12 @@ logger = logging.getLogger(__name__)
 
 # Manifest format version for the colocated child container.
 _MANIFEST_VERSION = 3
+
+# ``file_metadata["markdown_source"]`` value marking a file whose agent-facing
+# markdown is user-provided (bring-your-own) rather than engine-extracted. When
+# set, the processor chunks/indexes the stored ``source.md`` and skips the
+# document processor entirely.
+_USER_MARKDOWN_SOURCE = "user"
 
 _CONVERTED_MARKDOWN_MIME_TYPES: frozenset[str] = frozenset(
     {
@@ -177,17 +190,7 @@ class DatastoreFileProcessingService:
             current_metadata = dict(metadata or {})
             current_metadata.update(file_entity.file_metadata or {})
             search_metadata = await self._build_search_metadata(file_entity, current_metadata)
-            source_content = await self.storage.download_file(
-                build_datastore_file_storage_key(
-                    self.pod_id,
-                    file_entity.path,
-                )
-            )
-            extraction = await self.document_processor.extract(
-                source_content,
-                file_entity.name,
-                mime_type=self._base_mime_type(file_entity),
-            )
+            extraction, user_markdown_bytes = await self._build_extraction(file_entity)
             chunks = self._chunks_for_index(extraction)
             page_count = 0
             has_markdown = False
@@ -198,6 +201,7 @@ class DatastoreFileProcessingService:
                     file_entity,
                     extraction,
                     search_metadata,
+                    user_markdown_bytes=user_markdown_bytes,
                 )
             else:
                 await self._file_projection.delete_child_artifacts(
@@ -237,6 +241,63 @@ class DatastoreFileProcessingService:
                 )
             raise
 
+    async def _build_extraction(
+        self, file_entity: DatastoreFile
+    ) -> tuple[DocumentExtraction, bytes | None]:
+        """Produce the extraction to index for a file.
+
+        Bring-your-own path: a file flagged ``markdown_source=user`` is indexed
+        from its stored ``source.md`` (chunked in-process) with NO document-
+        processor call and NO original download — the user's markdown IS the
+        agent-facing document. The raw bytes are returned so the projection write
+        can re-persist ``source.md`` (delete_child_artifacts wipes the container).
+        Everything else goes through the configured document processor.
+        """
+        if (file_entity.file_metadata or {}).get("markdown_source") == _USER_MARKDOWN_SOURCE:
+            try:
+                raw = await self.storage.download_file(
+                    build_datastore_child_user_markdown_key(
+                        self.pod_id, file_entity.path
+                    )
+                )
+            except DatastoreObjectNotFoundError:
+                raw = None
+            if raw is not None:
+                markdown = raw.decode("utf-8", "replace")
+                if markdown.strip():
+                    return self._extraction_from_user_markdown(markdown), raw
+            logger.warning(
+                "File %s is flagged markdown_source=user but its source.md is "
+                "missing/empty; falling back to document extraction",
+                file_entity.path,
+            )
+
+        source_content = await self.storage.download_file(
+            build_datastore_file_storage_key(self.pod_id, file_entity.path)
+        )
+        extraction = await self.document_processor.extract(
+            source_content,
+            file_entity.name,
+            mime_type=self._base_mime_type(file_entity),
+        )
+        return extraction, None
+
+    def _extraction_from_user_markdown(self, markdown: str) -> DocumentExtraction:
+        """Build a ``DocumentExtraction`` from user-provided markdown: chunk it
+        in-process and derive per-page summaries from any ``<!-- PAGE n -->``
+        markers. The markdown is kept verbatim (it is the canonical document.md)."""
+        chunks = chunk_markdown(markdown)
+        page_count = max((page for _, page in parse_page_offsets(markdown)), default=0)
+        pages = [DocumentPage(page_number=number) for number in range(1, page_count + 1)]
+        return DocumentExtraction(
+            markdown=markdown,
+            chunks=chunks,
+            images=[],
+            pages=pages,
+            detected_languages=[],
+            extraction_mode="user_markdown",
+        )
+
     def _chunks_for_index(self, extraction: DocumentExtraction) -> list[dict]:
         """Flatten domain chunks into the ``{text, metadata}`` shape the search
         index expects, surfacing native page spans as ``page_number``/``page_end``
@@ -271,11 +332,18 @@ class DatastoreFileProcessingService:
         file_entity: DatastoreFile,
         extraction: DocumentExtraction,
         search_metadata: dict,
+        *,
+        user_markdown_bytes: bytes | None = None,
     ) -> None:
         """Write the file's derived child artifacts into its hidden colocated
         container: page-marked ``document.md``, extracted figures, and a
         ``manifest.json`` index. The markdown already carries native page markers
-        and rewritten inline image references (the processor owns that)."""
+        and rewritten inline image references (the processor owns that).
+
+        When ``user_markdown_bytes`` is given (bring-your-own markdown), the
+        user's source ``source.md`` is re-persisted here — delete_child_artifacts
+        above wipes the whole container, so this is the single place that keeps it
+        alive across reprocesses."""
         await self._file_projection.delete_child_artifacts(
             self.pod_id, file_entity.path
         )
@@ -285,6 +353,13 @@ class DatastoreFileProcessingService:
             build_datastore_child_markdown_key(self.pod_id, file_entity.path),
             document_bytes,
         )
+        if user_markdown_bytes is not None:
+            await self.storage.upload_file(
+                build_datastore_child_user_markdown_key(
+                    self.pod_id, file_entity.path
+                ),
+                user_markdown_bytes,
+            )
 
         manifest = {
             "version": _MANIFEST_VERSION,
@@ -292,6 +367,9 @@ class DatastoreFileProcessingService:
             "source_name": file_entity.name,
             "source_mime_type": file_entity.mime_type,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "markdown_source": (
+                _USER_MARKDOWN_SOURCE if user_markdown_bytes is not None else "extracted"
+            ),
             "extraction_mode": extraction.extraction_mode,
             "detected_languages": extraction.detected_languages,
             "page_count": extraction.page_count,

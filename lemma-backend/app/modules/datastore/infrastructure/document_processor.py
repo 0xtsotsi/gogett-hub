@@ -9,13 +9,7 @@ port with Kreuzberg v5 alone; callers don't change.
 
 from __future__ import annotations
 
-import asyncio
-import os
 import re
-import tempfile
-from functools import partial
-
-import anyio
 
 from app.core.log.log import get_logger
 from app.modules.datastore.config import datastore_settings
@@ -25,23 +19,20 @@ from app.modules.datastore.domain.document_processing import (
     DocumentImage,
     DocumentPage,
 )
+from app.modules.datastore.domain.ports import DocumentProcessorPort
 from app.modules.datastore.infrastructure.kreuzberg_helper import (
     KreuzbergExtractionResult,
     KreuzbergHelper,
 )
-from app.modules.datastore.infrastructure.pdf_renderer import render_pdf_pages
+from app.modules.datastore.infrastructure.pdf_page_rendering import (
+    PdfPageRenderingMixin,
+)
 
 logger = get_logger(__name__)
 
-_PDF_MIME = "application/pdf"
 _PAGE_MARKER = "<!-- PAGE "
 _MARKDOWN_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\()([^)\s]+)((?:\s+['\"][^)]*['\"])?\))")
 _HTML_IMAGE_RE = re.compile(r"(<img\b[^>]*\bsrc=[\"'])([^\"']+)([\"'])")
-
-# Process-wide gate (the processor may be constructed per request, so the
-# semaphore must live at module scope to actually bound concurrency). PDF
-# rasterization is CPU/memory-heavy; this stops bursts from stacking renders.
-_render_semaphore = asyncio.Semaphore(max(1, datastore_settings.pdf_render_concurrency))
 
 
 def _int_or_none(value: object) -> int | None:
@@ -51,7 +42,7 @@ def _int_or_none(value: object) -> int | None:
         return None
 
 
-class KreuzbergDocumentProcessor:
+class KreuzbergDocumentProcessor(PdfPageRenderingMixin):
     """Default document processor: Kreuzberg extraction + pypdfium rendering."""
 
     def __init__(self, client: KreuzbergHelper | None = None):
@@ -77,43 +68,6 @@ class KreuzbergDocumentProcessor:
             detected_languages=list(getattr(result, "detected_languages", []) or []),
             extraction_mode=getattr(result, "extraction_mode", "direct"),
         )
-
-    def supports_page_rendering(self, mime_type: str | None, filename: str) -> bool:
-        base = (mime_type or "").split(";")[0].strip().lower()
-        return base == _PDF_MIME or filename.lower().endswith(".pdf")
-
-    async def render_pages(
-        self,
-        pdf_content: bytes,
-        page_numbers: list[int],
-        *,
-        dpi: int,
-        max_long_edge: int,
-        jpeg_quality: int,
-    ) -> dict[int, bytes]:
-        if not page_numbers:
-            return {}
-        # Write to a temp file so pypdfium mmaps it (peak ≈ one page bitmap, not
-        # the whole document held twice). Rasterize off the event loop under the
-        # process-wide gate.
-        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        try:
-            tmp.write(pdf_content)
-            tmp.flush()
-            tmp.close()
-            render = partial(
-                render_pdf_pages,
-                dpi=dpi,
-                max_long_edge=max_long_edge,
-                jpeg_quality=jpeg_quality,
-            )
-            async with _render_semaphore:
-                return await anyio.to_thread.run_sync(render, tmp.name, page_numbers)
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
 
     # -- normalization -----------------------------------------------------
 
@@ -313,7 +267,25 @@ class KreuzbergDocumentProcessor:
         )
 
 
-def create_document_processor() -> KreuzbergDocumentProcessor:
+def create_document_processor() -> DocumentProcessorPort:
     """Composition helper mirroring ``create_datastore_storage`` — the single
-    place the default document-processing adapter is chosen."""
+    place the document-processing adapter is chosen.
+
+    The adapter is selected by ``DATASTORE_DOCUMENT_PROCESSOR`` (resolved via
+    ``effective_document_processor``): 'kreuzberg' (default when a Kreuzberg URL
+    is set) or the in-process 'markitdown' adapter (optional dep). markitdown is
+    imported lazily so the dependency is only required when it is selected."""
+    which = datastore_settings.effective_document_processor()
+    if which == "markitdown":
+        from app.modules.datastore.infrastructure.markitdown_processor import (
+            MarkItDownDocumentProcessor,
+        )
+
+        return MarkItDownDocumentProcessor()
+    if which == "docling":
+        from app.modules.datastore.infrastructure.docling_processor import (
+            DoclingDocumentProcessor,
+        )
+
+        return DoclingDocumentProcessor()
     return KreuzbergDocumentProcessor()

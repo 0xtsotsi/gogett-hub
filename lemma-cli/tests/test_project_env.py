@@ -48,7 +48,7 @@ def _load(start, *, server_flag=None, config_file=NONEXISTENT):
 
 def test_anchors_on_base_or_server_file(tmp_path):
     root = _repo(tmp_path)
-    (root / ".lemma.default.env").write_text("LEMMA_POD_ID=p\n")  # no base .lemma.env
+    (root / ".lemma.lemma-cloud.env").write_text("LEMMA_POD_ID=p\n")  # no base .lemma.env
     assert find_project_dir(root / "apps" / "web") == root
 
 
@@ -82,7 +82,7 @@ def test_base_default_server_selects_server_file(tmp_path):
     root = _repo(tmp_path)
     (root / ".lemma.env").write_text("LEMMA_SERVER=local\n")
     (root / ".lemma.local.env").write_text("LEMMA_POD_ID=pod_local\n")
-    (root / ".lemma.default.env").write_text("LEMMA_POD_ID=pod_cloud\n")
+    (root / ".lemma.lemma-cloud.env").write_text("LEMMA_POD_ID=pod_cloud\n")
     info = _load(root / "apps" / "web")
     assert info["server"] == "local"
     assert os.environ["LEMMA_POD_ID"] == "pod_local"
@@ -93,9 +93,9 @@ def test_flag_selects_server_file(tmp_path):
     root = _repo(tmp_path)
     (root / ".lemma.env").write_text("LEMMA_SERVER=local\n")
     (root / ".lemma.local.env").write_text("LEMMA_POD_ID=pod_local\n")
-    (root / ".lemma.default.env").write_text("LEMMA_POD_ID=pod_cloud\n")
-    info = _load(root, server_flag="default")
-    assert info["server"] == "default"
+    (root / ".lemma.lemma-cloud.env").write_text("LEMMA_POD_ID=pod_cloud\n")
+    info = _load(root, server_flag="lemma-cloud")
+    assert info["server"] == "lemma-cloud"
     assert os.environ["LEMMA_POD_ID"] == "pod_cloud"
 
 
@@ -181,28 +181,28 @@ def test_token_in_committed_base_flagged(tmp_path):
 def test_write_server_env_writes_binding_and_seeds_default(tmp_path):
     root = (tmp_path / "bundle").resolve()
     root.mkdir()
-    path = write_server_env(root, "default", {"LEMMA_POD_ID": "p1", "LEMMA_ORG_ID": "o1"})
-    assert path.name == ".lemma.default.env"
+    path = write_server_env(root, "lemma-cloud", {"LEMMA_POD_ID": "p1", "LEMMA_ORG_ID": "o1"})
+    assert path.name == ".lemma.lemma-cloud.env"
     text = path.read_text()
     assert "LEMMA_POD_ID=p1" in text and "LEMMA_ORG_ID=o1" in text
     # seeds the project's default server when .lemma.env has none
-    assert "LEMMA_SERVER=default" in (root / ".lemma.env").read_text()
+    assert "LEMMA_SERVER=lemma-cloud" in (root / ".lemma.env").read_text()
 
 
 def test_write_server_env_merges_and_keeps_existing_default(tmp_path):
     root = (tmp_path / "bundle").resolve()
     root.mkdir()
     (root / ".lemma.env").write_text("LEMMA_SERVER=local\n")
-    write_server_env(root, "default", {"LEMMA_POD_ID": "p1"})
-    write_server_env(root, "default", {"LEMMA_ORG_ID": "o1"})
-    text = (root / ".lemma.default.env").read_text()
+    write_server_env(root, "lemma-cloud", {"LEMMA_POD_ID": "p1"})
+    write_server_env(root, "lemma-cloud", {"LEMMA_ORG_ID": "o1"})
+    text = (root / ".lemma.lemma-cloud.env").read_text()
     assert "LEMMA_POD_ID=p1" in text and "LEMMA_ORG_ID=o1" in text  # merged
     # does not clobber an existing default server
     assert "LEMMA_SERVER=local" in (root / ".lemma.env").read_text()
     # round-trips through the loader
     for key in [k for k in os.environ if k.startswith("LEMMA_")]:
         del os.environ[key]
-    info = _load(root, server_flag="default")
+    info = _load(root, server_flag="lemma-cloud")
     assert os.environ["LEMMA_POD_ID"] == "p1"
     assert os.environ["LEMMA_ORG_ID"] == "o1"
-    assert info["server"] == "default"
+    assert info["server"] == "lemma-cloud"

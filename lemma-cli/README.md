@@ -42,9 +42,9 @@ that bind the folder per server, so every command from that tree targets the rig
 pod — no per-shell exports, no global switching. The same repo drives local and cloud:
 
 ```bash
-lemma pods describe                 # local pod  (from .lemma.local.env)
-lemma --server default apps deploy  # cloud pod  (from .lemma.default.env)
-lemma config show                   # shows the resolved server, pod, and files
+lemma pods describe                    # local pod  (from .lemma.local.env)
+lemma --server lemma-cloud apps deploy # cloud pod  (from .lemma.lemma-cloud.env)
+lemma config show                      # shows the resolved server, pod, and files
 ```
 
 Add `--json` to any command for machine-readable output, and `--full` to expand folded fields.

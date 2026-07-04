@@ -35,15 +35,14 @@ lemma servers list
 
 ## Cloud Setup
 
-Lemma Cloud is the default server:
+The CLI ships with a single server, **`lemma-cloud`**, already active:
 
 - API: `https://api.lemma.work`
 - Auth: `https://lemma.work/auth`
 
-Create or refresh the cloud server:
+So a fresh install just logs in:
 
 ```bash
-lemma servers cloud --use
 lemma auth login
 ```
 
@@ -119,15 +118,15 @@ LEMMA_SERVER=local
 LEMMA_POD_ID=pod_local_abc
 # LEMMA_ORG_ID=org_...        # optional — resolved from the pod if omitted
 
-# .lemma.default.env — binding for the `default` (cloud) server. Commit.
+# .lemma.lemma-cloud.env — binding for the `lemma-cloud` (cloud) server. Commit.
 LEMMA_POD_ID=pod_cloud_xyz
 ```
 
 Now the same repo drives both targets:
 
 ```bash
-lemma pods describe                 # uses .lemma.local.env (folder default server)
-lemma --server default apps deploy  # uses .lemma.default.env
+lemma pods describe                    # uses .lemma.local.env (folder default server)
+lemma --server lemma-cloud apps deploy # uses .lemma.lemma-cloud.env
 ```
 
 - The CLI loads the **nearest** anchor (`.lemma.env` or any `.lemma.<server>.env`)
@@ -191,10 +190,9 @@ See `lemma-stack --help` and the `lemma-stack/` package for details.
 
 ## Common Workflow
 
-Cloud:
+Cloud (the shipped default — nothing to add):
 
 ```bash
-lemma servers cloud --use
 lemma auth login
 lemma orgs select --save-default
 lemma pods select --save-default

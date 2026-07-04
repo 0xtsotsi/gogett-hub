@@ -3,19 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from lemma_sdk.config import (
-    DEFAULT_AUTH_URL,
-    DEFAULT_BASE_URL,
     get_server_config,
     normalize_server_name,
     put_server_config,
     save_config,
 )
 from .state import CliState, fail
-
-DEFAULT_CLOUD_SERVER_NAME = "cloud"
-DEFAULT_LOCAL_SERVER_NAME = "local"
-DEFAULT_LOCAL_BASE_URL = "http://localhost:8711"
-DEFAULT_LOCAL_AUTH_URL = "http://localhost:3711/auth"
 
 
 def upsert_server(
@@ -62,36 +55,3 @@ def upsert_server(
         "active": state.root_config.get("active_server") == server_name,
         "path": str(state.config_path),
     }
-
-
-def upsert_local_server(
-    state: CliState,
-    *,
-    make_active: bool = False,
-    base_url: str = DEFAULT_LOCAL_BASE_URL,
-    auth_url: str = DEFAULT_LOCAL_AUTH_URL,
-) -> dict[str, Any]:
-    return upsert_server(
-        state,
-        name=DEFAULT_LOCAL_SERVER_NAME,
-        base_url=base_url,
-        auth_url=auth_url,
-        make_active=make_active,
-    )
-
-
-def upsert_cloud_server(
-    state: CliState,
-    *,
-    name: str = DEFAULT_CLOUD_SERVER_NAME,
-    make_active: bool = False,
-    base_url: str = DEFAULT_BASE_URL,
-    auth_url: str = DEFAULT_AUTH_URL,
-) -> dict[str, Any]:
-    return upsert_server(
-        state,
-        name=name,
-        base_url=base_url,
-        auth_url=auth_url,
-        make_active=make_active,
-    )

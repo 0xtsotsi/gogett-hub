@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from lemma_sdk import Lemma
 from lemma_sdk.config import (
     DEFAULT_CONFIG_PATH,
+    DEFAULT_SERVER_NAME,
     clear_auth_session,
     config_lock,
     build_env_server_config,
@@ -52,7 +53,7 @@ class CliState:
     output: str
     full: bool = False
     root_config: dict[str, Any] | None = None
-    server: str = "default"
+    server: str = DEFAULT_SERVER_NAME
     server_source: str = "config"
     server_read_only: bool = False
     # Summary of a loaded project .lemma.env (path/local_path/applied keys), or

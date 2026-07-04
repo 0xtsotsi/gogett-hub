@@ -150,7 +150,7 @@ def test_apps_delete_without_yes_refuses_noninteractive(monkeypatch):
 
 def test_apps_init_writes_server_binding(tmp_path, monkeypatch):
     # `app init` binds the folder to the pod on the active server so later commands
-    # target it. Isolated config -> fresh "default" server (writable).
+    # target it. Isolated config -> fresh "lemma-cloud" server (writable).
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "config.json"
     target = tmp_path / "web"
@@ -164,7 +164,7 @@ def test_apps_init_writes_server_binding(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    binding = target / ".lemma.default.env"
+    binding = target / ".lemma.lemma-cloud.env"
     assert binding.exists()
     assert "LEMMA_POD_ID=pod-abc" in binding.read_text(encoding="utf-8")
-    assert "LEMMA_SERVER=default" in (target / ".lemma.env").read_text(encoding="utf-8")
+    assert "LEMMA_SERVER=lemma-cloud" in (target / ".lemma.env").read_text(encoding="utf-8")

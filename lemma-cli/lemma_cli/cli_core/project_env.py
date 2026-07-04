@@ -30,7 +30,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from lemma_sdk.config import load_config, normalize_server_name
+from lemma_sdk.config import DEFAULT_SERVER_NAME, load_config, normalize_server_name
 
 from .dotenv import read_env_file
 
@@ -151,7 +151,7 @@ def load_project_env(
         or os.getenv("LEMMA_SERVER")
         or base.get("LEMMA_SERVER")
         or _config_active_server(config_file)
-        or "default"
+        or DEFAULT_SERVER_NAME
     )
     info["server"] = server
 

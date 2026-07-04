@@ -87,7 +87,14 @@ test-e2e-real:
 	E2E_REAL=1 uv run pytest -m e2e
 
 test-e2e-fast:
-	uv run pytest $(E2E_PARALLEL) -m "e2e and not slow and not worker and not workspace and not provider and not local_cli"
+	uv run pytest $(E2E_PARALLEL) -m "e2e and not slow and not worker and not workspace and not provider and not local_cli and not indexing"
+
+# Kreuzberg-backed indexing/search e2e (real document extraction). Split out of
+# test-e2e-fast so that job stays fast and never boots the RAM-heavy Kreuzberg
+# container; these are still mocked (Kreuzberg only — no model key, no Docker
+# AgentBox) and run as their own CI job so indexing/authz coverage isn't lost.
+test-e2e-indexing:
+	uv run pytest $(E2E_PARALLEL) -m "e2e and indexing and not provider and not local_cli" -o timeout=180
 
 # Real runtime suite only (real model + Docker), serial. Subset of test-e2e-real.
 test-e2e-runtime:

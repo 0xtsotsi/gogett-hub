@@ -53,6 +53,20 @@ class GithubPublisher:
     def __init__(self, ops: GithubOps):
         self._ops = ops
 
+    async def create_repo(
+        self, *, repo_name: str, private: bool, description: str | None
+    ) -> RepoCreateResult:
+        """Create the repo and return its location (owner/repo/url). Split out from
+        :meth:`publish` so a caller that needs the real GitHub **owner** before
+        pushing — e.g. to render an install link into the README — can create
+        first, then push with ``already_created=repo``."""
+        try:
+            return await self._ops.create_repo(
+                name=repo_name, private=private, description=description
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise GithubPublishError(f"Could not create GitHub repo: {exc}") from exc
+
     async def publish(
         self,
         *,
@@ -66,14 +80,9 @@ class GithubPublisher:
     ) -> RepoCreateResult:
         """Create the repo (tolerating an existing one we already made) and push
         every file plus the README. Returns the repo location."""
-        repo = already_created
-        if repo is None:
-            try:
-                repo = await self._ops.create_repo(
-                    name=repo_name, private=private, description=description
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise GithubPublishError(f"Could not create GitHub repo: {exc}") from exc
+        repo = already_created or await self.create_repo(
+            repo_name=repo_name, private=private, description=description
+        )
 
         payload = {"README.md": readme.encode("utf-8"), **files}
         total = len(payload)

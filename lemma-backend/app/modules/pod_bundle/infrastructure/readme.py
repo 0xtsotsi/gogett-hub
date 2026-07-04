@@ -1,23 +1,50 @@
-"""Render a bundle's README (deterministic; optional AI polish lives elsewhere).
+"""Render a bundle's README as a human-facing landing page for the pod.
 
-The README documents what the published pod contains and carries an install
-badge that deep-links to the importing UI (``/import/github/{owner}/{repo}``), so
-anyone viewing the repo can one-click install it into their own workspace.
+The README is what someone sees when they land on the published GitHub repo, so
+it reads like a product page: a centered header, a big **Install to Lemma**
+button (a shields.io ``for-the-badge`` badge carrying the Lemma mark) that
+deep-links to the one-click importer (``/import/github/{owner}/{repo}``), a
+"What's inside" summary, and install instructions. Deterministic; the optional AI
+polish (:mod:`ai_readme`) only refines the copy of this same structure.
 """
 
 from __future__ import annotations
 
+import base64
+from urllib.parse import urlencode
+
 from app.core.config import settings
 
-_RESOURCE_LABELS = [
-    ("tables", "Tables"),
-    ("agents", "Agents"),
-    ("functions", "Functions"),
-    ("workflows", "Workflows"),
-    ("schedules", "Schedules"),
-    ("apps", "Apps"),
-    ("surfaces", "Surfaces"),
+# Lemma brand purple.
+_BRAND = "6D3BEB"
+
+# Display order + emoji for the "What's inside" table (surfaces read as
+# "Connectors", the user-facing term).
+_RESOURCE_META = [
+    ("apps", "Apps", "🧩"),
+    ("agents", "Agents", "🤖"),
+    ("workflows", "Workflows", "🔀"),
+    ("functions", "Functions", "⚙️"),
+    ("tables", "Tables", "🗃️"),
+    ("schedules", "Schedules", "⏰"),
+    ("surfaces", "Connectors", "🔌"),
 ]
+
+# The Lemma bar-chart mark, in white, used as the install badge's logo. Kept tiny
+# and inline so the README is self-contained: shields.io bakes the data-URI logo
+# into the badge it serves, so it renders on GitHub (which would otherwise strip a
+# raw ``data:`` image).
+_LEMMA_MARK_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<rect x="2" y="13" width="5" height="9" rx="1" fill="#fff"/>'
+    '<rect x="9.5" y="8" width="5" height="14" rx="1" fill="#fff"/>'
+    '<rect x="17" y="3" width="5" height="19" rx="1" fill="#fff"/></svg>'
+)
+
+_DEFAULT_TAGLINE = (
+    "A shareable Lemma pod — agents, data, workflows, and connectors, "
+    "ready to install in one click."
+)
 
 
 def _app_base_url() -> str:
@@ -27,11 +54,36 @@ def _app_base_url() -> str:
     return str(base).rstrip("/") if base else "https://lemma.work"
 
 
+def _lemma_logo_data_uri() -> str:
+    encoded = base64.b64encode(_LEMMA_MARK_SVG.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def install_badge_url() -> str:
+    """The shields.io badge image URL: a large ``for-the-badge`` pill in the Lemma
+    brand color with the Lemma mark as its logo."""
+    query = urlencode(
+        {
+            "style": "for-the-badge",
+            "logo": _lemma_logo_data_uri(),
+            "logoColor": "white",
+        }
+    )
+    return f"https://img.shields.io/badge/Install%20to%20Lemma-{_BRAND}?{query}"
+
+
+def install_target(owner: str, repo: str) -> str:
+    return f"{_app_base_url()}/import/github/{owner}/{repo}"
+
+
 def install_badge(owner: str, repo: str) -> str:
-    app = _app_base_url()
-    target = f"{app}/import/github/{owner}/{repo}"
-    badge = "https://img.shields.io/badge/Install%20to-Lemma-6D3BEB"
-    return f"[![Install to Lemma]({badge})]({target})"
+    """A big, clickable install button: the branded badge linked to the one-click
+    GitHub import route, sized up with an explicit height."""
+    return (
+        f'<a href="{install_target(owner, repo)}">'
+        f'<img src="{install_badge_url()}" height="44" alt="Install to Lemma" />'
+        "</a>"
+    )
 
 
 def render_readme(
@@ -41,32 +93,62 @@ def render_readme(
     resource_counts: dict[str, int],
     owner: str,
     repo: str,
+    icon_url: str | None = None,
 ) -> str:
-    lines: list[str] = [f"# {pod_name}", ""]
-    if description:
-        lines += [description.strip(), ""]
-    lines += [install_badge(owner, repo), ""]
+    name = (pod_name or "Lemma Pod").strip() or "Lemma Pod"
+    tagline = (description or "").strip() or _DEFAULT_TAGLINE
 
     present = [
-        (label, resource_counts.get(key, 0))
-        for key, label in _RESOURCE_LABELS
+        (label, emoji, resource_counts.get(key, 0))
+        for key, label, emoji in _RESOURCE_META
         if resource_counts.get(key, 0) > 0
     ]
+
+    lines: list[str] = ['<div align="center">', ""]
+    if icon_url:
+        lines += [f'<img src="{icon_url}" width="88" height="88" alt="{name}" />', ""]
+    lines += [
+        f"# {name}",
+        "",
+        f"### {tagline}",
+        "",
+        install_badge(owner, repo),
+        "",
+        "</div>",
+        "",
+    ]
+
     if present:
-        lines += ["## What's inside", ""]
-        lines += [f"- **{label}:** {count}" for label, count in present]
+        lines += [
+            "## ✨ What's inside",
+            "",
+            "|  | Resource | Count |",
+            "| :-: | :-- | --: |",
+        ]
+        lines += [f"| {emoji} | **{label}** | {count} |" for label, emoji, count in present]
         lines += [""]
 
     lines += [
-        "## Install",
+        "## 🚀 Install",
         "",
-        "Click the badge above, or import this repo from Lemma: "
-        "**Settings → Share & Export → Import from GitHub**.",
+        f"**One click** — press **Install to Lemma** above "
+        f"(or [open the installer]({install_target(owner, repo)})).",
+        "",
+        "**From inside Lemma** — go to **Settings → Share & Export → Import from "
+        f"GitHub** and paste `{owner}/{repo}`.",
+        "",
+        "Everything installs into *your own* workspace — your data, your model keys. "
+        "Connectors reconnect to *your* accounts and apps rebuild for your pod on "
+        "import, so nothing is shared but the recipe.",
         "",
         "---",
         "",
-        "_Exported from [Lemma](https://lemma.work) — the open workspace for "
-        "humans and AI agents._",
+        '<div align="center">',
+        "",
+        '<sub>Exported from <a href="https://lemma.work">Lemma</a> — the open '
+        "workspace for humans and AI agents.</sub>",
+        "",
+        "</div>",
         "",
     ]
     return "\n".join(lines)

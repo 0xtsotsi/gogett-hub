@@ -7,6 +7,7 @@ import { Database, Loader2, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { DatastoreTableView } from '@/components/data/datastore-table-view';
+import { DatastoreTableSkeleton } from '@/components/data/datastore-table-skeleton';
 import { DocumentViewer } from '@/components/documents/document-viewer';
 import { ProductIcon } from '@/components/pod/product-icon';
 import { ConceptHint } from '@/components/education/concept-hint';
@@ -158,7 +159,9 @@ export default function DataHubPage({
             ? requestedTableTab
             : tables[0]?.name ?? null;
     const showingFiles = isFilesRoute;
-    const usesWorkbenchLayout = showingFiles || Boolean(activeTableName);
+    // Keep the tables loading state in the workbench layout so the skeleton fills
+    // the pane and matches the loaded table instead of collapsing to a small box.
+    const usesWorkbenchLayout = showingFiles || Boolean(activeTableName) || (!showingFiles && loadingTables);
 
     useEffect(() => {
         if (isFilesRoute && tabParam) {
@@ -1236,12 +1239,7 @@ export default function DataHubPage({
                         </>
                     )
                 ) : loadingTables ? (
-                    <EmptyState
-                        variant="panel"
-                        icon={<Loader2 className="h-5 w-5 animate-spin" />}
-                        title="Loading tables"
-                        description="Checking this pod's structured data."
-                    />
+                    <DatastoreTableSkeleton />
                 ) : activeTableName ? (
                     <DatastoreTableView
                         key={`${activeTableName}:${routeTableFiltersKey}`}

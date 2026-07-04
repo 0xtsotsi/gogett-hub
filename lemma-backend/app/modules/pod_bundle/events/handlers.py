@@ -105,6 +105,8 @@ async def export_pod_bundle(context: dict[str, str | None]) -> None:
                     pod_id=pod_id,
                     user_id=user_id,
                     with_data=state.with_data,
+                    data_tables=state.data_tables,
+                    with_files=state.with_files,
                     include=state.include,
                     ctx=ctx,
                     uow=uow,
@@ -548,10 +550,13 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
             )
             organization_id = ctx.organization_id
             async with context_scope(ctx):
+                # Resources only: a pod published to (possibly public) GitHub ships
+                # a template that recreates the pod in an empty-table state, never a
+                # dump of its row data.
                 pod_name, zip_bytes, _warnings = await BundleExporter().export(
                     pod_id=pod_id,
                     user_id=user_id,
-                    with_data=True,
+                    with_data=False,
                     include=None,
                     ctx=ctx,
                     uow=uow,

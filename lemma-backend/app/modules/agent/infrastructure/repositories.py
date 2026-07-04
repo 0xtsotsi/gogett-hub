@@ -49,6 +49,7 @@ from app.modules.agent.domain.value_objects import (
     JsonObject,
     JsonValue,
     MessageDraft,
+    MessageKind,
     to_json_value,
 )
 from app.modules.agent.infrastructure.models import (
@@ -1025,6 +1026,55 @@ class ConversationRepository:
             return None
         response = row.response if isinstance(row.response, dict) else {}
         return AgentRunApprovalDecision(row.decision), response
+
+    async def get_tool_call(
+        self,
+        *,
+        conversation_id: UUID,
+        tool_call_id: str,
+    ) -> MessageEntity | None:
+        """The pausing tool CALL for an approval, addressed by tool_call_id.
+
+        Looked up directly (not through a message-window scan) so a long
+        conversation can't push the original request_approval/ask_user call out
+        of view during resume reconciliation.
+        """
+        result = await self.session.execute(
+            select(MessageModel)
+            .where(
+                MessageModel.conversation_id == conversation_id,
+                MessageModel.tool_call_id == tool_call_id,
+                MessageModel.kind == MessageKind.TOOL_CALL.value,
+            )
+            .order_by(MessageModel.sequence.asc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        return row.to_entity() if row is not None else None
+
+    async def get_tool_return(
+        self,
+        *,
+        conversation_id: UUID,
+        tool_call_id: str,
+    ) -> MessageEntity | None:
+        """The synthesized tool RETURN for an approval, or None.
+
+        This is the idempotency guard for approval resume: if a return already
+        exists, the approved tool has already run and must NOT be re-executed.
+        """
+        result = await self.session.execute(
+            select(MessageModel)
+            .where(
+                MessageModel.conversation_id == conversation_id,
+                MessageModel.tool_call_id == tool_call_id,
+                MessageModel.kind == MessageKind.TOOL_RETURN.value,
+            )
+            .order_by(MessageModel.sequence.asc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        return row.to_entity() if row is not None else None
 
     async def list_resolved_approval_ids(
         self,

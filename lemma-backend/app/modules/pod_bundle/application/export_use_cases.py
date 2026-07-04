@@ -67,6 +67,7 @@ class ExportUseCases:
         with_data: bool,
         include: list[str] | None,
         data_tables: list[str] | None = None,
+        with_files: bool = False,
         ttl_seconds: int | None = None,
     ) -> ExportState:
         """Authorize POD_READ, persist a ``QUEUED`` state doc, and enqueue the
@@ -88,6 +89,7 @@ class ExportUseCases:
             status=ExportStatus.QUEUED,
             with_data=with_data,
             data_tables=data_tables,
+            with_files=with_files,
             include=include,
             ttl_seconds=resolved_ttl,
         )

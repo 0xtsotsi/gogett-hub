@@ -55,6 +55,40 @@ class _FakeRecordService:
         return [SimpleNamespace(data=r) for r in page], len(rows)
 
 
+@dataclass
+class _FakeFileEntity:
+    path: str
+    name: str
+    kind: str  # "FOLDER" | "FILE"
+    visibility: str = "POD"
+    description: str | None = None
+    size_bytes: int = 0
+    search_enabled: bool = True
+
+    @property
+    def is_folder(self) -> bool:
+        return self.kind == "FOLDER"
+
+    @property
+    def is_file(self) -> bool:
+        return self.kind == "FILE"
+
+
+class _FakeFileService:
+    """Serves a fixed file tree (by directory) + file bytes for the with_files
+    export path."""
+
+    def __init__(self, by_dir: dict[str, list[_FakeFileEntity]], contents: dict[str, bytes]):
+        self._by_dir = by_dir
+        self._contents = contents
+
+    async def list_files(self, pod_id, ctx, directory_path="/", limit=100, cursor=None):
+        return list(self._by_dir.get(directory_path, [])), None
+
+    async def download_file_content_by_path(self, pod_id, path, ctx):
+        return None, self._contents.get(path, b"")
+
+
 class _FakeFunctionService:
     def __init__(self, functions):
         self._functions = functions
@@ -241,7 +275,9 @@ def patched_exporter(monkeypatch):
 # --- tests -------------------------------------------------------------------
 
 
-async def _run_export(patched_exporter, *, with_data, include=None, data_tables=None):
+async def _run_export(
+    patched_exporter, *, with_data, include=None, data_tables=None, with_files=False
+):
     progress: list[tuple[int, int]] = []
     warnings_holder: list[list[str]] = []
 
@@ -253,6 +289,7 @@ async def _run_export(patched_exporter, *, with_data, include=None, data_tables=
         user_id=uuid4(),
         with_data=with_data,
         data_tables=data_tables,
+        with_files=with_files,
         include=include,
         ctx=object(),
         uow=object(),
@@ -351,6 +388,60 @@ async def test_data_tables_unknown_name_warns(patched_exporter, tmp_path):
     assert not (root / "tables" / "leads" / "data.csv").exists()
 
 
+async def test_table_data_byte_budget_truncates_rows(
+    patched_exporter, tmp_path, monkeypatch
+):
+    # leads has 2 rows; a per-item byte cap that fits only header + 1 row →
+    # data.csv is trimmed to 1 row with a truncation warning.
+    monkeypatch.setattr(
+        exporter_mod.pod_bundle_settings, "pod_bundle_export_max_file_bytes", 22
+    )
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=True)
+    warnings = _run_export.last_warnings  # type: ignore[attr-defined]
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    lines = (root / "tables" / "leads" / "data.csv").read_text().splitlines()
+    assert len(lines) == 2  # header + 1 row
+    assert any("truncated to 1 of 2 rows" in w and "leads" in w for w in warnings)
+
+
+async def test_with_files_exports_tree_bytes_and_manifest(
+    patched_exporter, tmp_path, monkeypatch
+):
+    folder = _FakeFileEntity(path="/docs", name="docs", kind="FOLDER", description="d")
+    doc = _FakeFileEntity(
+        path="/docs/guide.md", name="guide.md", kind="FILE", size_bytes=5
+    )
+    private = _FakeFileEntity(
+        path="/secret.txt", name="secret.txt", kind="FILE", visibility="PRIVATE", size_bytes=3
+    )
+    by_dir = {"/": [folder, private], "/docs": [doc]}
+    contents = {"/docs/guide.md": b"hello", "/secret.txt": b"no!"}
+    monkeypatch.setattr(
+        "app.modules.datastore.api.dependencies.build_file_service",
+        lambda uow: _FakeFileService(by_dir, contents),
+    )
+
+    _filename, zip_bytes, _progress = await _run_export(
+        patched_exporter, with_data=False, with_files=True
+    )
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+
+    assert (root / "files" / "docs" / ".folder.json").is_file()
+    assert (root / "files" / "docs" / "guide.md").read_bytes() == b"hello"
+    # PRIVATE files never travel.
+    assert not (root / "files" / "secret.txt").exists()
+    manifest = json.loads((root / "files" / ".files.json").read_text())
+    assert [e["path"] for e in manifest["files"]] == ["/docs/guide.md"]
+
+
+async def test_without_with_files_writes_no_file_bytes(patched_exporter, tmp_path):
+    _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=False)
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+    # files/ dir exists for layout parity but carries no manifest/content.
+    assert not (root / "files" / ".files.json").exists()
+
+
 async def test_per_table_record_cap_truncates_with_warning(patched_exporter, tmp_path, monkeypatch):
     # leads has 2 rows; cap at 1 → data.csv has 1 row + a truncation warning.
     monkeypatch.setattr(
@@ -386,9 +477,9 @@ def test_byte_budget_helper():
     warnings: list[str] = []
     budget = exporter_mod._ByteBudget(per_file=100, total=150, warnings=warnings)
     assert budget.allow(name="a", size=80) is True
-    assert budget.allow(name="big", size=200) is False  # over per-file
+    assert budget.allow(name="big", size=200) is False  # over per-item
     assert budget.allow(name="b", size=80) is False  # over remaining (150-80=70)
-    assert any("big" in w and "per-file" in w for w in warnings)
+    assert any("big" in w and "per-item" in w for w in warnings)
     assert any("budget reached" in w and "'b'" in w for w in warnings)
 
 
@@ -478,10 +569,10 @@ async def test_app_asset_over_byte_budget_is_skipped(
         "_app_response_dict",
         lambda a: {"name": a.name, "public_slug": "big-app", "visibility": "POD"},
     )
-    # Per-file budget below the archive size → source is skipped with a warning,
+    # Per-app budget below the archive size → source is skipped with a warning,
     # but the manifest (metadata) is still exported.
     monkeypatch.setattr(
-        exporter_mod.pod_bundle_settings, "pod_bundle_export_max_file_bytes", 100
+        exporter_mod.pod_bundle_settings, "pod_bundle_export_max_app_bytes", 100
     )
     _filename, zip_bytes, _progress = await _run_export(patched_exporter, with_data=False)
     warnings = _run_export.last_warnings  # type: ignore[attr-defined]
@@ -489,4 +580,4 @@ async def test_app_asset_over_byte_budget_is_skipped(
 
     assert (root / "apps" / "big_app" / "big_app.json").is_file()
     assert not (root / "apps" / "big_app" / "source").exists()
-    assert any("per-file limit" in w for w in warnings)
+    assert any("per-item limit" in w for w in warnings)

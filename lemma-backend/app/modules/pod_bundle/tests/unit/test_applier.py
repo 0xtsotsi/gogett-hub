@@ -78,6 +78,72 @@ class FakeTableService:
         self.created.append((name, [c.name for c in columns]))
 
 
+class _FakeFileService:
+    def __init__(self, existing=()):
+        self.existing = set(existing)
+        self.created_folders = []
+        self.created_files = []
+
+    async def get_file_by_path(self, pod_id, path, ctx):
+        if path in self.existing:
+            return object()
+        raise RuntimeError("not found")  # applier treats any raise as "absent"
+
+    async def create_folder(self, pod_id, path, ctx, description=None, visibility=None):
+        self.created_folders.append((path, description, visibility))
+
+    async def create_file(
+        self, pod_id, name, content, ctx, description=None, metadata=None,
+        directory_path="/", search_enabled=True, visibility=None,
+    ):
+        self.created_files.append(
+            (name, content, directory_path, visibility, search_enabled)
+        )
+
+
+def _file_step(name, *, is_folder):
+    return PlanStep(
+        index=0,
+        kind=StepKind.FILE,
+        name=name,
+        action=StepAction.CREATE,
+        detail={"is_folder": is_folder},
+    )
+
+
+async def test_file_apply_creates_folder_and_file(tmp_path, monkeypatch):
+    root = tmp_path / "bundle"
+    _write(root / "files" / "docs" / ".folder.json", {"visibility": "POD", "description": "d"})
+    (root / "files" / "docs" / "guide.md").write_text("hi", encoding="utf-8")
+    _write(
+        root / "files" / ".files.json",
+        {"files": [{"path": "/docs/guide.md", "description": "g", "visibility": "POD", "search_enabled": True}]},
+    )
+    fake = _FakeFileService()
+    monkeypatch.setattr(
+        "app.modules.datastore.api.dependencies.build_file_service", lambda uow: fake
+    )
+
+    applier = _applier(root)
+    await applier.apply_step(_file_step("docs", is_folder=True))
+    await applier.apply_step(_file_step("docs/guide.md", is_folder=False))
+
+    assert fake.created_folders == [("/docs", "d", "POD")]
+    assert fake.created_files == [("guide.md", b"hi", "/docs", "POD", True)]
+
+
+async def test_file_apply_is_idempotent_when_path_exists(tmp_path, monkeypatch):
+    root = tmp_path / "bundle"
+    (root / "files" / "guide.md").parent.mkdir(parents=True, exist_ok=True)
+    (root / "files" / "guide.md").write_text("hi", encoding="utf-8")
+    fake = _FakeFileService(existing={"/guide.md"})
+    monkeypatch.setattr(
+        "app.modules.datastore.api.dependencies.build_file_service", lambda uow: fake
+    )
+    await _applier(root).apply_step(_file_step("guide.md", is_folder=False))
+    assert fake.created_files == []  # already present → no re-create
+
+
 async def test_table_create_calls_service(tmp_path, monkeypatch):
     root = tmp_path / "bundle"
     _write(

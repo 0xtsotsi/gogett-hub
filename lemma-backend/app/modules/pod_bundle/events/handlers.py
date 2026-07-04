@@ -106,6 +106,7 @@ async def export_pod_bundle(context: dict[str, str | None]) -> None:
                     user_id=user_id,
                     with_data=state.with_data,
                     data_tables=state.data_tables,
+                    with_files=state.with_files,
                     include=state.include,
                     ctx=ctx,
                     uow=uow,

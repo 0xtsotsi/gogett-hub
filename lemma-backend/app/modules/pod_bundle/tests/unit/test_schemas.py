@@ -30,8 +30,31 @@ def test_export_data_tables_selects_specific_tables():
     assert request.with_data is False
 
 
-def test_export_total_record_cap_is_conservative():
-    """The whole-export row cap is kept low so a bundle can't dump the DB."""
+def test_export_with_files_defaults_off():
+    """Pod file storage is opt-in, off by default (resources-only export)."""
+    assert ExportStartRequest().with_files is False
+
+
+def test_export_caps_are_conservative_and_shared():
+    """Caps default to the shared lemma_pod_bundle values: 10k rows total, a
+    20MB data pool (tables + files), and a separate 20MB app pool."""
+    from lemma_pod_bundle.limits import (
+        MAX_APPS_TOTAL_BYTES,
+        MAX_DATA_TOTAL_BYTES,
+        MAX_RECORDS_TOTAL,
+    )
+
     from app.modules.pod_bundle.config import pod_bundle_settings
 
-    assert pod_bundle_settings.pod_bundle_export_max_records_total == 10000
+    assert pod_bundle_settings.pod_bundle_export_max_records_total == MAX_RECORDS_TOTAL
+    assert MAX_RECORDS_TOTAL == 10_000
+    assert (
+        pod_bundle_settings.pod_bundle_export_max_files_total_bytes
+        == MAX_DATA_TOTAL_BYTES
+        == 20 * 1024 * 1024
+    )
+    assert (
+        pod_bundle_settings.pod_bundle_export_max_apps_total_bytes
+        == MAX_APPS_TOTAL_BYTES
+        == 20 * 1024 * 1024
+    )

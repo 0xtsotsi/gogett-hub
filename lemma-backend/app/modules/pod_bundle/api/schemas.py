@@ -43,6 +43,15 @@ class ExportStartRequest(BaseModel):
             "export."
         ),
     )
+    with_files: bool = Field(
+        default=False,
+        description=(
+            "Opt-in: include the pod's POD-visible file storage (folders + file "
+            "bytes) in the bundle. Off by default. File bytes share a conservative "
+            "size budget with table row data (meant for small skill/script/seed "
+            "files, not a bulk file dump)."
+        ),
+    )
     include: list[str] | None = Field(
         default=None,
         description=(

@@ -366,9 +366,15 @@ def test_download_app_assets_prefers_unpacked_source_over_dist(tmp_path: Path):
         )
     )
 
-    from lemma_cli.cli_app.pod_bundle import _download_app_assets
+    from lemma_cli.cli_app.pod_bundle import _ByteBudget, _download_app_assets
 
-    _download_app_assets(client, "pod_123", "support_app", resource_dir)
+    _download_app_assets(
+        client,
+        "pod_123",
+        "support_app",
+        resource_dir,
+        app_budget=_ByteBudget(per_item=10_000_000, total=20_000_000, warnings=[]),
+    )
 
     assert (resource_dir / "source" / "package.json").exists()
     assert (resource_dir / "source" / "src" / "main.ts").exists()
@@ -1972,7 +1978,12 @@ def test_resource_dirs_warns_on_misnamed_manifest(tmp_path: Path, monkeypatch):
 
 
 def test_export_then_seed_table_data_strips_audit_columns(tmp_path: Path):
-    from lemma_cli.cli_app.pod_bundle import _export_table_data, _import_table_data
+    from lemma_cli.cli_app.pod_bundle import (
+        _ByteBudget,
+        _export_table_data,
+        _import_table_data,
+        _RowBudget,
+    )
 
     resource_dir = tmp_path / "tables" / "people"
     resource_dir.mkdir(parents=True)
@@ -2001,7 +2012,14 @@ def test_export_then_seed_table_data_strips_audit_columns(tmp_path: Path):
             }
         )
     )
-    _export_table_data(export_sdk, "people", resource_dir)
+    _export_table_data(
+        export_sdk,
+        "people",
+        resource_dir,
+        row_budget=_RowBudget(),
+        data_budget=_ByteBudget(per_item=10_000_000, total=20_000_000, warnings=[]),
+        warnings=[],
+    )
     assert (resource_dir / "data.csv").is_file()
 
     captured: list[tuple[str, list[dict]]] = []
@@ -2354,3 +2372,35 @@ def test_export_pod_bundle_data_tables_unknown_name_warns(tmp_path: Path):
     )
 
     assert any("ghost" in w and "not a table" in w for w in result["warnings"])
+
+
+def test_export_table_data_skips_when_over_byte_budget(tmp_path: Path):
+    from lemma_cli.cli_app.pod_bundle import (
+        _ByteBudget,
+        _export_table_data,
+        _RowBudget,
+    )
+
+    rows = [{"id": str(i), "blob": "x" * 100} for i in range(5)]
+    sdk = SimpleNamespace(
+        records=SimpleNamespace(
+            list=lambda table, *, limit, offset: {
+                "items": rows[offset : offset + limit],
+                "total": len(rows),
+            }
+        )
+    )
+    resource_dir = tmp_path / "tables" / "big"
+    resource_dir.mkdir(parents=True)
+    warnings: list[str] = []
+    # A per-item cap far below the CSV size → the whole table's data is dropped.
+    _export_table_data(
+        sdk,
+        "big",
+        resource_dir,
+        row_budget=_RowBudget(),
+        data_budget=_ByteBudget(per_item=10, total=1_000, warnings=warnings),
+        warnings=warnings,
+    )
+    assert not (resource_dir / "data.csv").exists()
+    assert any("tables/big/data.csv" in w and "per-item limit" in w for w in warnings)

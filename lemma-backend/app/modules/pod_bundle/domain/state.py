@@ -206,6 +206,8 @@ class ExportState(_BundleJobState):
     # Independent of with_data (which seeds every table); the effective set is the
     # union of the two.
     data_tables: list[str] | None = None
+    # Opt-in: include the pod's file storage (folders + file bytes).
+    with_files: bool = False
     include: list[str] | None = None
     ttl_seconds: int | None = None
     staging_key: str | None = None

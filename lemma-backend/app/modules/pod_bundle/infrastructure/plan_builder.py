@@ -22,7 +22,7 @@ from uuid import UUID
 from lemma_pod_bundle import diff_table_columns, load_resource_payload
 from lemma_pod_bundle.diff import _order_table_dirs_by_dependency
 from lemma_pod_bundle.jsonc import loads_jsonc
-from lemma_pod_bundle.layout import POD_MANIFEST_FILE, TABLE_DATA_FILE
+from lemma_pod_bundle.layout import FILES_MANIFEST, POD_MANIFEST_FILE, TABLE_DATA_FILE
 
 from app.core.log.log import get_logger
 from app.modules.pod_bundle.domain.state import (
@@ -59,6 +59,51 @@ def _resource_subdirs(bundle_root: Path, resource_type: str) -> list[Path]:
         (p for p in type_dir.iterdir() if p.is_dir()),
         key=lambda p: p.name,
     )
+
+
+def _file_steps(bundle_root: Path) -> list[PlanStep]:
+    """FILE steps for a bundle's ``files/`` tree — folders shallow-first (so a
+    parent is created before its children) then file bytes. ``.folder.json`` and
+    the ``.files.json`` manifest are layout metadata, not files to recreate."""
+    files_root = bundle_root / "files"
+    if not files_root.is_dir():
+        return []
+
+    steps: list[PlanStep] = []
+    folder_dirs = sorted(
+        (p for p in files_root.rglob("*") if p.is_dir()),
+        key=lambda p: (len(p.relative_to(files_root).parts), str(p)),
+    )
+    for folder in folder_dirs:
+        rel = "/".join(folder.relative_to(files_root).parts)
+        steps.append(
+            PlanStep(
+                index=0,
+                kind=StepKind.FILE,
+                name=rel,
+                action=StepAction.CREATE,
+                detail={"is_folder": True},
+            )
+        )
+
+    file_paths = sorted(
+        (p for p in files_root.rglob("*") if p.is_file()),
+        key=lambda p: str(p.relative_to(files_root)),
+    )
+    for path in file_paths:
+        parts = path.relative_to(files_root).parts
+        if parts[-1] in (FILES_MANIFEST, ".folder.json"):
+            continue
+        steps.append(
+            PlanStep(
+                index=0,
+                kind=StepKind.FILE,
+                name="/".join(parts),
+                action=StepAction.CREATE,
+                detail={"is_folder": False},
+            )
+        )
+    return steps
 
 
 def _has_grants(payload: dict[str, Any]) -> bool:
@@ -178,6 +223,9 @@ class PlanBuilder:
         existing_apps = await self._existing.app_names()
         for d in _resource_subdirs(bundle_root, "apps"):
             steps.append(self._simple_step(StepKind.APP, d.name, existing_apps))
+
+        # --- files (folders parent-first, then file bytes) -------------------
+        steps.extend(_file_steps(bundle_root))
 
         # --- table data (after tables exist) ---------------------------------
         for name, _ in data_steps:

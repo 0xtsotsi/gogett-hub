@@ -105,6 +105,30 @@ async def test_create_vs_update_classification(tmp):
     assert [s.index for s in plan.steps] == list(range(len(plan.steps)))
 
 
+async def test_files_produce_folder_then_file_steps(tmp):
+    root = _build_bundle(tmp)
+    # files/docs/.folder.json (folder) + files/docs/guide.md (file) + manifest.
+    _write(root / "files" / "docs" / ".folder.json", {"visibility": "POD"})
+    (root / "files" / "docs" / "guide.md").write_text("hi", encoding="utf-8")
+    _write(root / "files" / ".files.json", {"files": [{"path": "/docs/guide.md"}]})
+
+    plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
+
+    file_steps = [s for s in plan.steps if s.kind == StepKind.FILE]
+    # Folder first (so it exists before the file), then the file — manifest and
+    # .folder.json are layout metadata, not steps.
+    assert [(s.name, s.detail.get("is_folder")) for s in file_steps] == [
+        ("docs", True),
+        ("docs/guide.md", False),
+    ]
+
+
+async def test_no_files_dir_yields_no_file_steps(tmp):
+    root = _build_bundle(tmp)
+    plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
+    assert not [s for s in plan.steps if s.kind == StepKind.FILE]
+
+
 async def test_destructive_column_drop_flagged(tmp):
     root = _build_bundle(tmp)
     # Bundle table has fewer columns than the pod's live table -> a drop.

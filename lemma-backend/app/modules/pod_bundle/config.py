@@ -1,5 +1,13 @@
 """Pod bundle module configuration."""
 
+from lemma_pod_bundle.limits import (
+    MAX_APP_BYTES,
+    MAX_APPS_TOTAL_BYTES,
+    MAX_DATA_TOTAL_BYTES,
+    MAX_ITEM_BYTES,
+    MAX_RECORDS_PER_TABLE,
+    MAX_RECORDS_TOTAL,
+)
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -67,12 +75,14 @@ class PodBundleSettings(BaseSettings):
     # --- Export data/asset caps (never dump GBs) -------------------------
     # The schema always exports in full; only row data and file/asset BYTES are
     # bounded, best-effort with warnings surfaced on the export status.
+    # Defaults live in lemma_pod_bundle.limits (shared with the CLI); kept
+    # env-overridable here for ops.
     pod_bundle_export_max_records_per_table: int = Field(
-        default=5000,
+        default=MAX_RECORDS_PER_TABLE,
         description="Max rows written to a table's data.csv seed (per table).",
     )
     pod_bundle_export_max_records_total: int = Field(
-        default=10000,
+        default=MAX_RECORDS_TOTAL,
         description=(
             "Max rows across all tables in one export; once reached, remaining "
             "tables export schema-only (no data.csv). Kept low on purpose — a "
@@ -81,14 +91,33 @@ class PodBundleSettings(BaseSettings):
         ),
     )
     pod_bundle_export_max_file_bytes: int = Field(
-        default=10 * 1024 * 1024,
-        description="Skip any single exported file/asset larger than this (bytes).",
+        default=MAX_ITEM_BYTES,
+        description=(
+            "Per-item byte ceiling for one DATA payload — a table's data.csv or a "
+            "single pod file. Anything larger is skipped/truncated with a warning."
+        ),
     )
     pod_bundle_export_max_files_total_bytes: int = Field(
-        default=100 * 1024 * 1024,
+        default=MAX_DATA_TOTAL_BYTES,
         description=(
-            "Running byte budget for included files/assets in one export; stop "
-            "adding once reached."
+            "Shared byte budget for pod DATA in one export — table row data + pod "
+            "files draw from this single pool (app builds are budgeted separately). "
+            "Kept small on purpose: a bundle ships skills/scripts/small seed tables "
+            "(UI defaults), not a data dump."
+        ),
+    )
+    pod_bundle_export_max_app_bytes: int = Field(
+        default=MAX_APP_BYTES,
+        description=(
+            "Per-app byte ceiling for a single app build (source or dist archive). "
+            "An app larger than this exports metadata-only with a warning."
+        ),
+    )
+    pod_bundle_export_max_apps_total_bytes: int = Field(
+        default=MAX_APPS_TOTAL_BYTES,
+        description=(
+            "Byte budget for ALL app builds combined in one export — separate from "
+            "the data/files pool. Once spent, remaining apps export metadata-only."
         ),
     )
 

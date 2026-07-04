@@ -113,8 +113,15 @@ from ..cli_core.payload import build_request
 from ..cli_core.state import console
 from .app_bundle import deploy_app_bundle
 from .enums import SURFACE_PLATFORMS
+from lemma_pod_bundle.limits import (
+    MAX_APP_BYTES,
+    MAX_APPS_TOTAL_BYTES,
+    MAX_DATA_TOTAL_BYTES,
+    MAX_ITEM_BYTES,
+    MAX_RECORDS_PER_TABLE,
+    MAX_RECORDS_TOTAL,
+)
 from .record_io import (
-    RECORD_EXPORT_DEFAULT_LIMIT,
     fetch_records_capped,
     read_record_rows,
     write_export_rows,
@@ -141,6 +148,44 @@ DESTRUCTIVE_PERMISSION_IDS = frozenset(
         "connector_account.manage",
     }
 )
+
+
+class _RowBudget:
+    """Per-table + running-total row cap for seed data — the same numbers the
+    server enforces (``lemma_pod_bundle.limits``), so CLI and API bundles are
+    bounded identically."""
+
+    def __init__(self) -> None:
+        self.remaining = MAX_RECORDS_TOTAL
+
+    def table_cap(self) -> int:
+        return max(0, min(MAX_RECORDS_PER_TABLE, self.remaining))
+
+    def consume(self, rows: int) -> None:
+        self.remaining -= max(0, rows)
+
+
+class _ByteBudget:
+    """Per-item + running-total byte cap. ``allow`` warns + returns False for an
+    oversized/over-budget item, else reserves its bytes."""
+
+    def __init__(self, *, per_item: int, total: int, warnings: list[str]) -> None:
+        self.per_item = per_item
+        self.remaining = total
+        self.warnings = warnings
+
+    def allow(self, *, name: str, size: int) -> bool:
+        if size > self.per_item:
+            self.warnings.append(
+                f"'{name}' skipped: {size} bytes exceeds the per-item limit "
+                f"({self.per_item} bytes)"
+            )
+            return False
+        if size > self.remaining:
+            self.warnings.append(f"'{name}' skipped: export size budget reached")
+            return False
+        self.remaining -= size
+        return True
 
 
 def _progress_start(resource_type: str, resource_name: str, action: str) -> None:
@@ -267,17 +312,39 @@ def _prepare_agent_update_payload(
     return update
 
 
-def _export_table_data(pod_sdk: Any, table_name: str, resource_dir: Path) -> None:
-    """Dump up to the export cap of a table's rows to ``data.csv`` (skipped when
-    empty). Warns if the row count hit the cap, since extra rows are dropped."""
-    rows = fetch_records_capped(pod_sdk, table_name, RECORD_EXPORT_DEFAULT_LIMIT)
+def _export_table_data(
+    pod_sdk: Any,
+    table_name: str,
+    resource_dir: Path,
+    *,
+    row_budget: _RowBudget,
+    data_budget: _ByteBudget,
+    warnings: list[str],
+) -> None:
+    """Dump a table's rows to ``data.csv`` under the shared row + byte budgets
+    (skipped when empty, over budget, or the row total is spent). Warns on any
+    truncation so the caller knows rows were dropped."""
+    cap = row_budget.table_cap()
+    if cap <= 0:
+        warnings.append(
+            f"table '{table_name}' seed data omitted: export record budget reached"
+        )
+        return
+    rows = fetch_records_capped(pod_sdk, table_name, cap)
     if not rows:
         return
-    write_export_rows(resource_dir / TABLE_DATA_FILE, rows, "csv")
-    if len(rows) >= RECORD_EXPORT_DEFAULT_LIMIT:
-        console.print(
-            f"[yellow]warning[/yellow] table '{table_name}': exported the first "
-            f"{RECORD_EXPORT_DEFAULT_LIMIT} rows (cap); any beyond that were skipped."
+    dest = resource_dir / TABLE_DATA_FILE
+    write_export_rows(dest, rows, "csv")
+    size = dest.stat().st_size
+    if not data_budget.allow(name=f"tables/{table_name}/data.csv", size=size):
+        # Over the per-item or shared data budget → don't ship it.
+        dest.unlink(missing_ok=True)
+        return
+    row_budget.consume(len(rows))
+    if len(rows) >= cap:
+        warnings.append(
+            f"table '{table_name}': exported the first {len(rows)} rows (cap); "
+            f"any beyond that were skipped."
         )
 
 
@@ -399,13 +466,22 @@ def _extract_large_text(
     return next_payload
 
 
-def _download_app_assets(client: Lemma, pod_id: str, app_name: str, resource_dir: Path) -> None:
+def _download_app_assets(
+    client: Lemma,
+    pod_id: str,
+    app_name: str,
+    resource_dir: Path,
+    *,
+    app_budget: _ByteBudget,
+) -> None:
     pod_sdk = client.pod(pod_id)
     try:
         archive_bytes = pod_sdk.apps.download_source_archive(app_name)
     except LemmaAPIError:
         archive_bytes = b""
     if archive_bytes:
+        if not app_budget.allow(name=f"apps/{app_name}/source", size=len(archive_bytes)):
+            return
         source_dir = resource_dir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
         with ZipFile(io.BytesIO(archive_bytes)) as archive:
@@ -420,7 +496,9 @@ def _download_app_assets(client: Lemma, pod_id: str, app_name: str, resource_dir
         dist_archive = pod_sdk.apps.download_dist_archive(app_name)
     except LemmaAPIError:
         dist_archive = b""
-    if dist_archive:
+    if dist_archive and app_budget.allow(
+        name=f"apps/{app_name}/dist.zip", size=len(dist_archive)
+    ):
         (resource_dir / "dist.zip").write_bytes(dist_archive)
 
 
@@ -463,6 +541,7 @@ def _export_pod_files(
     bundle_root: Path,
     *,
     with_files: bool = False,
+    data_budget: _ByteBudget | None = None,
 ) -> dict[str, int]:
     files_root = bundle_root / "files"
     files_root.mkdir(parents=True, exist_ok=True)
@@ -505,6 +584,15 @@ def _export_pod_files(
             console.print(
                 f"[yellow]warning[/yellow] file '{path}': could not download "
                 f"({exc}); skipped."
+            )
+            return
+        # File bytes draw from the shared data budget (same caps as the server).
+        if data_budget is not None and not data_budget.allow(
+            name=f"files{path}", size=len(content)
+        ):
+            console.print(
+                f"[yellow]warning[/yellow] file '{path}': exceeds the export size "
+                f"budget; skipped."
             )
             return
         target_path = files_root.joinpath(*relative_parts)
@@ -574,6 +662,15 @@ def export_pod_bundle(
     seed_tables = {name.strip() for name in (data_tables or set()) if name and name.strip()}
     wants_data = with_data or bool(seed_tables)
     data_table_warnings: list[str] = []
+    # Same caps the server enforces (lemma_pod_bundle.limits): data + files share
+    # one byte pool; app builds get their own.
+    row_budget = _RowBudget()
+    data_budget = _ByteBudget(
+        per_item=MAX_ITEM_BYTES, total=MAX_DATA_TOTAL_BYTES, warnings=data_table_warnings
+    )
+    app_budget = _ByteBudget(
+        per_item=MAX_APP_BYTES, total=MAX_APPS_TOTAL_BYTES, warnings=data_table_warnings
+    )
 
     def should_export(resource_type: str) -> bool:
         return resource_type not in excluded and (
@@ -614,7 +711,14 @@ def export_pod_bundle(
             full_table = to_plain(pod_sdk.tables.get(table_name))
             _write_json(resource_dir / f"{table_name}.json", _normalize_table_payload(full_table))
             if with_data or table_name in seed_tables:
-                _export_table_data(pod_sdk, table_name, resource_dir)
+                _export_table_data(
+                    pod_sdk,
+                    table_name,
+                    resource_dir,
+                    row_budget=row_budget,
+                    data_budget=data_budget,
+                    warnings=data_table_warnings,
+                )
         for missing in sorted(seed_tables - exported_table_names):
             data_table_warnings.append(
                 f"data-table '{missing}' is not a table in this pod; skipped"
@@ -737,12 +841,18 @@ def export_pod_bundle(
             resource_dir.mkdir(parents=True, exist_ok=True)
             full_app = to_plain(pod_sdk.apps.get(app_name))
             _write_json(resource_dir / f"{app_name}.json", _normalize_app_payload(full_app))
-            _download_app_assets(client, pod_id, app_name, resource_dir)
+            _download_app_assets(
+                client, pod_id, app_name, resource_dir, app_budget=app_budget
+            )
 
     file_counts = {"folders": 0, "files": 0}
     if should_export("files"):
         file_counts = _export_pod_files(
-            client, pod_id, bundle_root, with_files=with_files
+            client,
+            pod_id,
+            bundle_root,
+            with_files=with_files,
+            data_budget=data_budget,
         )
 
     # Replace non-portable member/account ids with ${name} variables recorded in

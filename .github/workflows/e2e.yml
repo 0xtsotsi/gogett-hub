@@ -46,11 +46,15 @@ jobs:
       fail-fast: false
       matrix:
         suite:
-          # Fast API suite — no Kreuzberg, so it stays light enough to run 2
-          # xdist workers on the runner (~2x faster than serial).
+          # Fast API suite — no Kreuzberg. Serial for now: at 2 xdist workers the
+          # heavy authz tests intermittently drop a connection to the shared
+          # SuperTokens/Postgres containers under contention (each worker is a
+          # full app+container stack; see db_pool_size docstring re: the 100-conn
+          # ceiling). Reliable > fast for a merge gate — revisit -n2 with pool/
+          # container tuning as a follow-up.
           - name: mocked
             target: test-e2e-fast
-            workers: 2
+            workers: 1
           # Kreuzberg-backed indexing/search tests (still mocked LLM). Serial:
           # the shared Kreuzberg container is memory-heavy and parallel indexing
           # is contention-flaky.
@@ -77,9 +81,8 @@ jobs:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      # Worker count is per-suite (see matrix): the fast suite runs 2 xdist
-      # workers now that Kreuzberg is split out and it fits the runner's memory;
-      # the indexing suite stays serial. Both run on separate runners so the
-      # gate's wall-clock is the slower of the two.
+      # Worker count is per-suite (see matrix). Both suites run serially today for
+      # reliability; they run on separate runners so the gate's wall-clock is the
+      # slower of the two, not their sum.
       - name: E2E tests (mocked LLM + fake AgentBox)
         run: make ${{ matrix.suite.target }} E2E_WORKERS=${{ matrix.suite.workers }}

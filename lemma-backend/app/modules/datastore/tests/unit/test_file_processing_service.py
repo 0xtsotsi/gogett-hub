@@ -193,6 +193,62 @@ async def test_process_file_async_indexes_user_markdown_without_processor():
 
 
 @pytest.mark.asyncio
+async def test_process_file_async_user_markdown_with_companion_images():
+    """A BYO markdown doc with companion images stores the images as sibling
+    child artifacts, lists them in the manifest, and rewrites the markdown image
+    references to their basenames so they resolve via the children endpoint."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="scan.pdf",
+        path="/manuals/scan.pdf",
+        mime_type="application/pdf",
+        file_metadata={
+            "markdown_source": "user",
+            "markdown_asset_names": ["fig1.png"],
+        },
+    )
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult(), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+    pod_id = service.pod_id
+    source_md = b"<!-- PAGE 1 -->\n\n# Doc\n\n![diagram](images/fig1.png)"
+
+    async def _download(key):
+        if key.endswith("/.scan.pdf/source.md"):
+            return source_md
+        if key.endswith("/.scan.pdf/fig1.png"):
+            return b"PNGDATA"
+        raise AssertionError(f"unexpected download {key}")
+
+    service.storage.download_file.side_effect = _download
+
+    await service.process_file_async(file_id)
+
+    service.document_processor.extract.assert_not_awaited()
+    uploaded = {c.args[0]: c.args[1] for c in service.storage.upload_file.await_args_list}
+    prefix = f"pods/{pod_id}/files/manuals/.scan.pdf"
+    # document.md + re-persisted source.md + the companion image + manifest.
+    assert set(uploaded) == {
+        f"{prefix}/document.md",
+        f"{prefix}/source.md",
+        f"{prefix}/fig1.png",
+        f"{prefix}/manifest.json",
+    }
+    assert uploaded[f"{prefix}/fig1.png"] == b"PNGDATA"
+    # The markdown reference is rewritten to the sibling basename.
+    assert b"![diagram](fig1.png)" in uploaded[f"{prefix}/document.md"]
+    manifest = json.loads(uploaded[f"{prefix}/manifest.json"])
+    assert manifest["markdown_source"] == "user"
+    kinds = [a["kind"] for a in manifest["artifacts"]]
+    assert "image" in kinds
+
+
+@pytest.mark.asyncio
 async def test_process_file_async_byo_holds_no_db_session_during_io():
     """The bring-your-own path must also release the DB connection during the
     source.md download + chunking + index (no session held across slow I/O)."""

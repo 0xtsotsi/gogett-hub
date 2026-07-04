@@ -72,6 +72,40 @@ async def test_attach_user_markdown_stores_source_and_requeues():
 
 
 @pytest.mark.asyncio
+async def test_attach_user_markdown_stores_companion_images():
+    entity = _entity()
+    writer = _writer(entity)
+
+    await writer.attach_user_markdown(
+        entity.pod_id,
+        "/docs/a.pdf",
+        b"# Doc\n\n![](fig1.png)",
+        uuid4(),
+        images=[("fig1.png", b"PNGDATA"), ("assets/fig2.png", b"PNG2")],
+    )
+
+    keys = {c.args[0]: c.args[1] for c in writer.storage.upload_file.await_args_list}
+    base = f"pods/{entity.pod_id}/files/docs/.a.pdf"
+    assert keys[f"{base}/source.md"] == b"# Doc\n\n![](fig1.png)"
+    assert keys[f"{base}/fig1.png"] == b"PNGDATA"
+    # Path in the upload filename is reduced to a safe basename.
+    assert keys[f"{base}/fig2.png"] == b"PNG2"
+    assert entity.metadata["markdown_source"] == "user"
+    assert entity.metadata["markdown_asset_names"] == ["fig1.png", "fig2.png"]
+
+
+@pytest.mark.asyncio
+async def test_attach_rejects_traversal_image_name():
+    entity = _entity()
+    writer = _writer(entity)
+
+    with pytest.raises(DatastoreValidationError):
+        await writer.attach_user_markdown(
+            entity.pod_id, "/docs/a.pdf", b"# Doc", uuid4(), images=[("..", b"x")]
+        )
+
+
+@pytest.mark.asyncio
 async def test_attach_rejects_markdown_and_text_documents():
     entity = _entity(mime="text/markdown")
     writer = _writer(entity)

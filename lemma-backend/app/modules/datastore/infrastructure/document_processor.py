@@ -9,8 +9,6 @@ port with Kreuzberg v5 alone; callers don't change.
 
 from __future__ import annotations
 
-import re
-
 from app.core.log.log import get_logger
 from app.modules.datastore.config import datastore_settings
 from app.modules.datastore.domain.document_processing import (
@@ -24,6 +22,9 @@ from app.modules.datastore.infrastructure.kreuzberg_helper import (
     KreuzbergExtractionResult,
     KreuzbergHelper,
 )
+from app.modules.datastore.infrastructure.markdown_images import (
+    rewrite_image_references,
+)
 from app.modules.datastore.infrastructure.pdf_page_rendering import (
     PdfPageRenderingMixin,
 )
@@ -31,8 +32,6 @@ from app.modules.datastore.infrastructure.pdf_page_rendering import (
 logger = get_logger(__name__)
 
 _PAGE_MARKER = "<!-- PAGE "
-_MARKDOWN_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\()([^)\s]+)((?:\s+['\"][^)]*['\"])?\))")
-_HTML_IMAGE_RE = re.compile(r"(<img\b[^>]*\bsrc=[\"'])([^\"']+)([\"'])")
 
 
 def _int_or_none(value: object) -> int | None:
@@ -248,23 +247,7 @@ class KreuzbergDocumentProcessor(PdfPageRenderingMixin):
         return "\n\n".join(section for section in sections if section)
 
     def _rewrite_image_references(self, markdown: str, image_names: set[str]) -> str:
-        if not markdown or not image_names:
-            return markdown
-
-        def normalize_src(src: str) -> str:
-            stripped = src.strip("<>")
-            normalized = stripped.split("?", 1)[0].split("#", 1)[0]
-            image_name = normalized.rsplit("/", 1)[-1]
-            return image_name if image_name in image_names else src
-
-        markdown = _MARKDOWN_IMAGE_RE.sub(
-            lambda m: f"{m.group(1)}{normalize_src(m.group(2))}{m.group(3)}",
-            markdown,
-        )
-        return _HTML_IMAGE_RE.sub(
-            lambda m: f"{m.group(1)}{normalize_src(m.group(2))}{m.group(3)}",
-            markdown,
-        )
+        return rewrite_image_references(markdown, image_names)
 
 
 def create_document_processor() -> DocumentProcessorPort:

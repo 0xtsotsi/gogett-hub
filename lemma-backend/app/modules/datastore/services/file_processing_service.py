@@ -10,6 +10,7 @@ from uuid import UUID
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.datastore.domain.document_processing import (
     DocumentExtraction,
+    DocumentImage,
     DocumentPage,
 )
 from app.modules.datastore.domain.errors import DatastoreObjectNotFoundError
@@ -19,6 +20,9 @@ from app.modules.datastore.infrastructure.document_processor import (
     create_document_processor,
 )
 from app.modules.datastore.infrastructure.markdown_chunker import chunk_markdown
+from app.modules.datastore.infrastructure.markdown_images import (
+    rewrite_image_references,
+)
 from app.modules.datastore.infrastructure.models import DatastoreFile
 from app.modules.datastore.infrastructure.repositories.file_repository import (
     DatastoreFileRepository,
@@ -49,6 +53,9 @@ _MANIFEST_VERSION = 3
 # set, the processor chunks/indexes the stored ``source.md`` and skips the
 # document processor entirely.
 _USER_MARKDOWN_SOURCE = "user"
+# ``file_metadata["markdown_asset_names"]`` — basenames of the companion images
+# the user uploaded with their markdown (stored as sibling child artifacts).
+_MARKDOWN_ASSET_NAMES_KEY = "markdown_asset_names"
 
 _CONVERTED_MARKDOWN_MIME_TYPES: frozenset[str] = frozenset(
     {
@@ -265,7 +272,8 @@ class DatastoreFileProcessingService:
             if raw is not None:
                 markdown = raw.decode("utf-8", "replace")
                 if markdown.strip():
-                    return self._extraction_from_user_markdown(markdown), raw
+                    images = await self._load_user_markdown_images(file_entity)
+                    return self._extraction_from_user_markdown(markdown, images), raw
             logger.warning(
                 "File %s is flagged markdown_source=user but its source.md is "
                 "missing/empty; falling back to document extraction",
@@ -282,17 +290,52 @@ class DatastoreFileProcessingService:
         )
         return extraction, None
 
-    def _extraction_from_user_markdown(self, markdown: str) -> DocumentExtraction:
-        """Build a ``DocumentExtraction`` from user-provided markdown: chunk it
-        in-process and derive per-page summaries from any ``<!-- PAGE n -->``
-        markers. The markdown is kept verbatim (it is the canonical document.md)."""
+    async def _load_user_markdown_images(
+        self, file_entity: DatastoreFile
+    ) -> list[DocumentImage]:
+        """Download the companion images the user attached with their markdown
+        (basenames recorded in ``file_metadata``). They live as sibling child
+        artifacts and are re-persisted by the projection write. A missing asset
+        is skipped (its markdown reference simply won't resolve)."""
+        names = (file_entity.file_metadata or {}).get(_MARKDOWN_ASSET_NAMES_KEY) or []
+        images: list[DocumentImage] = []
+        for name in names:
+            try:
+                content = await self.storage.download_file(
+                    build_datastore_child_artifact_key(
+                        self.pod_id, file_entity.path, name
+                    )
+                )
+            except DatastoreObjectNotFoundError:
+                logger.warning(
+                    "User markdown asset %s missing for %s", name, file_entity.path
+                )
+                continue
+            images.append(
+                DocumentImage(
+                    name=name,
+                    content=content,
+                    mime_type=mimetypes.guess_type(name)[0]
+                    or "application/octet-stream",
+                )
+            )
+        return images
+
+    def _extraction_from_user_markdown(
+        self, markdown: str, images: list[DocumentImage]
+    ) -> DocumentExtraction:
+        """Build a ``DocumentExtraction`` from user-provided markdown: rewrite its
+        image references to the companion-image basenames (so they resolve as
+        sibling child artifacts), chunk it in-process, and derive per-page
+        summaries from any ``<!-- PAGE n -->`` markers."""
+        markdown = rewrite_image_references(markdown, {image.name for image in images})
         chunks = chunk_markdown(markdown)
         page_count = max((page for _, page in parse_page_offsets(markdown)), default=0)
         pages = [DocumentPage(page_number=number) for number in range(1, page_count + 1)]
         return DocumentExtraction(
             markdown=markdown,
             chunks=chunks,
-            images=[],
+            images=images,
             pages=pages,
             detected_languages=[],
             extraction_mode="user_markdown",

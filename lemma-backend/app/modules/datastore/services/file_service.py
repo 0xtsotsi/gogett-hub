@@ -196,12 +196,13 @@ class DatastoreFileService:
         path: str,
         markdown_content: bytes,
         ctx: Context,
+        images: list[tuple[str, bytes]] | None = None,
     ) -> DatastoreFileEntity:
-        """Attach/replace a user-provided markdown version of a document, then
-        re-queue it so the user's markdown is chunked/indexed and served as the
-        agent-facing document.md."""
+        """Attach/replace a user-provided markdown version of a document (plus any
+        images it references), then re-queue it so the user's markdown is
+        chunked/indexed and served — with resolvable images — as document.md."""
         return await self._writer.attach_user_markdown(
-            pod_id, path, markdown_content, ctx.user_id, ctx=ctx
+            pod_id, path, markdown_content, ctx.user_id, images=images, ctx=ctx
         )
 
     async def detach_user_markdown(

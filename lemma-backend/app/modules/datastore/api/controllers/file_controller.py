@@ -328,16 +328,30 @@ async def attach_document_markdown(
     ctx: PodContextDep,
     data: UploadFile = File(...),
     path: str = Form(...),
+    images: list[UploadFile] = File(default=[]),
 ) -> FileDetailResponse:
-    """Attach (or replace) a user-authored markdown version of a document.
+    """Attach (or replace) a user-authored markdown version of a document, plus
+    any images it references.
 
     The uploaded markdown becomes the document's agent-facing ``document.md`` and
     is chunked/indexed on the original's behalf; the source file is unchanged.
+    Each uploaded image is stored as a sibling child artifact so a reference like
+    ``![](fig1.png)`` resolves through the children endpoint — send the images
+    under repeated ``images`` fields, named to match the markdown references.
     Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
     """
     markdown_content = await data.read()
+    image_files = [
+        (image.filename or "image", await image.read())
+        for image in images
+        if image is not None
+    ]
     file_entity = await file_service.attach_user_markdown(
-        pod_id=pod_id, path=path, markdown_content=markdown_content, ctx=ctx
+        pod_id=pod_id,
+        path=path,
+        markdown_content=markdown_content,
+        ctx=ctx,
+        images=image_files,
     )
     return await _file_detail_response(file_entity, user.id)
 

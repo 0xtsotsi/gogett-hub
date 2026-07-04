@@ -206,3 +206,69 @@ class TestDatastoreTableLifecycle:
             "created_at",
             expected_status=status.HTTP_403_FORBIDDEN,
         )
+
+
+class TestReservedTablesHidden:
+    @pytest.mark.asyncio
+    async def test_reserved_tables_are_hidden_from_list_and_get(
+        self,
+        pod_api: DatastoreApi,
+        db_manager,
+    ):
+        """System-managed ``reserved_*`` tables are never surfaced by the API:
+        filtered out of the table list and 404 on get-by-name, even when the table
+        is registered in the pod's metadata."""
+        from uuid import UUID
+
+        from app.core.infrastructure.db.uow_factory import SessionUnitOfWorkFactory
+        from app.core.infrastructure.events.message_bus import get_message_bus
+        from app.modules.datastore.domain.datastore_entities import (
+            ColumnSchema,
+            DatastoreDataType,
+            DatastoreTableEntity,
+        )
+        from app.modules.datastore.infrastructure.repositories import (
+            DatastoreTableRepository,
+        )
+
+        pod_uuid = UUID(str(pod_api.pod_id))
+
+        # A normal table stays visible.
+        visible_name = f"visible_{uuid4().hex[:8]}"
+        await pod_api.create_table(
+            {
+                "name": visible_name,
+                "enable_rls": False,
+                "columns": [{"name": "title", "type": "TEXT"}],
+            }
+        )
+
+        # Register a reserved_users table directly — the API refuses to create one,
+        # so we go through the repository, mirroring the old member-sync path.
+        uow_factory = SessionUnitOfWorkFactory(db_manager.session_factory)
+        async with uow_factory() as uow:
+            repo = DatastoreTableRepository(uow, message_bus=get_message_bus())
+            await repo.create(
+                DatastoreTableEntity(
+                    pod_id=pod_uuid,
+                    table_name="reserved_users",
+                    columns=[
+                        ColumnSchema(
+                            name="user_id", type=DatastoreDataType.TEXT, required=True
+                        ),
+                        ColumnSchema(name="email", type=DatastoreDataType.TEXT),
+                    ],
+                    primary_key_column="user_id",
+                    enable_rls=False,
+                )
+            )
+
+        listing = await pod_api.list_tables(limit=1000)
+        names = {item["name"] for item in listing["items"]}
+        assert visible_name in names
+        assert "reserved_users" not in names
+
+        # Get-by-name is a 404 even though the metadata row exists.
+        await pod_api.get_table(
+            "reserved_users", expected_status=status.HTTP_404_NOT_FOUND
+        )

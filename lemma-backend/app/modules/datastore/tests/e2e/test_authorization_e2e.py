@@ -23,16 +23,10 @@ from app.modules.test_support.e2e_authz import create_role_visibility_context
 
 pytestmark = pytest.mark.e2e
 
-# pod-member-sync asynchronously creates this internal table the first time a pod
-# has members. It is not the subject of these role-visibility checks and its
-# creation races the assertions under parallel load, so exclude it from table
-# name comparisons.
-_RESERVED_USERS_TABLE = "reserved_users"
-
-
 def _table_names(listing: dict) -> set[str]:
-    """Table names in a list response, minus the internal reserved_users table."""
-    return {item["name"] for item in listing["items"]} - {_RESERVED_USERS_TABLE}
+    """Table names in a list response. System-managed ``reserved_*`` tables are
+    filtered out by the list API itself, so no exclusion is needed here."""
+    return {item["name"] for item in listing["items"]}
 
 
 class TestDatastoreAuthorizationBoundaries:

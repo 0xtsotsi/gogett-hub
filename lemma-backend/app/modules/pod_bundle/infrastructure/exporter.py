@@ -88,10 +88,14 @@ class _RecordBudget:
 
     def note_written(self, *, table: str, written: int, available: int) -> None:
         self._remaining -= written
-        if available > written:
+        if written == 0 and available > 0:
+            self._warnings.append(
+                f"table '{table}' seed data omitted: export size/record cap reached"
+            )
+        elif available > written:
             self._warnings.append(
                 f"table '{table}' seed data truncated to {written} of "
-                f"{available} rows (export record cap)"
+                f"{available} rows (export cap)"
             )
 
     def note_skipped(self, *, table: str) -> None:
@@ -101,10 +105,11 @@ class _RecordBudget:
 
 
 class _ByteBudget:
-    """Bounds exported file/asset bytes: a per-file ceiling and a running total.
-    ``allow(name, size)`` records a skip warning and returns ``False`` when a
-    file is too large or the budget is spent. (Consumed when file/asset bytes
-    are added to the bundle.)"""
+    """Bounds exported payload bytes: a per-item ceiling and a running total.
+    ``allow(name, size)`` records a skip warning and returns ``False`` when an
+    item is too large or the budget is spent (used for whole-item payloads like
+    pod files and app builds). ``item_cap()`` + ``consume()`` support the
+    truncate-to-fit path a table's data.csv needs."""
 
     def __init__(self, *, per_file: int, total: int, warnings: list[str]):
         self._per_file = max(0, per_file)
@@ -114,17 +119,23 @@ class _ByteBudget:
     def allow(self, *, name: str, size: int) -> bool:
         if size > self._per_file:
             self._warnings.append(
-                f"file '{name}' skipped: {size} bytes exceeds the per-file limit "
+                f"'{name}' skipped: {size} bytes exceeds the per-item limit "
                 f"({self._per_file} bytes)"
             )
             return False
         if size > self._remaining:
-            self._warnings.append(
-                f"file '{name}' skipped: export file-size budget reached"
-            )
+            self._warnings.append(f"'{name}' skipped: export size budget reached")
             return False
         self._remaining -= size
         return True
+
+    def item_cap(self) -> int:
+        """The most bytes a single item may use right now (per-item ceiling
+        clamped by what's left of the total)."""
+        return min(self._per_file, self._remaining)
+
+    def consume(self, size: int) -> None:
+        self._remaining -= max(0, size)
 
 
 def _dump_response(response: Any) -> dict[str, Any]:
@@ -153,6 +164,8 @@ class BundleExporter:
         user_id: UUID,
         with_data: bool,
         include: list[str] | None,
+        data_tables: list[str] | None = None,
+        with_files: bool = False,
         ctx: Context,
         uow: SqlAlchemyUnitOfWork,
         on_progress: ProgressCallback,
@@ -164,17 +177,29 @@ class BundleExporter:
         awaited as each resource type completes so the job can refresh Redis.
         The schema always exports fully; only row data + file/asset bytes are
         bounded (best-effort), with each cap that trips noted in ``warnings``.
+
+        Row data is opt-in and off by default: a table is seeded only when
+        ``with_data`` (every table) or its name is in ``data_tables`` (just those).
         """
         selected = _normalize_include(include)
+        data_tables_set = _normalize_data_tables(data_tables)
+        wants_data = with_data or bool(data_tables_set)
         warnings: list[str] = []
         record_budget = _RecordBudget(
             per_table=pod_bundle_settings.pod_bundle_export_max_records_per_table,
             total=pod_bundle_settings.pod_bundle_export_max_records_total,
             warnings=warnings,
         )
-        byte_budget = _ByteBudget(
+        # Data + files share ONE conservative byte pool; app builds get their own
+        # so a big app can't starve seed data (and vice versa).
+        data_budget = _ByteBudget(
             per_file=pod_bundle_settings.pod_bundle_export_max_file_bytes,
             total=pod_bundle_settings.pod_bundle_export_max_files_total_bytes,
+            warnings=warnings,
+        )
+        app_budget = _ByteBudget(
+            per_file=pod_bundle_settings.pod_bundle_export_max_app_bytes,
+            total=pod_bundle_settings.pod_bundle_export_max_apps_total_bytes,
             warnings=warnings,
         )
 
@@ -223,11 +248,13 @@ class BundleExporter:
             # --- tables (+ optional data) -------------------------------------
             if "tables" in selected:
                 table_service = build_table_service(uow)
-                record_service = build_record_service(uow) if with_data else None
+                record_service = build_record_service(uow) if wants_data else None
                 schema_name = table_service.schema_manager.get_schema_name(pod_id)
                 tables, _ = await table_service.list_tables(pod_id, ctx, limit=1000)
+                exported_table_names: set[str] = set()
                 for summary in sorted(tables, key=lambda t: str(t.name or "")):
                     table_name = str(summary.name or "")
+                    exported_table_names.add(table_name)
                     table = await table_service.get_table(pod_id, table_name, ctx)
                     dir_ = root / "tables" / table_name
                     dir_.mkdir(parents=True, exist_ok=True)
@@ -235,7 +262,10 @@ class BundleExporter:
                         dir_ / f"{table_name}.json",
                         _normalize_table_payload(_table_response_dict(table)),
                     )
-                    if with_data and record_service is not None:
+                    # Seed this table only when the caller asked for all data or
+                    # named it explicitly.
+                    seed_this = with_data or table_name in data_tables_set
+                    if seed_this and record_service is not None:
                         cap = record_budget.table_cap()
                         if cap <= 0:
                             record_budget.note_skipped(table=table_name)
@@ -248,10 +278,18 @@ class BundleExporter:
                                 user_id=user_id,
                                 dest=dir_ / TABLE_DATA_FILE,
                                 cap=cap,
+                                data_budget=data_budget,
                             )
                             record_budget.note_written(
                                 table=table_name, written=written, available=available
                             )
+                # A name in data_tables that isn't a real table can't be seeded —
+                # tell the caller rather than silently dropping it.
+                for missing in sorted(data_tables_set - exported_table_names):
+                    warnings.append(
+                        f"table '{missing}' requested for seed data but not found "
+                        f"in the pod; skipped"
+                    )
                 done += 1
                 await on_progress(done, total)
 
@@ -377,10 +415,22 @@ class BundleExporter:
                         user_id=user_id,
                         dest=dir_,
                         ctx=ctx,
-                        byte_budget=byte_budget,
+                        byte_budget=app_budget,
                     )
                 done += 1
                 await on_progress(done, total)
+
+            # --- files (opt-in, byte-budgeted, shares the data pool) ----------
+            wrote_files = False
+            if with_files:
+                wrote_files = await self._export_pod_files(
+                    root=root,
+                    uow=uow,
+                    pod_id=pod_id,
+                    ctx=ctx,
+                    data_budget=data_budget,
+                    warnings=warnings,
+                )
 
             # --- portability + contents manifest (no DB) ----------------------
             _extract_portable_variables(root)
@@ -389,8 +439,8 @@ class BundleExporter:
                 included=selected if include else set(),
                 excluded=set(),
                 names=set(),
-                with_data=with_data,
-                with_files=False,
+                with_data=wants_data,
+                with_files=wrote_files,
             )
 
             zip_bytes = pack_bundle(root)
@@ -407,10 +457,13 @@ class BundleExporter:
         user_id: UUID,
         dest: Path,
         cap: int,
+        data_budget: _ByteBudget,
     ) -> tuple[int, int]:
         """Page up to ``cap`` rows and write ``data.csv`` (CLI record-IO cell
-        semantics); skipped when the table is empty. Returns
-        ``(rows_written, total_available)`` so the caller can warn on truncation."""
+        semantics), then trim trailing rows so the file fits the shared byte
+        budget (a 10k-row table can still be huge). Consumes the bytes actually
+        written. Returns ``(rows_written, total_available)`` so the caller can
+        warn on row- or byte-driven truncation."""
         from lemma_pod_bundle.normalize import _SEED_STRIP_COLUMNS
 
         rows: list[dict[str, Any]] = []
@@ -435,8 +488,12 @@ class BundleExporter:
             {k: v for k, v in row.items() if k not in _SEED_STRIP_COLUMNS}
             for row in rows
         ]
-        _write_export_csv(dest, cleaned)
-        return len(rows), max(available, len(rows))
+        csv_text, kept = _csv_within_bytes(cleaned, data_budget.item_cap())
+        if kept == 0:
+            return 0, max(available, len(cleaned))
+        dest.write_text(csv_text, encoding="utf-8")
+        data_budget.consume(len(csv_text.encode("utf-8")))
+        return kept, max(available, len(cleaned))
 
     async def _export_surfaces(
         self, root: Path, uow: SqlAlchemyUnitOfWork, pod_id: UUID
@@ -524,6 +581,122 @@ class BundleExporter:
         ):
             (dest / "dist.zip").write_bytes(dist_bytes)
 
+    async def _export_pod_files(
+        self,
+        *,
+        root: Path,
+        uow: SqlAlchemyUnitOfWork,
+        pod_id: UUID,
+        ctx: Context,
+        data_budget: _ByteBudget,
+        warnings: list[str],
+    ) -> bool:
+        """Export the pod's POD-visible file tree into ``files/`` — folders as
+        ``.folder.json``, file bytes (drawn from the shared data budget), and a
+        ``.files.json`` manifest — mirroring the CLI layout so either tool can
+        import the result. Returns whether any ``files/`` content was written.
+        Best-effort: a file that can't be listed/downloaded is skipped, never
+        failing the export."""
+        from lemma_pod_bundle.layout import FILES_MANIFEST
+
+        from app.modules.datastore.api.dependencies import build_file_service
+
+        try:
+            service = build_file_service(uow)
+            entities = await self._walk_pod_files(service, pod_id, ctx)
+        except Exception as exc:  # noqa: BLE001 - files are best-effort
+            logger.warning("Skipping file export for pod %s: %s", pod_id, exc)
+            return False
+
+        pod_entities = [
+            e for e in entities if str(getattr(e, "visibility", "") or "").upper() == "POD"
+        ]
+        if not pod_entities:
+            return False
+
+        files_root = root / "files"
+        files_root.mkdir(parents=True, exist_ok=True)
+        wrote = False
+
+        # Folders first so parent dirs exist before their files land.
+        for folder in sorted(
+            (e for e in pod_entities if e.is_folder), key=lambda e: str(e.path or "")
+        ):
+            parts = [p for p in str(folder.path or "").split("/") if p]
+            if not parts:
+                continue
+            target = files_root.joinpath(*parts)
+            target.mkdir(parents=True, exist_ok=True)
+            _write_json(
+                target / ".folder.json",
+                {"description": folder.description, "visibility": folder.visibility},
+            )
+            wrote = True
+
+        file_manifest: list[dict[str, Any]] = []
+        for entity in sorted(
+            (e for e in pod_entities if e.is_file), key=lambda e: str(e.path or "")
+        ):
+            path = str(entity.path or "")
+            parts = [p for p in path.split("/") if p]
+            if not parts:
+                continue
+            # Pre-check the declared size so an oversized file isn't downloaded
+            # just to be rejected.
+            declared = int(getattr(entity, "size_bytes", 0) or 0)
+            if declared and not data_budget.allow(name=f"files{path}", size=declared):
+                continue
+            try:
+                _entity, content = await service.download_file_content_by_path(
+                    pod_id, path, ctx
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad file is not fatal
+                warnings.append(f"file '{path}' skipped: {exc}")
+                continue
+            # When size wasn't known up front, budget the real bytes now.
+            if not declared and not data_budget.allow(name=f"files{path}", size=len(content)):
+                continue
+            target = files_root.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            file_manifest.append(
+                {
+                    "path": path,
+                    "description": entity.description,
+                    "visibility": entity.visibility,
+                    "search_enabled": entity.search_enabled,
+                }
+            )
+            wrote = True
+
+        if file_manifest:
+            _write_json(files_root / FILES_MANIFEST, {"files": file_manifest})
+        return wrote
+
+    async def _walk_pod_files(
+        self, service: Any, pod_id: UUID, ctx: Context, dir_path: str = "/"
+    ) -> list[Any]:
+        """Depth-first list of every file/folder entity under ``dir_path``,
+        paging each directory fully (the tree endpoint caps files-per-dir, so we
+        walk with ``list_files`` instead)."""
+        out: list[Any] = []
+        cursor: str | None = None
+        while True:
+            items, cursor = await service.list_files(
+                pod_id, ctx, directory_path=dir_path, limit=100, cursor=cursor
+            )
+            for item in items:
+                out.append(item)
+                if item.is_folder:
+                    out.extend(
+                        await self._walk_pod_files(
+                            service, pod_id, ctx, dir_path=str(item.path or "")
+                        )
+                    )
+            if not cursor:
+                break
+        return out
+
 
 # --- response-dict adapters (per-module GET serialization) -------------------
 
@@ -588,6 +761,14 @@ def _normalize_include(include: list[str] | None) -> set[str]:
     return resolved or set(_EXPORT_RESOURCE_TYPES)
 
 
+def _normalize_data_tables(data_tables: list[str] | None) -> set[str]:
+    """The set of table names to seed row data for. ``None``/empty means none
+    (unless ``with_data`` seeds every table). Blank entries are dropped."""
+    if not data_tables:
+        return set()
+    return {name.strip() for name in data_tables if name and name.strip()}
+
+
 def _extract_large_text(
     payload: dict[str, Any],
     *,
@@ -628,12 +809,19 @@ def _extract_zip_bytes(data: bytes, dest_dir: Path) -> None:
         archive.extractall(dest_dir)
 
 
-def _write_export_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    """Write records to CSV with the same cell semantics as the CLI's
-    ``record_io.write_export_rows`` (complex cells -> JSON text, None -> empty)."""
+def _csv_within_bytes(
+    rows: list[dict[str, Any]], max_bytes: int
+) -> tuple[str, int]:
+    """Render records to CSV (CLI ``record_io.write_export_rows`` cell semantics:
+    complex cells -> JSON text, None -> empty), keeping only as many *leading*
+    rows as fit within ``max_bytes`` (header always included). Returns
+    ``(csv_text, rows_kept)``; ``("", 0)`` when not even the header + one row fit."""
     import csv
     import io
     import json
+
+    if not rows or max_bytes <= 0:
+        return "", 0
 
     fieldnames: list[str] = []
     seen: set[str] = set()
@@ -652,9 +840,28 @@ def _write_export_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             return "true" if value else "false"
         return str(value)
 
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
+    def _line(mapping: dict[str, str]) -> str:
+        buf = io.StringIO()
+        csv.DictWriter(buf, fieldnames=fieldnames).writerow(mapping)
+        return buf.getvalue()
+
+    header_buf = io.StringIO()
+    csv.DictWriter(header_buf, fieldnames=fieldnames).writeheader()
+    header = header_buf.getvalue()
+
+    used = len(header.encode("utf-8"))
+    if used > max_bytes:
+        return "", 0
+    parts = [header]
+    kept = 0
     for row in rows:
-        writer.writerow({key: _cell(row.get(key)) for key in fieldnames})
-    path.write_text(buffer.getvalue(), encoding="utf-8")
+        line = _line({key: _cell(row.get(key)) for key in fieldnames})
+        size = len(line.encode("utf-8"))
+        if used + size > max_bytes:
+            break
+        parts.append(line)
+        used += size
+        kept += 1
+    if kept == 0:
+        return "", 0
+    return "".join(parts), kept

@@ -112,6 +112,11 @@ class VariableSpec(BaseModel):
     description: str | None = None
     required: bool = False
     default: str | None = None
+    # For ``kind="account"`` surfaced connectors: the connector platform the
+    # account must belong to (e.g. "slack", "telegram"), so the importer UI can
+    # prompt for — and connect — the right connector. None for accounts with no
+    # platform context (e.g. a schedule's account) or non-account variables.
+    platform: str | None = None
 
 
 class ImportPlan(BaseModel):

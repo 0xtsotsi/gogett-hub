@@ -40,6 +40,8 @@ async def test_connector_account_is_required_and_enforced(
     assert account_var is not None, plan["variables"]
     assert account_var["kind"] == "account"
     assert account_var["required"] is True
+    # The connector platform is sent so the UI can prompt for the right connector.
+    assert account_var["platform"] == "slack"
 
     # ...and there is a SURFACE step to apply.
     assert any(s["kind"] == "SURFACE" for s in plan["steps"]), plan["steps"]

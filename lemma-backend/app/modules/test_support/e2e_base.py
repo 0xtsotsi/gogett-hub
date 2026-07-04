@@ -539,8 +539,27 @@ async def db_manager(e2e_settings) -> AsyncGenerator[DatabaseManager, None]:
     # The shared session worker runs agent/datastore transactions concurrently
     # with this per-test setup; its row writes can deadlock the truncation DELETE
     # (or the advisory-locked CREATE EXTENSION), and Postgres aborts one side as
-    # the victim. Retry the whole setup — the conflicting transaction clears
-    # within a beat — instead of failing a random test's setup each run.
+    # the victim. Under parallel load Postgres may also drop a pooled connection
+    # ("connection was closed in the middle of operation"). Both are transient —
+    # retry the whole setup (a dropped connection is replaced via pool_pre_ping on
+    # the next attempt) instead of failing a random test's setup each run.
+    def _is_transient_db_error(exc: BaseException) -> bool:
+        message = str(exc).lower()
+        return any(
+            token in message
+            for token in (
+                "deadlock",
+                "lock",
+                # connection dropped mid-operation / reset under load
+                "connection was closed",
+                "connection is closed",
+                "connectiondoesnotexist",
+                "connection reset",
+                "server closed the connection",
+                "the connection is closed",
+            )
+        )
+
     last_exc: BaseException | None = None
     for _attempt in range(6):
         try:
@@ -558,9 +577,8 @@ async def db_manager(e2e_settings) -> AsyncGenerator[DatabaseManager, None]:
             # Start each test from a clean slate without dropping the schema.
             await manager.truncate_all()
             break
-        except DBAPIError as exc:
-            message = str(exc).lower()
-            if "deadlock" not in message and "lock" not in message:
+        except (DBAPIError, OSError) as exc:
+            if not _is_transient_db_error(exc):
                 raise
             last_exc = exc
             await _asyncio.sleep(0.3 * (_attempt + 1))

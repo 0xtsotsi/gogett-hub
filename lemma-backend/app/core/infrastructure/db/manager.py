@@ -6,7 +6,18 @@ from app.core.infrastructure.db.base import Base
 
 class DatabaseManager:
     def __init__(self, database_url: str):
-        self.engine = create_async_engine(database_url, echo=False)
+        # pool_pre_ping: liveness-check a pooled connection on checkout and
+        # transparently replace it if the server dropped it — mirrors the app
+        # engine (session.py). Under parallel e2e load Postgres can close idle
+        # backends, and without pre-ping the next borrower fails mid-statement
+        # with "connection was closed in the middle of operation". pool_recycle
+        # proactively retires connections older than the window.
+        self.engine = create_async_engine(
+            database_url,
+            echo=False,
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
         self.session_factory = async_sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )

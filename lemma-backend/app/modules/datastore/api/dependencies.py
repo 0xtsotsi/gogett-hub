@@ -17,7 +17,6 @@ from app.modules.datastore.infrastructure.record_repository import (
 )
 from app.modules.datastore.infrastructure.schema_manager import SchemaManager
 from app.modules.datastore.services.file_service import DatastoreFileService
-from app.modules.datastore.services.pod_member_sync_service import PodMemberSyncService
 from app.modules.datastore.services.record_service import RecordService
 from app.modules.datastore.services.table_service import TableService
 from app.modules.datastore.infrastructure.storage import create_datastore_storage
@@ -84,20 +83,6 @@ def build_file_service(uow) -> DatastoreFileService:
         file_repository=DatastoreFileRepository(uow, message_bus=message_bus),
         storage=create_datastore_storage(),
         authorization_service=create_authorization_service(uow),
-    )
-
-
-def build_pod_member_sync_service(uow) -> PodMemberSyncService:
-    """Construct a PodMemberSyncService from a unit of work (single wiring source)."""
-    message_bus = get_message_bus()
-    schema_manager = get_schema_manager()
-    return PodMemberSyncService(
-        table_repository=DatastoreTableRepository(uow, message_bus=message_bus),
-        schema_manager=schema_manager,
-        record_service=RecordService(
-            record_repository=DatastoreRecordRepository(schema_manager),
-            message_bus=message_bus,
-        ),
     )
 
 

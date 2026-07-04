@@ -20,8 +20,14 @@ from app.modules.datastore.api.schemas.datastore_schemas import (
     TableSummaryResponse,
     UpdateTableRequest,
 )
-from app.modules.datastore.domain.datastore_entities import DatastoreTableEntity
-from app.modules.datastore.domain.errors import DatastoreValidationError
+from app.modules.datastore.domain.datastore_entities import (
+    RESERVED_TABLE_PREFIX,
+    DatastoreTableEntity,
+)
+from app.modules.datastore.domain.errors import (
+    DatastoreTableNotFoundError,
+    DatastoreValidationError,
+)
 
 router = APIRouter(
     prefix="/pods/{pod_id}/datastore",
@@ -136,6 +142,10 @@ async def get_table(
     table_service: TableServiceDep,
     ctx: PodContextDep,
 ) -> TableDetailResponse:
+    # System-managed reserved_* tables are never surfaced through the API — hide
+    # them by name too, so a reserved table can't be fetched even when guessed.
+    if table_name.startswith(RESERVED_TABLE_PREFIX):
+        raise DatastoreTableNotFoundError("Table not found")
     table = await table_service.get_table(
         pod_id,
         table_name,

@@ -24,8 +24,13 @@ class ExportStartRequest(BaseModel):
     """Body for starting a pod export."""
 
     with_data: bool = Field(
-        default=True,
-        description="Include table row data (data.csv per table) in the bundle.",
+        default=False,
+        description=(
+            "Opt-in: include table row data (data.csv per table) as seed/default "
+            "data in the bundle. Off by default — an export carries only pod "
+            "resources, which recreate the pod in an empty-table state. Enable only "
+            "for the rare case of shipping setup/seed rows a pod is meant to import."
+        ),
     )
     include: list[str] | None = Field(
         default=None,

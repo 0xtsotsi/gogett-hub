@@ -1017,34 +1017,36 @@ function PodSwitcherMenu({
                 align="start"
                 side={side}
                 sideOffset={8}
-                className="surface-panel z-50 w-72 p-1 shadow-[var(--shadow-lg)]"
+                className="surface-panel z-50 flex w-72 flex-col p-1 shadow-[var(--shadow-lg)]"
             >
-                <div className="px-2 py-1.5 type-eyebrow">
+                <div className="shrink-0 px-2 py-1.5 type-eyebrow">
                     Pods
                 </div>
-                {pods.length === 0 ? (
-                    <div className="px-2 py-2 text-sm text-[var(--text-tertiary)]">No pods yet.</div>
-                ) : null}
-                {showOrganizationLabels ? (
-                    podGroups.map((group) => group.pods.length > 0 ? (
-                        <div key={group.organization.id}>
-                            <div className="px-2 pt-2 pb-1 text-xs font-medium uppercase tracking-normal text-[var(--text-tertiary)]">
-                                {group.organization.name}
+                <div className="min-h-0 max-h-96 overflow-y-auto">
+                    {pods.length === 0 ? (
+                        <div className="px-2 py-2 text-sm text-[var(--text-tertiary)]">No pods yet.</div>
+                    ) : null}
+                    {showOrganizationLabels ? (
+                        podGroups.map((group) => group.pods.length > 0 ? (
+                            <div key={group.organization.id}>
+                                <div className="px-2 pt-2 pb-1 text-xs font-medium uppercase tracking-normal text-[var(--text-tertiary)]">
+                                    {group.organization.name}
+                                </div>
+                                {group.pods.map((pod) => (
+                                    <PodSwitcherMenuItem key={pod.id} pod={pod} podId={podId} />
+                                ))}
                             </div>
-                            {group.pods.map((pod) => (
-                                <PodSwitcherMenuItem key={pod.id} pod={pod} podId={podId} />
-                            ))}
-                        </div>
-                    ) : null)
-                ) : (
-                    pods.map((pod) => (
-                        <PodSwitcherMenuItem key={pod.id} pod={pod} podId={podId} />
-                    ))
-                )}
-                <DropdownMenu.Separator className="my-1 h-px bg-[var(--border-subtle)]" />
+                        ) : null)
+                    ) : (
+                        pods.map((pod) => (
+                            <PodSwitcherMenuItem key={pod.id} pod={pod} podId={podId} />
+                        ))
+                    )}
+                </div>
+                <DropdownMenu.Separator className="my-1 h-px shrink-0 bg-[var(--border-subtle)]" />
                 <DropdownMenu.Item
                     onSelect={() => router.push('/create-pod')}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm font-medium text-[var(--delight)] outline-none transition-colors hover:bg-[var(--delight-soft)]"
+                    className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm font-medium text-[var(--delight)] outline-none transition-colors hover:bg-[var(--delight-soft)]"
                 >
                     <Plus className="h-3.5 w-3.5" />
                     New pod

@@ -1544,4 +1544,13 @@
    UTILITY LAYER
    ──────────────────────────────────────────── */
 
+  /* Hide scrollbar chrome while keeping the element scrollable — used by
+     horizontally scrolling strips like the pod app tabs. */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
 }

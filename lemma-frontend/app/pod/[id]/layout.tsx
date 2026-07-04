@@ -8,7 +8,8 @@ import { AIAssistantProvider, useAIAssistant } from "@/components/ai/ai-assistan
 import { HelpMenu } from "@/components/education/help-menu";
 import { PodAssistantSidebar } from "@/components/ai/pod-assistant";
 import { InlineLoader, PageLoader } from "@/components/brand/loader";
-import { AppProvider } from "@/components/app/app-context";
+import { AppProvider, useApp } from "@/components/app/app-context";
+import { PodAppTabs } from "@/components/pod/pod-app-tabs";
 import { useOrganization } from "@/components/dashboard/org-context";
 import { PodTopbarProvider, type PodTopbarState } from "@/components/pod/pod-topbar-context";
 import { MobileSidebarDrawer } from "@/components/pod/mobile-sidebar-drawer";
@@ -280,6 +281,7 @@ function PodShell({
         assistantDockWidth,
         setAssistantDockWidth,
     } = usePodLayout();
+    const { pages: appPages } = useApp();
     const [topbar, setTopbar] = useState<PodTopbarState>({});
     const [previousScreen, setPreviousScreen] = useState<PodHistoryScreen | null>(null);
     const [isPresentedClosing, setIsPresentedClosing] = useState(false);
@@ -318,6 +320,18 @@ function PodShell({
         !pathname.includes("/runs/") &&
         searchParams.get("mode") === "edit";
     const isPodHome = pathname === `/pod/${pod.id}` || pathname === `/pod/${pod.id}/`;
+    const isAppViewRoute = pathname.startsWith(`/pod/${pod.id}/app/view`);
+    // Show the workspace tab strip (Home + app tabs) on home and while viewing an
+    // app, but only once the pod actually has apps — a pod with none keeps the
+    // clean, header-less home canvas.
+    const showAppTabsBar = (isPodHome || isAppViewRoute) && appPages.length > 0;
+    // A stable key for the "which app-workspace view is this" decision below:
+    // changes when you switch apps, land on home, or leave for another section.
+    const appNavIntent = isAppViewRoute
+        ? `app:${searchParams.get("page") || ""}`
+        : isPodHome
+            ? "home"
+            : "other";
     const isConversationRoute = pathname === `/pod/${pod.id}/conversations` || pathname.startsWith(`/pod/${pod.id}/conversations/`);
     const isPresentedInteractionRoute =
         pathname === `/pod/${pod.id}/forms/view` || pathname === `/pod/${pod.id}/widgets/view`;
@@ -373,6 +387,20 @@ function PodShell({
     useEffect(() => {
         writeLastOpenedPodId(pod.id);
     }, [pod.id]);
+
+    // Selecting an app collapses the workspace nav so the app gets the full
+    // surface; landing back on home restores it. Desktop only — compact viewports
+    // use an off-canvas drawer this must not fight. Keyed on the view intent so it
+    // fires on genuine transitions (and app→app switches), leaving a user's manual
+    // toggle within the same view untouched.
+    useEffect(() => {
+        if (isCompact) return;
+        if (appNavIntent.startsWith("app:")) {
+            closeNav();
+        } else if (appNavIntent === "home") {
+            openNav();
+        }
+    }, [appNavIntent, isCompact, closeNav, openNav]);
 
     useLayoutEffect(() => {
         const nextScreen = { href: currentHref, label: currentScreenLabel };
@@ -516,7 +544,7 @@ function PodShell({
                     />
                 </div>
             </MobileSidebarDrawer>
-            {isPodHome && isCompact ? (
+            {isPodHome && isCompact && !showAppTabsBar ? (
                 <button
                     type="button"
                     onClick={() => setMobileNavOpen(true)}
@@ -564,7 +592,43 @@ function PodShell({
             ) : null}
 
             <main className="pod-workspace-main flex min-w-0 flex-1 flex-col overflow-hidden">
-                {!isPodHome && !isConversationRoute ? (
+                {showAppTabsBar ? (
+                    <header className="pod-shell-topbar flex h-14 shrink-0 items-center justify-between gap-4 bg-[var(--pod-main-bg)] px-4">
+                        <div className="flex h-7 min-w-0 flex-1 items-center gap-2">
+                            {showMobileNavTrigger ? (
+                                <button
+                                    type="button"
+                                    onClick={toggleNav}
+                                    className="lemma-shell-icon-button custom-focus-ring h-7 w-7 shrink-0 text-[var(--text-tertiary)]"
+                                    aria-label="Open navigation"
+                                    title="Open navigation"
+                                >
+                                    <PanelLeftOpen className="h-4 w-4" strokeWidth={1.8} />
+                                </button>
+                            ) : null}
+                            <PodAppTabs podId={pod.id} />
+                        </div>
+                        <div className="pod-shell-topbar-actions flex h-7 shrink-0 items-center gap-1.5">
+                            <TooltipProvider>
+                                <HelpMenu />
+                                {canUseSettings ? (
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <Link
+                                                href={`/pod/${pod.id}/settings`}
+                                                className="lemma-shell-icon-button custom-focus-ring"
+                                                aria-label="Pod settings"
+                                            >
+                                                <Settings className="h-4 w-4" strokeWidth={1.8} />
+                                            </Link>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Pod settings</TooltipContent>
+                                    </Tooltip>
+                                ) : null}
+                            </TooltipProvider>
+                        </div>
+                    </header>
+                ) : !isPodHome && !isConversationRoute ? (
                     <header
                         className={cn(
                             "pod-shell-topbar flex h-14 shrink-0 items-center justify-between gap-4 bg-[var(--pod-main-bg)] px-4",

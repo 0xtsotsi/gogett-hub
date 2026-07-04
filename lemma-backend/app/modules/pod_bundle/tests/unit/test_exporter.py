@@ -241,7 +241,7 @@ def patched_exporter(monkeypatch):
 # --- tests -------------------------------------------------------------------
 
 
-async def _run_export(patched_exporter, *, with_data, include=None):
+async def _run_export(patched_exporter, *, with_data, include=None, data_tables=None):
     progress: list[tuple[int, int]] = []
     warnings_holder: list[list[str]] = []
 
@@ -252,6 +252,7 @@ async def _run_export(patched_exporter, *, with_data, include=None):
         pod_id=uuid4(),
         user_id=uuid4(),
         with_data=with_data,
+        data_tables=data_tables,
         include=include,
         ctx=object(),
         uow=object(),
@@ -313,6 +314,41 @@ async def test_without_data_skips_data_csv(patched_exporter, tmp_path):
     assert not (root / "tables" / "leads" / "data.csv").exists()
     # Table schema is still exported without data.
     assert (root / "tables" / "leads" / "leads.json").is_file()
+
+
+async def test_data_tables_seeds_only_named_table(patched_exporter, tmp_path):
+    # with_data off, but leads named explicitly → leads.data.csv is written.
+    _filename, zip_bytes, _progress = await _run_export(
+        patched_exporter, with_data=False, data_tables=["leads"]
+    )
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+    assert (root / "tables" / "leads" / "data.csv").is_file()
+    assert "a@x.com" in (root / "tables" / "leads" / "data.csv").read_text()
+
+
+async def test_data_tables_leaves_unnamed_row_bearing_table_unseeded(
+    patched_exporter, tmp_path
+):
+    # Only 'accounts' requested → leads (which HAS rows) is NOT seeded. Proves the
+    # selection is per-table, not all-or-nothing.
+    _filename, zip_bytes, _progress = await _run_export(
+        patched_exporter, with_data=False, data_tables=["accounts"]
+    )
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+    assert not (root / "tables" / "leads" / "data.csv").exists()
+    # Both schemas are still exported.
+    assert (root / "tables" / "leads" / "leads.json").is_file()
+    assert (root / "tables" / "accounts" / "accounts.json").is_file()
+
+
+async def test_data_tables_unknown_name_warns(patched_exporter, tmp_path):
+    _filename, zip_bytes, _progress = await _run_export(
+        patched_exporter, with_data=False, data_tables=["ghost"]
+    )
+    warnings = _run_export.last_warnings  # type: ignore[attr-defined]
+    assert any("ghost" in w and "not found" in w for w in warnings)
+    root = extract_bundle(zip_bytes, tmp_path / "out")
+    assert not (root / "tables" / "leads" / "data.csv").exists()
 
 
 async def test_per_table_record_cap_truncates_with_warning(patched_exporter, tmp_path, monkeypatch):

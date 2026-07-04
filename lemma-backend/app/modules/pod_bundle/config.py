@@ -72,10 +72,12 @@ class PodBundleSettings(BaseSettings):
         description="Max rows written to a table's data.csv seed (per table).",
     )
     pod_bundle_export_max_records_total: int = Field(
-        default=50000,
+        default=10000,
         description=(
             "Max rows across all tables in one export; once reached, remaining "
-            "tables export schema-only (no data.csv)."
+            "tables export schema-only (no data.csv). Kept low on purpose — a "
+            "bundle ships seed/setup rows, not a full data dump, and a large "
+            "export hammers the pod DB."
         ),
     )
     pod_bundle_export_max_file_bytes: int = Field(

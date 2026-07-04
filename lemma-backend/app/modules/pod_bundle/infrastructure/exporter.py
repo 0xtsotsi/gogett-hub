@@ -153,6 +153,7 @@ class BundleExporter:
         user_id: UUID,
         with_data: bool,
         include: list[str] | None,
+        data_tables: list[str] | None = None,
         ctx: Context,
         uow: SqlAlchemyUnitOfWork,
         on_progress: ProgressCallback,
@@ -164,8 +165,13 @@ class BundleExporter:
         awaited as each resource type completes so the job can refresh Redis.
         The schema always exports fully; only row data + file/asset bytes are
         bounded (best-effort), with each cap that trips noted in ``warnings``.
+
+        Row data is opt-in and off by default: a table is seeded only when
+        ``with_data`` (every table) or its name is in ``data_tables`` (just those).
         """
         selected = _normalize_include(include)
+        data_tables_set = _normalize_data_tables(data_tables)
+        wants_data = with_data or bool(data_tables_set)
         warnings: list[str] = []
         record_budget = _RecordBudget(
             per_table=pod_bundle_settings.pod_bundle_export_max_records_per_table,
@@ -223,11 +229,13 @@ class BundleExporter:
             # --- tables (+ optional data) -------------------------------------
             if "tables" in selected:
                 table_service = build_table_service(uow)
-                record_service = build_record_service(uow) if with_data else None
+                record_service = build_record_service(uow) if wants_data else None
                 schema_name = table_service.schema_manager.get_schema_name(pod_id)
                 tables, _ = await table_service.list_tables(pod_id, ctx, limit=1000)
+                exported_table_names: set[str] = set()
                 for summary in sorted(tables, key=lambda t: str(t.name or "")):
                     table_name = str(summary.name or "")
+                    exported_table_names.add(table_name)
                     table = await table_service.get_table(pod_id, table_name, ctx)
                     dir_ = root / "tables" / table_name
                     dir_.mkdir(parents=True, exist_ok=True)
@@ -235,7 +243,10 @@ class BundleExporter:
                         dir_ / f"{table_name}.json",
                         _normalize_table_payload(_table_response_dict(table)),
                     )
-                    if with_data and record_service is not None:
+                    # Seed this table only when the caller asked for all data or
+                    # named it explicitly.
+                    seed_this = with_data or table_name in data_tables_set
+                    if seed_this and record_service is not None:
                         cap = record_budget.table_cap()
                         if cap <= 0:
                             record_budget.note_skipped(table=table_name)
@@ -252,6 +263,13 @@ class BundleExporter:
                             record_budget.note_written(
                                 table=table_name, written=written, available=available
                             )
+                # A name in data_tables that isn't a real table can't be seeded —
+                # tell the caller rather than silently dropping it.
+                for missing in sorted(data_tables_set - exported_table_names):
+                    warnings.append(
+                        f"table '{missing}' requested for seed data but not found "
+                        f"in the pod; skipped"
+                    )
                 done += 1
                 await on_progress(done, total)
 
@@ -389,7 +407,7 @@ class BundleExporter:
                 included=selected if include else set(),
                 excluded=set(),
                 names=set(),
-                with_data=with_data,
+                with_data=wants_data,
                 with_files=False,
             )
 
@@ -586,6 +604,14 @@ def _normalize_include(include: list[str] | None) -> set[str]:
         if dir_name in _EXPORT_RESOURCE_TYPES:
             resolved.add(dir_name)
     return resolved or set(_EXPORT_RESOURCE_TYPES)
+
+
+def _normalize_data_tables(data_tables: list[str] | None) -> set[str]:
+    """The set of table names to seed row data for. ``None``/empty means none
+    (unless ``with_data`` seeds every table). Blank entries are dropped."""
+    if not data_tables:
+        return set()
+    return {name.strip() for name in data_tables if name and name.strip()}
 
 
 def _extract_large_text(

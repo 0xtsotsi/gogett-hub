@@ -548,6 +548,7 @@ def export_pod_bundle(
     include: set[str] | None = None,
     names: set[str] | None = None,
     with_data: bool = False,
+    data_tables: set[str] | None = None,
     with_files: bool = False,
 ) -> dict[str, Any]:
     excluded = set(exclude or set())
@@ -568,6 +569,11 @@ def export_pod_bundle(
         overlap = ", ".join(sorted(included & excluded))
         raise ValueError(f"Resources cannot be both included and excluded: {overlap}")
     selected_names = {name for name in (names or set()) if name}
+    # Per-table seed selection: seed row data only for these tables (or every
+    # table when with_data). Independent of `names` (which scopes whole resources).
+    seed_tables = {name.strip() for name in (data_tables or set()) if name and name.strip()}
+    wants_data = with_data or bool(seed_tables)
+    data_table_warnings: list[str] = []
 
     def should_export(resource_type: str) -> bool:
         return resource_type not in excluded and (
@@ -599,14 +605,20 @@ def export_pod_bundle(
             for item in list_items(pod_sdk.tables.list(limit=1000))
             if should_export_name(item)
         ]
+        exported_table_names: set[str] = set()
         for table in sorted(tables, key=lambda item: str(item.get("name", ""))):
             table_name = str(table.get("name") or "")
+            exported_table_names.add(table_name)
             resource_dir = bundle_root / "tables" / table_name
             resource_dir.mkdir(parents=True, exist_ok=True)
             full_table = to_plain(pod_sdk.tables.get(table_name))
             _write_json(resource_dir / f"{table_name}.json", _normalize_table_payload(full_table))
-            if with_data:
+            if with_data or table_name in seed_tables:
                 _export_table_data(pod_sdk, table_name, resource_dir)
+        for missing in sorted(seed_tables - exported_table_names):
+            data_table_warnings.append(
+                f"data-table '{missing}' is not a table in this pod; skipped"
+            )
 
     functions: list[dict[str, Any]] = []
     if should_export("functions"):
@@ -745,7 +757,7 @@ def export_pod_bundle(
         included=included,
         excluded=excluded,
         names=selected_names,
-        with_data=with_data,
+        with_data=wants_data,
         with_files=with_files,
     )
 
@@ -757,6 +769,8 @@ def export_pod_bundle(
         "excluded": sorted(excluded),
         "included": sorted(included),
         "names": sorted(selected_names),
+        "data_tables": sorted(seed_tables),
+        "warnings": data_table_warnings,
         "variables": sorted(variables.keys()),
         "counts": {
             "tables": len(tables),

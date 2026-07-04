@@ -126,10 +126,13 @@ def root(
         help="Expand folded/truncated fields in pretty output (schemas, long values).",
     ),
 ) -> None:
-    # Load a project-folder .lemma.env (+ .env override) BEFORE build_state so its
-    # LEMMA_SERVER / LEMMA_POD_ID / LEMMA_TOKEN feed server selection and
-    # env-server detection. Real process env always wins (setdefault semantics).
-    project_env = load_project_env()
+    # Load the project-folder .lemma.env family BEFORE build_state so its
+    # LEMMA_SERVER / LEMMA_POD_ID feed server selection and pod resolution. The
+    # loader keys off the same server build_state will pick; real process env always
+    # wins (setdefault semantics).
+    project_env = load_project_env(
+        server_flag=server_name, config_file=config_file.expanduser()
+    )
     state = build_state(
         config_file=config_file.expanduser(),
         server=server_name,

@@ -117,10 +117,19 @@ lemma apps deploy support-app --yes  # build + upload
 lemma apps open support-app          # open the DEPLOYED app in the agent browser
 ```
 
+- **Portable by default — never bake pod context.** The scaffolded client is
+  `new LemmaClient()` (no args): the host injects `window.__LEMMA_CONFIG__`
+  (`podId`/`apiUrl`/`authUrl`) at serve time, so the **same build runs on any
+  pod/server**. Deploy the identical bundle to a local pod and a cloud pod and each
+  reports its own pod — no rebuild, no per-pod env. `.env.local`'s `VITE_LEMMA_*` is
+  only a fallback for `vite dev` (where the host isn't in the loop). Do **not** pass
+  `podId: import.meta.env.VITE_LEMMA_POD_ID` into the client — that re-bakes a pod
+  and breaks portability.
 - `init` materializes a bundled **Vite + React + `lemma-sdk`** template offline
-  (pass `--template <git|path>` to override). It writes `.env.local` from the
-  active CLI profile (`VITE_LEMMA_API_URL/AUTH_URL/POD_ID`), a working `tsconfig`,
-  `lemma.app.json`, and `AGENTS.md`. Options: `--nav sidebar|topbar|single-page`,
+  (pass `--template <git|path>` to override). It writes `.env.local` (dev fallback),
+  a working `tsconfig`, `lemma.app.json`, `AGENTS.md`, and a `.lemma.<server>.env`
+  binding for the active server (so later `lemma` commands target this pod). Options:
+  `--nav sidebar|topbar|single-page`,
   `--style soft|neobrutal|editorial|terminal`, `--chat-mode page|popup|right-sidebar`,
   `--members/--no-members`, `--sdk-path <local-lemma-typescript>` (offline SDK),
   `--proxy` (same-origin `/api` dev proxy — use this in the sandbox/agent browser),
@@ -147,7 +156,9 @@ a Vite project and import demands `package.json`.
 
 ```ts
 import { LemmaClient } from "lemma-sdk";
-export const client = new LemmaClient({ podId: import.meta.env.VITE_LEMMA_POD_ID });
+// No args: podId / apiUrl / authUrl come from the host-injected
+// window.__LEMMA_CONFIG__ at runtime (VITE_LEMMA_* is a dev-only fallback).
+export const client = new LemmaClient();
 ```
 
 Wrap the app in **`AuthGuard`** (from `lemma-sdk/react`). Prefer **hooks**

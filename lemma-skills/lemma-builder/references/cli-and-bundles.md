@@ -12,12 +12,16 @@ lemma orgs list             # select default org
 lemma pods list             # marks the currently active pod
 ```
 
-Config lives in `~/.lemma/config.json` (active server, token, default org/pod). Resolution precedence for org/pod: CLI flags (`--org`, `--pod`) → env vars → project `.lemma.env` → stored defaults → interactive selection.
+Config lives in `~/.lemma/config.json` (active server, token, default org/pod). Resolution precedence for org/pod: CLI flags (`--org`, `--pod`) → env vars → project `.lemma.<server>.env` → project `.lemma.env` → stored defaults → interactive selection.
 
 Environment variables (pre-set inside Lemma workspaces/sandboxes — use them, don't bootstrap):
 `LEMMA_TOKEN`, `LEMMA_BASE_URL`, `LEMMA_ORG_ID`, `LEMMA_POD_ID`, `LEMMA_SERVER`.
 
-Working across several pods locally? Drop a committed `.lemma.env` at a project root (dotenv syntax, no secrets — e.g. `LEMMA_POD_ID=…`, optional `LEMMA_SERVER=…`) and the CLI auto-loads its `LEMMA_*` values for any command run from that tree (nearest file wins, walking up to the git root / `$HOME`). A gitignored sibling `.env` overrides it per-machine; real environment variables always win, so injected workspace values are never overridden. `lemma config show` reports the loaded file.
+**Develop once, deploy to any server/pod.** A project's server and pod change together (local stack vs. cloud), so the CLI reads committed `.lemma.<server>.env` files keyed by the active server (Vite's `.env.<mode>` model). `lemma app init` and `lemma pods create --with-starter` write them; you can also hand-edit:
+- `.lemma.env` — base; may set the folder's default `LEMMA_SERVER`.
+- `.lemma.<server>.env` — per-server binding (`LEMMA_POD_ID`, optional `LEMMA_ORG_ID`).
+
+Then `lemma pods describe` uses the folder's default server while `lemma --server default apps deploy` targets cloud — same repo, no global switching. The CLI loads the nearest anchor walking up (ceiling: git root / `$HOME`); active server resolves as `--server` → `LEMMA_SERVER` → base file → config `active_server`. Gitignored `.lemma.<server>.env.local` overrides per-machine; real env always wins (a real `LEMMA_TOKEN`, e.g. agentbox, skips the files). A command that needs a pod on an unbound server fails with `No pod bound for server '<server>'`. `lemma config show` reports the resolved server + applied files. No secrets in these files.
 
 Scripting conventions:
 

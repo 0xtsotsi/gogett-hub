@@ -146,3 +146,25 @@ def test_apps_delete_without_yes_refuses_noninteractive(monkeypatch):
 
     assert result.exit_code != 0
     assert "--yes" in result.stdout or "non-interactive" in result.stdout
+
+
+def test_apps_init_writes_server_binding(tmp_path, monkeypatch):
+    # `app init` binds the folder to the pod on the active server so later commands
+    # target it. Isolated config -> fresh "default" server (writable).
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "config.json"
+    target = tmp_path / "web"
+
+    result = runner.invoke(
+        app,
+        [
+            "--config-file", str(cfg), "--pod", "pod-abc",
+            "apps", "init", str(target), "--no-install",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    binding = target / ".lemma.default.env"
+    assert binding.exists()
+    assert "LEMMA_POD_ID=pod-abc" in binding.read_text(encoding="utf-8")
+    assert "LEMMA_SERVER=default" in (target / ".lemma.env").read_text(encoding="utf-8")

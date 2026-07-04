@@ -59,7 +59,8 @@ def selected_pod(
     )
     if required and not value:
         fail(
-            "No pod selected. Run `lemma pods`, pass --pod, or set LEMMA_POD_ID."
+            f"No pod bound for server '{state.server}'. Pass --pod, set LEMMA_POD_ID, "
+            f"or create .lemma.{state.server}.env (run `lemma pods select` or `lemma app init`)."
         )
     return str(value) if value else None
 

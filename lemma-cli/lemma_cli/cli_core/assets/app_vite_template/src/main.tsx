@@ -34,7 +34,8 @@ function App() {
   const { user } = useCurrentUser({ client: lemmaClient })
 
   // Generated hook: fetches + caches this pod's tables. No useState/useEffect needed.
-  // `lemmaClient.podId` comes from VITE_LEMMA_POD_ID (set by `lemma apps init`).
+  // `lemmaClient.podId` is the host-injected pod at runtime (VITE_LEMMA_POD_ID is a
+  // dev-only fallback), so the same build works on any pod.
   const tablesQuery = useTableList(lemmaClient, lemmaClient.podId)
   const tables = getItems<{ name?: string }>(tablesQuery.data)
     .map((table) => table.name ?? '')

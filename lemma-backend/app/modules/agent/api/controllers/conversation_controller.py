@@ -325,20 +325,22 @@ async def resolve_approval(
     ctx: PodContextDep,
 ) -> ApprovalDecisionResponse:
     _ = ctx
-    try:
-        await service.resolve_user_approval(
-            conversation_id=conversation_id,
-            approval_id=approval_id,
-            user_id=user.id,
-            pod_id=pod_id,
-            decision=data.decision,
-            response=data.response,
-        )
-    except RuntimeError as exc:
-        # Deliberate remap: the service raises RuntimeError when the approval is
-        # already resolved / the run is no longer waiting (a conflict, not a 500).
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    return ApprovalDecisionResponse(approval_id=approval_id, decision=data.decision)
+    # Idempotent + self-healing: resolving an already-recorded approval reconciles
+    # its half-finished resume instead of erroring (status "reconciled"). A truly
+    # unknown approval raises UnknownApprovalError -> 404 via the domain handler.
+    resolution = await service.resolve_user_approval(
+        conversation_id=conversation_id,
+        approval_id=approval_id,
+        user_id=user.id,
+        pod_id=pod_id,
+        decision=data.decision,
+        response=data.response,
+    )
+    return ApprovalDecisionResponse(
+        approval_id=approval_id,
+        decision=resolution.decision,
+        status=resolution.status,
+    )
 
 
 @router.post(

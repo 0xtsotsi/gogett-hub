@@ -59,6 +59,18 @@ class ConversationStateError(AgentModuleError):
         super().__init__(message, code="CONVERSATION_STATE_ERROR", status_code=409)
 
 
+class UnknownApprovalError(AgentModuleError):
+    """No pending approval and no recorded decision for this approval id.
+
+    The approval genuinely does not exist (or its call was never persisted), so
+    it can neither be resolved nor reconciled. Distinct from a resolvable
+    already-recorded decision, which self-heals instead of erroring.
+    """
+
+    def __init__(self, message: str = "Unknown or expired approval"):
+        super().__init__(message, code="UNKNOWN_APPROVAL", status_code=404)
+
+
 class HarnessNotFoundError(AgentModuleError):
     """No harness is registered for the requested kind.
 

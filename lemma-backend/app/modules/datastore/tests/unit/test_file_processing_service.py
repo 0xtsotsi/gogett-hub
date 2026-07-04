@@ -193,6 +193,51 @@ async def test_process_file_async_indexes_user_markdown_without_processor():
 
 
 @pytest.mark.asyncio
+async def test_process_file_async_byo_holds_no_db_session_during_io():
+    """The bring-your-own path must also release the DB connection during the
+    source.md download + chunking + index (no session held across slow I/O)."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="scan.pdf",
+        path="/manuals/scan.pdf",
+        mime_type="application/pdf",
+        file_metadata={"markdown_source": "user"},
+    )
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult(), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+
+    def _assert_no_open_session():
+        assert factory.active == 0, "DB session held during external I/O"
+
+    async def _download(*_a, **_k):
+        _assert_no_open_session()
+        return b"<!-- PAGE 1 -->\n\n# User MD\n\nBody."
+
+    async def _upload(*_a, **_k):
+        _assert_no_open_session()
+
+    async def _index(*_a, **_k):
+        _assert_no_open_session()
+
+    service.storage.download_file.side_effect = _download
+    service.storage.upload_file.side_effect = _upload
+    service.search_service.index_file_chunks.side_effect = _index
+
+    await service.process_file_async(file_id)
+
+    service.document_processor.extract.assert_not_awaited()
+    # get_model, claim, mark_completed — all short UoWs, none left open.
+    assert factory.opened == 3
+    assert factory.active == 0
+
+
+@pytest.mark.asyncio
 async def test_process_file_async_falls_back_to_extraction_when_source_md_missing():
     """markdown_source=user but source.md is gone → fall back to extraction."""
     file_id = uuid4()

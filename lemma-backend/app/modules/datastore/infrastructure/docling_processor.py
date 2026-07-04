@@ -7,6 +7,12 @@ container (``quay.io/docling-project/docling-serve``) and the backend talks to i
 over HTTP. This keeps lemma-backend lean: NO torch, NO markitdown-style in-process
 model deps — only an aiohttp call.
 
+Conversions use Docling Serve's ASYNC api — submit the file (``/v1/convert/file/
+async``), poll the task (``/v1/status/poll/{id}``), then fetch the result
+(``/v1/result/{id}``). Docling is CPU-slow on large PDFs (minutes); the async
+flow avoids the sync endpoint's server-side wait cap and the client-timeout →
+resubmit "queue storm" a single long request would cause.
+
 Fast digital-first config (matches the project default): ``do_ocr=false`` (no
 OCR spike), ``table_mode=fast``. Page markers are reconstructed from Docling's
 page-break placeholder so page-scoped reads + per-chunk page spans keep working.
@@ -42,19 +48,35 @@ _PDF_MIME = "application/pdf"
 # Sentinel we ask Docling to insert between pages, then rewrite to numbered
 # ``<!-- PAGE n -->`` markers (the same format the reader/chunker expect).
 _PAGE_BREAK_SENTINEL = "<!-- DOCLING_PAGE_BREAK -->"
-_TRANSIENT_RETRY_ATTEMPTS = 5
-_TRANSIENT_RETRY_BASE_DELAY_SECONDS = 0.5
+# Per-HTTP-request timeout (submit uploads the file; result downloads markdown;
+# each poll is tiny). The WHOLE conversion is bounded separately by
+# ``docling_request_timeout_seconds`` via the poll loop.
+_HTTP_REQUEST_TIMEOUT_SECONDS = 180.0
+# Server-side long-poll window: ``/status/poll?wait=N`` blocks up to N seconds
+# before returning current status, so we poll cheaply without a tight client loop.
+_POLL_WAIT_SECONDS = 5
+_TERMINAL_STATUSES = frozenset({"success", "failure"})
+_SUBMIT_RETRY_ATTEMPTS = 5
+_SUBMIT_RETRY_BASE_DELAY_SECONDS = 0.5
 
 
 class DoclingDocumentProcessor(PdfPageRenderingMixin):
     """Document processor: Docling Serve extraction (HTTP) + pypdfium rendering."""
 
-    def __init__(self, base_url: str | None = None, *, request_timeout: float | None = None):
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        conversion_timeout: float | None = None,
+    ):
         url = base_url if base_url is not None else datastore_settings.docling_serve_url
         self.base_url = url.rstrip("/") if url else None
-        self._timeout = aiohttp.ClientTimeout(
-            total=request_timeout or datastore_settings.docling_request_timeout_seconds
+        # Whole-conversion budget (polled); per-request timeout is separate and
+        # short since individual HTTP calls just upload/poll/download.
+        self._conversion_timeout = (
+            conversion_timeout or datastore_settings.docling_request_timeout_seconds
         )
+        self._request_timeout = aiohttp.ClientTimeout(total=_HTTP_REQUEST_TIMEOUT_SECONDS)
 
     async def extract(
         self,
@@ -80,44 +102,96 @@ class DoclingDocumentProcessor(PdfPageRenderingMixin):
             extraction_mode="docling",
         )
 
-    # -- HTTP --------------------------------------------------------------
+    # -- HTTP (async submit -> poll -> result) -----------------------------
 
     async def _convert(self, content: bytes, filename: str, mime_type: str | None) -> str:
-        max_attempts = (
-            datastore_settings.kreuzberg_transient_retry_attempts
-            or _TRANSIENT_RETRY_ATTEMPTS
-        )
-        base_delay = (
-            datastore_settings.kreuzberg_transient_retry_base_delay_seconds
-            or _TRANSIENT_RETRY_BASE_DELAY_SECONDS
-        )
-        async with aiohttp.ClientSession(timeout=self._timeout) as session:
-            for attempt in range(max_attempts):
-                form = self._build_form(content, filename, mime_type)
-                try:
-                    async with session.post(
-                        f"{self.base_url}/v1/convert/file", data=form
-                    ) as response:
-                        await self._raise_for_status(response)
-                        data = await response.json()
-                        return self._markdown_from_response(data)
-                except (aiohttp.ClientConnectionError, asyncio.TimeoutError, TimeoutError) as exc:
-                    if attempt < max_attempts - 1:
-                        delay = base_delay * (2**attempt)
-                        logger.warning(
-                            "Docling convert connection failed for %s (attempt %d/%d); "
-                            "retrying in %.1fs",
-                            filename,
-                            attempt + 1,
-                            max_attempts,
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise RuntimeError("Docling convert request failed") from exc
-                except aiohttp.ClientError as exc:
-                    raise RuntimeError("Docling convert request failed") from exc
-        raise RuntimeError("Docling convert request failed")
+        async with aiohttp.ClientSession(timeout=self._request_timeout) as session:
+            task = await self._submit_async(session, content, filename, mime_type)
+            task_id = task.get("task_id")
+            if not task_id:
+                raise RuntimeError("Docling async submit returned no task_id")
+            status = await self._await_completion(session, task_id, task, filename)
+            if status == "failure":
+                raise RuntimeError(f"Docling conversion failed for {filename}")
+            result = await self._fetch_result(session, task_id)
+            return self._markdown_from_response(result)
+
+    async def _submit_async(
+        self,
+        session: aiohttp.ClientSession,
+        content: bytes,
+        filename: str,
+        mime_type: str | None,
+    ) -> dict:
+        """Submit the file for asynchronous conversion. Only the (fast) submit is
+        retried on a transient connection failure — the long conversion itself is
+        never resubmitted (that caused a queue storm on slow docs)."""
+        for attempt in range(_SUBMIT_RETRY_ATTEMPTS):
+            form = self._build_form(content, filename, mime_type)
+            try:
+                async with session.post(
+                    f"{self.base_url}/v1/convert/file/async", data=form
+                ) as response:
+                    await self._raise_for_status(response)
+                    return await response.json()
+            except (aiohttp.ClientConnectionError, asyncio.TimeoutError, TimeoutError) as exc:
+                if attempt < _SUBMIT_RETRY_ATTEMPTS - 1:
+                    delay = _SUBMIT_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+                    logger.warning(
+                        "Docling async submit connection failed for %s "
+                        "(attempt %d/%d); retrying in %.1fs",
+                        filename,
+                        attempt + 1,
+                        _SUBMIT_RETRY_ATTEMPTS,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise RuntimeError("Docling async submit failed") from exc
+            except aiohttp.ClientError as exc:
+                raise RuntimeError("Docling async submit failed") from exc
+        raise RuntimeError("Docling async submit failed")
+
+    async def _await_completion(
+        self,
+        session: aiohttp.ClientSession,
+        task_id: str,
+        task: dict,
+        filename: str,
+    ) -> str:
+        """Poll the task until it reaches a terminal status, bounded by the
+        whole-conversion budget. Transient poll failures are tolerated (the job
+        keeps running server-side); only the overall deadline aborts."""
+        status = task.get("task_status")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._conversion_timeout
+        while status not in _TERMINAL_STATUSES:
+            if loop.time() > deadline:
+                raise RuntimeError(
+                    f"Docling conversion timed out for {filename} after "
+                    f"{self._conversion_timeout:.0f}s"
+                )
+            try:
+                task = await self._poll(session, task_id)
+                status = task.get("task_status")
+            except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError):
+                # Job still runs server-side; retry the poll after a short pause.
+                logger.debug("Docling poll hiccup for %s; retrying", filename, exc_info=True)
+                await asyncio.sleep(_POLL_WAIT_SECONDS)
+        return status
+
+    async def _poll(self, session: aiohttp.ClientSession, task_id: str) -> dict:
+        async with session.get(
+            f"{self.base_url}/v1/status/poll/{task_id}",
+            params={"wait": _POLL_WAIT_SECONDS},
+        ) as response:
+            await self._raise_for_status(response)
+            return await response.json()
+
+    async def _fetch_result(self, session: aiohttp.ClientSession, task_id: str) -> dict:
+        async with session.get(f"{self.base_url}/v1/result/{task_id}") as response:
+            await self._raise_for_status(response)
+            return await response.json()
 
     def _build_form(
         self, content: bytes, filename: str, mime_type: str | None

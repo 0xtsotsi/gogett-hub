@@ -109,6 +109,14 @@ class VariableSpecResponse(BaseModel):
     description: str | None = None
     required: bool = False
     default: str | None = None
+    platform: str | None = Field(
+        default=None,
+        description=(
+            "For a connector account variable, the platform the account must "
+            "belong to (e.g. 'slack'), so the importer can connect the right "
+            "connector. Null for non-connector variables."
+        ),
+    )
 
 
 class ImportPlanResponse(BaseModel):
@@ -144,6 +152,7 @@ class ImportPlanResponse(BaseModel):
                     description=v.description,
                     required=v.required,
                     default=v.default,
+                    platform=v.platform,
                 )
                 for v in plan.variables
             ],

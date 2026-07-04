@@ -153,7 +153,7 @@ async def test_variables_classified(tmp):
     root = _build_bundle(
         tmp,
         variables={
-            "acct": {"type": "account", "source_value": "x"},
+            "acct": {"type": "account", "source_value": "x", "platform": "slack"},
             "owner": {"type": "member", "source_value": "y"},
             "region": {"type": "string", "source_value": "z"},
             "app_slug": {"type": "app_slug", "source_value": "s", "default": "s"},
@@ -161,9 +161,13 @@ async def test_variables_classified(tmp):
     )
     plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
     by_name = {v.name: v for v in plan.variables}
-    # Connector accounts must be supplied by the importer -> required.
+    # Connector accounts must be supplied by the importer -> required, and carry
+    # the platform so the UI can prompt for the right connector.
     assert by_name["acct"].kind == "account"
     assert by_name["acct"].required is True
+    assert by_name["acct"].platform == "slack"
+    # A variable with no platform context leaves it None.
+    assert by_name["region"].platform is None
     # Pod members auto-resolve to the importing user -> not required.
     assert by_name["owner"].kind == "pod_member"
     assert by_name["owner"].required is False

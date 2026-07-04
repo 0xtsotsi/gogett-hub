@@ -326,6 +326,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
         else:
             kind = "free"
         default = (meta or {}).get("default")
+        platform = (meta or {}).get("platform")
         specs.append(
             VariableSpec(
                 name=str(name),
@@ -333,6 +334,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
                 description=(meta or {}).get("description"),
                 required=(kind == "account") or (kind == "free" and default is None),
                 default=str(default) if default is not None else None,
+                platform=str(platform) if platform else None,
             )
         )
     return specs

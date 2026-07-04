@@ -46,12 +46,17 @@ jobs:
       fail-fast: false
       matrix:
         suite:
-          # Fast API suite — no Kreuzberg, so it stays light.
+          # Fast API suite — no Kreuzberg, so it stays light enough to run 2
+          # xdist workers on the runner (~2x faster than serial).
           - name: mocked
             target: test-e2e-fast
-          # Kreuzberg-backed indexing/search tests (still mocked LLM).
+            workers: 2
+          # Kreuzberg-backed indexing/search tests (still mocked LLM). Serial:
+          # the shared Kreuzberg container is memory-heavy and parallel indexing
+          # is contention-flaky.
           - name: indexing
             target: test-e2e-indexing
+            workers: 1
     defaults:
       run:
         working-directory: lemma-backend
@@ -72,9 +77,9 @@ jobs:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      # Run serially (1 xdist worker): the suites share per-worker testcontainers
-      # (and the indexing suite a single Kreuzberg container), and parallel runs
-      # are contention-flaky. Serial is the reliable choice for a once-before-merge
-      # gate; the two suites run on separate runners so wall-clock stays low.
+      # Worker count is per-suite (see matrix): the fast suite runs 2 xdist
+      # workers now that Kreuzberg is split out and it fits the runner's memory;
+      # the indexing suite stays serial. Both run on separate runners so the
+      # gate's wall-clock is the slower of the two.
       - name: E2E tests (mocked LLM + fake AgentBox)
-        run: make ${{ matrix.suite.target }} E2E_WORKERS=1
+        run: make ${{ matrix.suite.target }} E2E_WORKERS=${{ matrix.suite.workers }}

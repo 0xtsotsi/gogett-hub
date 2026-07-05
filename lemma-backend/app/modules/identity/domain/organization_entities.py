@@ -16,6 +16,34 @@ class OrganizationRole(str, Enum):
     ORG_MEMBER = "ORG_MEMBER"
 
 
+# Organization roles ordered from least to most privileged. Mirrors the implicit
+# hierarchy already relied on in organization_service (e.g. an editor cannot
+# remove an owner).
+ORG_ROLE_HIERARCHY: dict["OrganizationRole", int] = {
+    OrganizationRole.ORG_MEMBER: 1,
+    OrganizationRole.ORG_EDITOR: 2,
+    OrganizationRole.ORG_OWNER: 3,
+}
+
+
+def can_grant_org_role(
+    approver_role: "OrganizationRole", target_role: "OrganizationRole"
+) -> bool:
+    """Whether ``approver_role`` may grant ``target_role`` to another member.
+
+    Only an ORG_OWNER may grant an elevated role (ORG_OWNER/ORG_EDITOR); every
+    lesser approver is capped at ORG_MEMBER. This blocks an editor — or a pod
+    admin who is only an org member — from minting an org owner/editor through a
+    side channel such as approving a join request.
+    """
+    if approver_role == OrganizationRole.ORG_OWNER:
+        return True
+    return (
+        ORG_ROLE_HIERARCHY[target_role]
+        <= ORG_ROLE_HIERARCHY[OrganizationRole.ORG_MEMBER]
+    )
+
+
 class OrganizationJoinPolicy(str, Enum):
     """Who may self-join an organization, ordered from closed to open."""
 

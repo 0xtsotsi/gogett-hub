@@ -69,6 +69,58 @@ async def test_resolve_account_returns_user_owned_account_for_plain_user():
     assert resolved.id == account.id
 
 
+async def test_resolve_account_scopes_owned_lookup_to_context_org():
+    # A plain-user resolution must look the account up within the caller's org,
+    # not across every org the user belongs to.
+    user_id = uuid4()
+    org_id = uuid4()
+    account = _account(user_id=user_id, connector_id="slack")
+    repo = AsyncMock(
+        get_by_user_org_and_app=AsyncMock(return_value=account),
+        get_by_user_and_app=AsyncMock(
+            return_value=_account(user_id=user_id, connector_id="slack")
+        ),
+    )
+    service = AccountResolutionService(account_repository=repo)
+    auth_actor = SimpleNamespace(
+        organization_id=org_id,
+        delegated_by_user_id=None,
+        actor_type=ActorType.USER,
+    )
+
+    resolved = await service.resolve_account(
+        user_id=user_id,
+        connector_id="slack",
+        auth_actor=auth_actor,
+    )
+
+    assert resolved.id == account.id
+    repo.get_by_user_org_and_app.assert_awaited_once_with(user_id, org_id, "slack")
+    repo.get_by_user_and_app.assert_not_called()
+
+
+async def test_resolve_account_rejects_explicit_account_from_another_org():
+    user_id = uuid4()
+    org_id = uuid4()
+    # account.organization_id is a different (random) org than the caller's.
+    account = _account(user_id=user_id, connector_id="slack")
+    repo = AsyncMock(get=AsyncMock(return_value=account))
+    service = AccountResolutionService(account_repository=repo)
+    auth_actor = SimpleNamespace(
+        organization_id=org_id,
+        delegated_by_user_id=None,
+        actor_type=ActorType.USER,
+    )
+
+    with pytest.raises(AccountResolutionError):
+        await service.resolve_account(
+            user_id=user_id,
+            connector_id="slack",
+            auth_actor=auth_actor,
+            account_id=account.id,
+        )
+
+
 async def test_resolve_account_rejects_explicit_account_from_another_user():
     user_id = uuid4()
     account = _account(user_id=uuid4(), connector_id="slack")

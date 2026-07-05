@@ -11,6 +11,7 @@ from app.core.authorization.context import (
     ResourceType,
     ResourceVisibility,
 )
+from app.core.authorization.delegation_revocation import revoke_delegation
 from app.core.authorization.permissions import Permissions
 from app.modules.agent.domain.entities import Agent
 from app.modules.agent.domain.errors import (
@@ -258,6 +259,9 @@ class AgentService:
                 ctx=ctx,
             )
         await self.agent_repository.delete(agent.id)
+        # Revoke any in-flight delegated token minted for this agent so it stops
+        # working immediately rather than lingering until the token expires.
+        await revoke_delegation(actor_id=agent.id)
 
     def _normalize_names(self, values: list[str], *, label: str) -> list[str]:
         normalized: list[str] = []

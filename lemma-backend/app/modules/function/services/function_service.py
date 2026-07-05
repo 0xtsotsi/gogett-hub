@@ -14,6 +14,7 @@ from app.core.authorization.context import (
     ResourceType,
     ResourceVisibility,
 )
+from app.core.authorization.delegation_revocation import revoke_delegation
 from app.core.authorization.permissions import Permissions
 from app.core.helpers.slug import slugify
 from app.core.domain.job_queue import JobQueuePort
@@ -425,6 +426,9 @@ class FunctionService:
         deleted = await self._delete_function_row(function.id)
         if not deleted:
             raise FunctionNotFoundError(f"Function {name} not found")
+        # Revoke any in-flight delegated token minted for this function so it
+        # stops working immediately rather than lingering until the token expires.
+        await revoke_delegation(actor_id=function.id)
         # Icon cleanup is a storage call — run it after the DB session closes so
         # no pooled connection is held across it.
         if self.icon_service:

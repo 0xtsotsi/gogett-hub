@@ -11,7 +11,15 @@ import pytest
 from fastapi import HTTPException
 
 from app.core import security
-from app.core.authorization.delegation import CLAIM_ACTOR_ID
+from app.core.authorization.delegation import (
+    CLAIM_ACTOR_ID,
+    CLAIM_ACTOR_TYPE,
+    CLAIM_DELEGATION_VERSION,
+    CLAIM_INVOKED_BY_USER_ID,
+    CLAIM_POD_ID,
+    CLAIM_SESSION_ID,
+    DELEGATION_VERSION,
+)
 
 
 class _FakeSession:
@@ -76,3 +84,65 @@ async def test_plain_user_token_accepted_when_delegation_disabled(monkeypatch):
 
     assert conn.state.user is not None
     assert conn.state.delegation_claims is None
+
+
+def _delegation_payload(*, user_id: str, actor_id: str) -> dict:
+    return {
+        CLAIM_ACTOR_TYPE: "AGENT",
+        CLAIM_ACTOR_ID: actor_id,
+        CLAIM_POD_ID: str(uuid4()),
+        CLAIM_SESSION_ID: "sess",
+        CLAIM_INVOKED_BY_USER_ID: user_id,
+        CLAIM_DELEGATION_VERSION: DELEGATION_VERSION,
+        "isImpersonation": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_revoked_delegation_token_rejected(monkeypatch):
+    user_id = str(uuid4())
+    actor_id = str(uuid4())
+    monkeypatch.setattr(
+        security.settings, "authz_delegated_tokens_enabled", True, raising=False
+    )
+    monkeypatch.setattr(
+        security,
+        "get_session",
+        AsyncMock(
+            return_value=_FakeSession(
+                user_id, _delegation_payload(user_id=user_id, actor_id=actor_id)
+            )
+        ),
+    )
+    monkeypatch.setattr(security, "is_delegation_revoked", AsyncMock(return_value=True))
+
+    with pytest.raises(HTTPException) as exc:
+        await security.verify_auth(_connection())
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "DELEGATION_REVOKED"
+
+
+@pytest.mark.asyncio
+async def test_live_delegation_token_accepted(monkeypatch):
+    conn = _connection()
+    user_id = str(uuid4())
+    actor_id = str(uuid4())
+    monkeypatch.setattr(
+        security.settings, "authz_delegated_tokens_enabled", True, raising=False
+    )
+    monkeypatch.setattr(
+        security,
+        "get_session",
+        AsyncMock(
+            return_value=_FakeSession(
+                user_id, _delegation_payload(user_id=user_id, actor_id=actor_id)
+            )
+        ),
+    )
+    monkeypatch.setattr(security, "is_delegation_revoked", AsyncMock(return_value=False))
+
+    await security.verify_auth(conn)
+
+    assert conn.state.delegation_claims is not None
+    assert str(conn.state.delegation_claims.actor_id) == actor_id

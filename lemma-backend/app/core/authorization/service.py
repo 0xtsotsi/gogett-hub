@@ -31,6 +31,7 @@ from app.core.authorization.delegation import (
     WorkloadPrincipalType,
 )
 from app.core.authorization.session_approvals import has_session_approval
+from app.core.domain.errors import DomainError
 from app.core.authorization.grants import (
     delete_grantee_grants,
     grant_resource_type_values,
@@ -641,6 +642,16 @@ class AuthorizationDataService:
         request_id: str | None = None,
         is_default_pod_agent: bool = False,
     ) -> Context:
+        # Defense in depth: the claims and the session are minted together, so
+        # the claim's invoked_by_user_id must match the authenticated session
+        # user. A mismatch means the token was tampered with or mis-minted — never
+        # build a context that delegates for a different user than the token.
+        if claims.invoked_by_user_id != user_id:
+            raise DomainError(
+                "Delegation invoked_by_user_id does not match the session user",
+                code="DELEGATION_USER_MISMATCH",
+                status_code=403,
+            )
         return await self.build_delegated_workload_context(
             user_id=user_id,
             principal_type=claims.actor_type.value,

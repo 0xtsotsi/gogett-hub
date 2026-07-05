@@ -11,6 +11,7 @@ from app.core.authorization.delegation import (
     DelegationClaimsError,
     parse_delegation_claims,
 )
+from app.core.authorization.delegation_revocation import is_delegation_revoked
 from app.core.log.log import get_logger
 from app.modules.identity.domain.user_entities import AuthUserEntity
 
@@ -124,6 +125,20 @@ async def verify_auth(connection: HTTPConnection):
                             "message": str(exc),
                         },
                     ) from exc
+
+                if delegation_claims is not None and await is_delegation_revoked(
+                    actor_id=delegation_claims.actor_id
+                ):
+                    # The workload this token delegates for lost its authority
+                    # (e.g. the agent/function was deleted). Reject before it
+                    # expires on its own.
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "DELEGATION_REVOKED",
+                            "message": "Delegated workload has been revoked.",
+                        },
+                    )
 
                 connection.state.delegation_claims = delegation_claims
             elif payload.get("isImpersonation") is True or payload.get(CLAIM_ACTOR_ID):

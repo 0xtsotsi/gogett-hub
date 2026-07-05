@@ -335,6 +335,15 @@ class Settings(BaseSettings):
             "disable session approvals (every destructive action re-prompts)."
         ),
     )
+    delegation_revocation_ttl_seconds: int = Field(
+        default=3600,
+        description=(
+            "How long a revoked delegated workload (e.g. a deleted agent/function) "
+            "stays blocked. Must be >= the max access-token lifetime so an "
+            "in-flight delegated token cannot outlive its revocation. Set to 0 to "
+            "disable delegation revocation."
+        ),
+    )
     # Google OAuth Settings
     google_client_id: Optional[str] = Field(
         default=None, description="Google OAuth Client ID"

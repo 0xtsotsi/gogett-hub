@@ -364,3 +364,11 @@
 .pod-home-work-empty p + p {
   color: var(--text-muted);
 }
+
+/* Brand surface logos (Slack, Gmail, Telegram…) are drawn for light backgrounds.
+   Chip them on white in both light and dark mode so Gmail's baked-in white edge
+   reads as an intentional app tile instead of a stray box on a dark surface. */
+.surface-logo-chip {
+  background: #ffffff;
+  border: 0.5px solid color-mix(in srgb, var(--border-subtle) 55%, transparent);
+}

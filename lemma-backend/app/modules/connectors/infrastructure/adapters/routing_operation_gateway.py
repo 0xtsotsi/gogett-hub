@@ -73,6 +73,8 @@ class RoutingOperationGateway(AppOperationGatewayPort):
         auth_token: str | None = None,
         api_url: str | None = None,
         provider: str | None = None,
+        execution: dict[str, Any] | None = None,
+        connection_config: dict[str, Any] | None = None,
     ) -> Any:
         # The connector lookup is pure existence-validation (the entity is
         # discarded; routing uses ``provider``). When the caller already resolved
@@ -101,6 +103,8 @@ class RoutingOperationGateway(AppOperationGatewayPort):
                     third_party_credentials=third_party_credentials,
                     auth_token=auth_token,
                     api_url=api_url,
+                    execution=execution,
+                    connection_config=connection_config,
                 ),
                 timeout=timeout,
             )

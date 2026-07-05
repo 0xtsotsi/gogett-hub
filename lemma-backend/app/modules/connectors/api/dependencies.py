@@ -139,6 +139,10 @@ def get_connector_operation_service(uow: UoWDep) -> ConnectorOperationService:
 def build_connector_operation_service(
     uow: UoWDep,
 ) -> ConnectorOperationService:
+    from app.modules.connectors.infrastructure.adapters.datastore_pod_file_gateway import (
+        DatastorePodFileGateway,
+    )
+
     connector_repository = _connector_repository(uow)
     return ConnectorOperationService(
         connector_repository=connector_repository,
@@ -149,6 +153,7 @@ def build_connector_operation_service(
         schema_compiler=PydanticCodeSchemaCompiler(),
         account_resolution_service=get_account_resolution_service(uow),
         connector_service=get_connector_service(uow),
+        pod_file_gateway=DatastorePodFileGateway(uow),
     )
 
 

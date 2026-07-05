@@ -96,6 +96,10 @@ class LemmaAuthProvider(AuthProviderInterface):
             oauth.fetch_token,
             url=oauth_config.token_url,
             authorization_response=authorization_response,
+            # GitHub's token endpoint returns form-encoded data unless JSON is
+            # explicitly requested; authlib can only parse the access_token when
+            # the response is JSON. Harmless for providers that already return JSON.
+            headers={"Accept": "application/json"},
         )
 
         return await self._create_oauth_credentials(token_data, connector)

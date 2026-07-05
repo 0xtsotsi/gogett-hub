@@ -21,7 +21,23 @@ from app.modules.connectors.infrastructure.adapters.lemma_connector_factory impo
     create_lemma_info_client,
     schema_json,
 )
+from app.modules.connectors.infrastructure.adapters.openapi_http_executor import (
+    OpenApiHttpExecutor,
+)
+from app.modules.connectors.infrastructure.adapters.sql_executor import SqlExecutor
 logger = logging.getLogger(__name__)
+
+# Process-shared executors for kinds that hold reusable resources (SQL engine
+# pools). The gateway is constructed per-request, so a fresh executor per request
+# would defeat connection pooling — share one across the process instead.
+_SHARED_SQL_EXECUTOR: SqlExecutor | None = None
+
+
+def _shared_sql_executor() -> SqlExecutor:
+    global _SHARED_SQL_EXECUTOR
+    if _SHARED_SQL_EXECUTOR is None:
+        _SHARED_SQL_EXECUTOR = SqlExecutor()
+    return _SHARED_SQL_EXECUTOR
 
 
 @dataclass(slots=True)
@@ -32,6 +48,51 @@ class LemmaOperationDetails(OperationDetailsPort):
 
 
 class LemmaOperationGateway(AppOperationGatewayPort):
+    def __init__(
+        self,
+        http_executor: OpenApiHttpExecutor | None = None,
+        sql_executor: SqlExecutor | None = None,
+    ):
+        # Operations carrying an ``execution`` descriptor run package-free through
+        # a per-kind executor (http/sql/mcp); everything else keeps using the
+        # vendored ``lemma-connectors`` package path.
+        self._http_executor = http_executor or OpenApiHttpExecutor()
+        self._sql_executor = sql_executor or _shared_sql_executor()
+
+    async def _execute_by_kind(
+        self,
+        *,
+        connector_id: str,
+        operation_name: str,
+        execution: dict[str, Any],
+        payload: dict[str, Any],
+        third_party_credentials: dict[str, Any] | None,
+        connection_config: dict[str, Any] | None = None,
+    ) -> Any:
+        kind = (execution.get("kind") or "http").lower()
+        if kind == "http":
+            return await self._http_executor.execute(
+                connector_id=connector_id,
+                operation_name=operation_name,
+                execution=execution,
+                payload=payload,
+                third_party_credentials=third_party_credentials,
+                connection_config=connection_config,
+            )
+        if kind == "sql":
+            return await self._sql_executor.execute(
+                connector_id=connector_id,
+                operation_name=operation_name,
+                execution=execution,
+                payload=payload,
+                third_party_credentials=third_party_credentials,
+                connection_config=connection_config,
+            )
+        raise OperationExecutionValidationError(
+            f"Unsupported execution kind '{kind}' for operation '{operation_name}'.",
+            details={"kind": kind},
+        )
+
     def _translate_execution_error(
         self,
         operation_name: str,
@@ -122,6 +183,8 @@ class LemmaOperationGateway(AppOperationGatewayPort):
         auth_token: str | None = None,
         api_url: str | None = None,
         provider: str | None = None,
+        execution: dict[str, Any] | None = None,
+        connection_config: dict[str, Any] | None = None,
     ) -> Any:
         del auth_token, api_url, provider
         logger.info(
@@ -131,6 +194,18 @@ class LemmaOperationGateway(AppOperationGatewayPort):
             sorted((payload or {}).keys()),
         )
         try:
+            if execution:
+                # Package-free operation: dispatch by execution kind. Each kind's
+                # executor is self-contained (HTTP / SQL / MCP); the vendored
+                # package path below is only for operations without a descriptor.
+                return await self._execute_by_kind(
+                    connector_id=connector_id,
+                    operation_name=operation_name,
+                    execution=execution,
+                    payload=payload or {},
+                    third_party_credentials=third_party_credentials,
+                    connection_config=connection_config,
+                )
             client = create_lemma_execution_client(connector_id, third_party_credentials)
             operation = await client.get_operation(operation_name)
             prepared_payload = self._prepare_payload(

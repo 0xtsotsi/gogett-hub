@@ -229,7 +229,36 @@ class AppOperationGatewayPort(Protocol):
         auth_token: str | None = None,
         api_url: str | None = None,
         provider: str | None = None,
+        execution: dict[str, Any] | None = None,
+        connection_config: dict[str, Any] | None = None,
     ) -> Any: ...
+
+
+class PodFileGatewayPort(Protocol):
+    """Reads/writes pod datastore files by path for connector file transfer.
+
+    ``ctx`` is the authorization ``Context`` (typed ``Any`` to avoid importing the
+    core auth module here); datastore access is grant-checked under it.
+    """
+
+    async def read_bytes(
+        self, *, pod_id: UUID, path: str, ctx: Any
+    ) -> Tuple[bytes, Optional[str], Optional[str]]:
+        """Return ``(content, media_type, filename)`` for a pod datastore path."""
+        ...
+
+    async def write_bytes(
+        self,
+        *,
+        pod_id: UUID,
+        directory: str,
+        name: str,
+        content: bytes,
+        media_type: Optional[str],
+        ctx: Any,
+    ) -> dict[str, Any]:
+        """Write bytes to the pod datastore; return a small file reference dict."""
+        ...
 
 
 class SchemaCompilerPort(Protocol):

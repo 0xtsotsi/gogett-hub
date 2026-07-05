@@ -77,6 +77,10 @@ from app.modules.connectors.domain.connector_operation import (
     ConnectorOperationEntity,
 )
 from app.modules.connectors.domain.connector_trigger import ConnectorTriggerEntity
+from app.modules.connectors.infrastructure.openapi import (
+    build_operation_descriptors,
+    build_raw_passthrough,
+)
 from app.modules.connectors.infrastructure.adapters.schema_compiler import (
     PydanticCodeSchemaCompiler,
 )
@@ -525,6 +529,8 @@ def _lemma_provider_capability(
     auth_config_schema: dict | None = None,
     credential_schema: dict | None = None,
     system_oauth: dict | None = None,
+    kind: str | None = None,
+    supports_multiple_instances: bool = False,
 ) -> LemmaProviderCapability:
     system_default_available = (
         auth_method != AuthMethod.OAUTH2 or _system_oauth_available(system_oauth)
@@ -543,7 +549,42 @@ def _lemma_provider_capability(
         else None,
         supports_org_custom_oauth=auth_method == AuthMethod.OAUTH2,
         system_default_available=system_default_available,
+        kind=kind,
+        supports_multiple_instances=supports_multiple_instances,
     )
+
+
+async def _sync_static_operations(
+    operation_repository: ConnectorOperationRepository,
+    connector_id: str,
+    static_operations: list[dict],
+) -> int:
+    """Seed catalog-static operations declared inline in config (e.g. the SQL
+    connector's query/list_tables/describe_table), each carrying an ``execution``
+    descriptor consumed by the matching kind executor."""
+    count = 0
+    for op in static_operations:
+        public_name = op["name"]
+        description = op.get("description") or _humanize_operation_name(public_name)
+        await _upsert_operation(
+            operation_repository,
+            connector_id,
+            provider=AuthProvider.LEMMA,
+            public_name=public_name,
+            provider_operation_name=_normalize_operation_name(public_name),
+            display_name=op.get("display_name") or public_name,
+            description=description,
+            input_schema=op.get("input_schema"),
+            output_schema=op.get("output_schema"),
+            search_document=_build_operation_search_document(
+                public_name=public_name,
+                display_name=op.get("display_name") or public_name,
+                description=description,
+            ),
+            execution=op["execution"],
+        )
+        count += 1
+    return count
 
 
 def _composio_provider_capability(
@@ -767,6 +808,7 @@ async def _upsert_operation(
     input_schema: dict | None,
     output_schema: dict | None,
     search_document: str | None,
+    execution: dict | None = None,
     normalize_name: bool = True,
 ) -> None:
     operation_name = (
@@ -788,6 +830,10 @@ async def _upsert_operation(
         search_document=search_document,
         input_schema=input_schema,
         output_schema=output_schema,
+        # Always set explicitly (even None): the repository serializes with
+        # exclude_unset=True, so an omitted field would neither persist a new
+        # descriptor nor clear a stale one on update.
+        execution=execution,
     )
     if existing:
         await operation_repository.update(entity)
@@ -821,6 +867,84 @@ async def _upsert_trigger(
         await trigger_repository.update(entity)
     else:
         await trigger_repository.create(entity)
+
+
+OPENAPI_SPECS_DIR = Path(__file__).parent / "openapi_specs"
+
+
+def _load_openapi_spec(openapi_cfg: dict) -> dict:
+    """Load the OpenAPI spec referenced by a connector's ``openapi`` config."""
+    spec_path = openapi_cfg.get("spec_path")
+    if not spec_path:
+        raise ValueError("openapi config is missing 'spec_path'")
+    resolved = (LEMMA_APPS_CONFIG_PATH.parent / spec_path).resolve()
+    with open(resolved, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _spec_default_server(spec: dict) -> str | None:
+    servers = spec.get("servers") or []
+    if servers and isinstance(servers[0], dict):
+        return servers[0].get("url")
+    return None
+
+
+async def _sync_openapi_operations(
+    operation_repository: ConnectorOperationRepository,
+    connector_id: str,
+    openapi_cfg: dict,
+) -> int:
+    """Import operations for a connector directly from its OpenAPI spec.
+
+    Builds one ``ConnectorOperationEntity`` per allowlisted spec operation (plus an
+    optional raw HTTP passthrough), each carrying an ``execution`` execution
+    descriptor consumed at runtime by the OpenAPI HTTP executor. No codegen, no
+    per-connector Python package.
+    """
+    spec = _load_openapi_spec(openapi_cfg)
+    server_url = openapi_cfg.get("server_url") or _spec_default_server(spec)
+    if not server_url:
+        raise ValueError(f"No server_url for OpenAPI connector '{connector_id}'")
+    default_headers = openapi_cfg.get("default_headers") or None
+
+    descriptors = build_operation_descriptors(
+        spec,
+        server_url=server_url,
+        allowlist=openapi_cfg.get("operation_allowlist", []),
+        overrides=openapi_cfg.get("overrides", {}),
+        default_headers=default_headers,
+    )
+    if openapi_cfg.get("include_raw", True):
+        descriptors.append(
+            build_raw_passthrough(
+                connector_id,
+                server_url=server_url,
+                name=openapi_cfg.get("raw_operation_name"),
+                default_headers=default_headers,
+            )
+        )
+
+    count = 0
+    for descriptor in descriptors:
+        await _upsert_operation(
+            operation_repository,
+            connector_id,
+            provider=AuthProvider.LEMMA,
+            public_name=descriptor.public_name,
+            provider_operation_name=descriptor.public_name,
+            display_name=descriptor.display_name,
+            description=descriptor.description,
+            input_schema=descriptor.input_schema,
+            output_schema=descriptor.output_schema,
+            search_document=_build_operation_search_document(
+                public_name=descriptor.public_name,
+                display_name=descriptor.display_name,
+                description=descriptor.description,
+            ),
+            execution=descriptor.execution,
+        )
+        count += 1
+    return count
 
 
 def _paginate_toolkits(composio: Composio, *, managed_by: str, page_size: int):
@@ -975,6 +1099,10 @@ async def _sync_native_catalog(
                     auth_config_schema=app_config.get("auth_config_schema"),
                     credential_schema=app_config.get("credential_schema"),
                     system_oauth=app_config.get("system_oauth"),
+                    kind=app_config.get("kind"),
+                    supports_multiple_instances=app_config.get(
+                        "supports_multiple_instances", False
+                    ),
                 ),
             ),
             agent_instruction=app_config.get("agent_instruction")
@@ -1019,6 +1147,26 @@ async def _sync_native_catalog(
             else:
                 await trigger_repository.create(trigger_entity)
             total_triggers += 1
+
+        # Seed catalog-static operations declared inline (e.g. SQL's
+        # query/list_tables/describe_table), each with an execution descriptor.
+        static_ops = app_config.get("static_operations")
+        if static_ops:
+            op_count = await _sync_static_operations(
+                operation_repository, connector_id, static_ops
+            )
+            total_operations += op_count
+            logger.info("Synced %d static operations for %s", op_count, app_name)
+
+        # Import OpenAPI-driven operations for connectors that declare a spec.
+        # These run through the generic HTTP executor at runtime — no package.
+        openapi_cfg = app_config.get("openapi")
+        if openapi_cfg:
+            op_count = await _sync_openapi_operations(
+                operation_repository, connector_id, openapi_cfg
+            )
+            total_operations += op_count
+            logger.info("Synced %d OpenAPI operations for %s", op_count, app_name)
 
     # Then sync native package apps that still run through Lemma packages.
     for app_slug in _list_native_apps(app_filters):

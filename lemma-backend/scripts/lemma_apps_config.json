@@ -784,5 +784,134 @@
     "agent_instruction": "Use Confluence to create, read, update, and manage pages and spaces. Access documentation, knowledge bases, and team wikis.",
     "is_active": true,
     "triggers": []
+  },
+  {
+    "name": "github",
+    "title": "GitHub",
+    "description": "GitHub connector for repositories, issues, pull requests, gists, and releases.",
+    "auth_method": "OAUTH2",
+    "auth_provider": "LEMMA",
+    "operation_executor": "LEMMA",
+    "icon": null,
+    "config": {
+      "access_token_path": "access_token",
+      "refresh_token_path": "refresh_token"
+    },
+    "system_oauth": {
+      "client_id_env": "CONNECTOR_GITHUB_CLIENT_ID",
+      "client_secret_env": "CONNECTOR_GITHUB_CLIENT_SECRET"
+    },
+    "oauth2_config": {
+      "authorization_url": "https://github.com/login/oauth/authorize",
+      "token_url": "https://github.com/login/oauth/access_token",
+      "revoke_url": "",
+      "userinfo_url": "https://api.github.com/user",
+      "default_scopes": ["repo", "workflow", "read:org", "gist", "read:user"],
+      "extra_params": {}
+    },
+    "agent_instruction": "Use GitHub to manage repositories, issues, pull requests, gists, and releases. Read and write repo content, open and comment on issues, and download or upload release assets and repository archives.",
+    "is_active": true,
+    "triggers": [],
+    "openapi": {
+      "spec_path": "openapi_specs/github.json",
+      "server_url": "https://api.github.com",
+      "include_raw": true,
+      "raw_operation_name": "github_http_request",
+      "default_headers": {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "lemma-connectors"
+      },
+      "operation_allowlist": [
+        { "operation_id": "users/get-authenticated" },
+        { "operation_id": "repos/get" },
+        { "operation_id": "issues/list-for-repo" },
+        { "operation_id": "issues/create" },
+        { "operation_id": "gists/create" },
+        { "operation_id": "repos/upload-release-asset" },
+        { "operation_id": "repos/download-tarball-archive" }
+      ],
+      "overrides": {
+        "repos/download-tarball-archive": { "binary_response": true }
+      }
+    }
+  },
+  {
+    "name": "sql",
+    "title": "SQL Database",
+    "description": "Connect to an external SQL database (PostgreSQL) and run read-only queries.",
+    "auth_method": "API_KEY",
+    "auth_provider": "LEMMA",
+    "operation_executor": "LEMMA",
+    "kind": "sql",
+    "supports_multiple_instances": true,
+    "auth_config_schema": {
+      "type": "object",
+      "required": ["dialect", "host", "database"],
+      "properties": {
+        "dialect": { "type": "string", "enum": ["postgresql"], "default": "postgresql" },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "default": 5432 },
+        "database": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "credential_schema": {
+      "type": "object",
+      "required": ["username", "password"],
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string", "format": "password" }
+      },
+      "additionalProperties": false
+    },
+    "agent_instruction": "Use this SQL connector to list tables, describe a table, and run read-only SELECT queries against the connected database.",
+    "is_active": true,
+    "triggers": [],
+    "static_operations": [
+      {
+        "name": "execute_query",
+        "description": "Run a read-only SELECT query against the database.",
+        "execution": { "kind": "sql", "op": "query" },
+        "input_schema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": { "query": { "type": "string", "description": "A single read-only SELECT statement." } },
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "columns": { "type": "array" },
+            "rows": { "type": "array" },
+            "row_count": { "type": "integer" },
+            "truncated": { "type": "boolean" }
+          }
+        }
+      },
+      {
+        "name": "list_tables",
+        "description": "List tables in the connected database.",
+        "execution": { "kind": "sql", "op": "list_tables" },
+        "input_schema": {
+          "type": "object",
+          "properties": { "schema": { "type": "string", "description": "Optional schema to filter by." } },
+          "additionalProperties": false
+        },
+        "output_schema": { "type": "object", "properties": { "rows": { "type": "array" } } }
+      },
+      {
+        "name": "describe_table",
+        "description": "Describe a table's columns.",
+        "execution": { "kind": "sql", "op": "describe_table" },
+        "input_schema": {
+          "type": "object",
+          "required": ["table"],
+          "properties": { "table": { "type": "string" }, "schema": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "output_schema": { "type": "object", "properties": { "rows": { "type": "array" } } }
+      }
+    ]
   }
 ]

@@ -19,12 +19,14 @@ from app.modules.connectors.domain.errors import (
     ConnectorNotFoundError,
     ConnectorDomainError,
     OperationExecutionInfrastructureError,
+    OperationExecutionValidationError,
     OperationNotFoundError,
 )
 from app.modules.connectors.domain.ports import (
     ConnectorOperationRepositoryPort,
     ConnectorRepositoryPort,
     AppOperationGatewayPort,
+    PodFileGatewayPort,
     SchemaCompilerPort,
 )
 from app.modules.connectors.services.account_resolution_service import (
@@ -51,6 +53,14 @@ class ResolvedConnectorExecution:
     account_id: UUID | None = None
     account_user_id: UUID | None = None
     organization_id: UUID | None = None
+    # Polymorphic execution descriptor (kind: http/sql/mcp); None for
+    # package-executed / Composio operations.
+    execution: dict[str, Any] | None = None
+    # Non-secret per-instance connection config from the auth-config's
+    # provider_config (SQL host, MCP/OpenAPI server URL, ...). Secrets stay in
+    # third_party_credentials.
+    connection_config: dict[str, Any] | None = None
+    auth_config_id: UUID | None = None
 
 
 class ConnectorOperationService:
@@ -63,6 +73,7 @@ class ConnectorOperationService:
         schema_compiler: SchemaCompilerPort,
         account_resolution_service: AccountResolutionService,
         connector_service: ConnectorService | None = None,
+        pod_file_gateway: PodFileGatewayPort | None = None,
     ):
         self.connector_repository = connector_repository
         self.operation_repository = operation_repository
@@ -70,6 +81,7 @@ class ConnectorOperationService:
         self.schema_compiler = schema_compiler
         self.account_resolution_service = account_resolution_service
         self.connector_service = connector_service
+        self.pod_file_gateway = pod_file_gateway
 
     async def _get_connector(self, connector_id: str):
         connector = await self.connector_repository.get(connector_id)
@@ -258,6 +270,103 @@ class ConnectorOperationService:
                 "size_bytes": len(value),
             }
         return value
+
+    @staticmethod
+    def _is_datastore_path(path: Any) -> bool:
+        """True when ``path`` addresses the pod datastore (``/me/...``) rather than
+        the ephemeral sandbox (``/workspace/...``) — mirrors the agent-tools rule."""
+        if not isinstance(path, str):
+            return False
+        candidate = path.strip()
+        return (
+            candidate.startswith("/")
+            and candidate != "/workspace"
+            and not candidate.startswith("/workspace/")
+        )
+
+    async def _read_pod_file(self, value: Any, *, pod_id, ctx) -> Any:
+        """Replace a ``{"pod_path": "/me/..."}`` file reference with its bytes."""
+        if not (isinstance(value, dict) and "pod_path" in value):
+            return value
+        path = value.get("pod_path")
+        if not self._is_datastore_path(path):
+            return value
+        if self.pod_file_gateway is None or pod_id is None or ctx is None:
+            raise OperationExecutionValidationError(
+                "A pod file path was provided but no pod context is available to "
+                "resolve it. Pass the file as {\"base64\": ...} or run within a pod."
+            )
+        content, _media_type, filename = await self.pod_file_gateway.read_bytes(
+            pod_id=pod_id, path=path, ctx=ctx
+        )
+        return {"bytes": content, "filename": filename}
+
+    async def _resolve_pod_file_inputs(
+        self, operation: Any, payload: dict[str, Any], actor: Context | None
+    ) -> dict[str, Any]:
+        execution = getattr(operation, "execution", None)
+        if not execution or self.pod_file_gateway is None:
+            return payload
+        pod_id = getattr(actor, "pod_id", None) if actor is not None else None
+
+        payload = dict(payload)
+        if execution.get("mode") == "raw":
+            if "body" in payload:
+                payload["body"] = await self._read_pod_file(
+                    payload["body"], pod_id=pod_id, ctx=actor
+                )
+            return payload
+
+        request_body = execution.get("request_body") or {}
+        binary_fields = request_body.get("binary_fields") or []
+        if not binary_fields:
+            return payload
+        field = request_body.get("field", "body")
+        body = payload.get(field)
+
+        if binary_fields == ["body"]:
+            payload[field] = await self._read_pod_file(body, pod_id=pod_id, ctx=actor)
+        elif isinstance(body, dict):
+            new_body = dict(body)
+            for name in binary_fields:
+                if name in new_body:
+                    new_body[name] = await self._read_pod_file(
+                        new_body[name], pod_id=pod_id, ctx=actor
+                    )
+            payload[field] = new_body
+        return payload
+
+    async def write_binary_output(
+        self, result: Any, *, output_path: str | None, actor: Context | None
+    ) -> Any:
+        """Persist a binary operation result to a pod datastore path (download).
+
+        Runs in its own short context scope after the (connection-free) execute
+        phase. Returns a small pod-file reference; if it cannot write (no pod
+        context / gateway / not a datastore path) the base64 result is returned
+        unchanged.
+        """
+        if (
+            self.pod_file_gateway is None
+            or not output_path
+            or not self._is_datastore_path(output_path)
+            or not isinstance(result, dict)
+            or result.get("type") != "binary_content"
+        ):
+            return result
+        pod_id = getattr(actor, "pod_id", None) if actor is not None else None
+        if pod_id is None or actor is None:
+            return result
+        content = base64.b64decode(result.get("content_base64") or "")
+        directory, _, name = output_path.rpartition("/")
+        return await self.pod_file_gateway.write_bytes(
+            pod_id=pod_id,
+            directory=directory or "/",
+            name=name or result.get("file_name") or "download",
+            content=content,
+            media_type=result.get("media_type"),
+            ctx=actor,
+        )
 
     async def _resolve_execution_credentials(
         self, account: Any, user_id: UUID
@@ -518,6 +627,7 @@ class ConnectorOperationService:
     ) -> ResolvedConnectorExecution:
         await self._get_connector(connector_id)
         provider: str | None = None
+        auth_config = None
         if auth_config_id is not None:
             if self.connector_service is None:
                 raise ConnectorNotFoundError(connector_id)
@@ -556,17 +666,30 @@ class ConnectorOperationService:
                         else str(auth_config.provider)
                     )
 
-        if provider:
-            operation = await self.operation_repository.get_by_connector_provider_and_name(
+        effective_auth_config_id = getattr(auth_config, "id", None)
+        connection_config = getattr(auth_config, "provider_config", None)
+
+        # Lookup precedence: a per-auth-config discovered op (MCP tool, OpenAPI-URL)
+        # wins over a catalog-static op of the same name.
+        operation = None
+        if effective_auth_config_id is not None:
+            operation = await self.operation_repository.get_by_connector_authconfig_and_name(
                 connector_id,
-                provider,
+                effective_auth_config_id,
                 operation_name,
             )
-        else:
-            operation = await self.operation_repository.get_by_connector_and_name(
-                connector_id,
-                operation_name,
-            )
+        if operation is None:
+            if provider:
+                operation = await self.operation_repository.get_by_connector_provider_and_name(
+                    connector_id,
+                    provider,
+                    operation_name,
+                )
+            else:
+                operation = await self.operation_repository.get_by_connector_and_name(
+                    connector_id,
+                    operation_name,
+                )
         if not operation:
             raise OperationNotFoundError(operation_name)
 
@@ -574,6 +697,9 @@ class ConnectorOperationService:
             account,
             user_id,
         )
+        # Resolve any pod-datastore file inputs (upload) to bytes while the
+        # request Context is still bound (this runs in the short resolve scope).
+        payload = await self._resolve_pod_file_inputs(operation, payload or {}, actor)
         return ResolvedConnectorExecution(
             connector_id=connector_id,
             operation_execution_name=operation.execution_name,
@@ -589,6 +715,9 @@ class ConnectorOperationService:
             account_id=getattr(account, "id", None),
             account_user_id=getattr(account, "user_id", None),
             organization_id=getattr(account, "organization_id", None),
+            execution=getattr(operation, "execution", None),
+            connection_config=connection_config,
+            auth_config_id=effective_auth_config_id,
         )
 
     async def execute_resolved(
@@ -607,6 +736,8 @@ class ConnectorOperationService:
                 auth_token=resolved.auth_token,
                 api_url=resolved.api_url,
                 provider=resolved.provider,
+                execution=resolved.execution,
+                connection_config=resolved.connection_config,
             )
         except ConnectorDomainError:
             raise

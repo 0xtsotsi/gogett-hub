@@ -82,7 +82,7 @@ class ConnectorOperationUseCases:
         # error-mapping logic.
         try:
             async with uow_scope(self._uow_factory) as uow:
-                return await self._build(uow).execute_resolved(resolved)
+                response = await self._build(uow).execute_resolved(resolved)
         except (
             OperationExecutionUnauthorizedError,
             OperationExecutionAccessDeniedError,
@@ -93,6 +93,35 @@ class ConnectorOperationUseCases:
             # re-raise the original error unchanged.
             await self._flag_account_reauth_required(resolved)
             raise
+
+        # Phase 3 (optional): if the caller asked to land a binary result in a pod
+        # datastore path, write it in a fresh short context scope (the connection-
+        # free execute phase already completed).
+        return await self._maybe_write_pod_output(
+            response, payload=payload, user_id=user_id, request=request
+        )
+
+    async def _maybe_write_pod_output(
+        self,
+        response: OperationExecutionResponse,
+        *,
+        payload: dict[str, Any],
+        user_id: UUID,
+        request: Request,
+    ) -> OperationExecutionResponse:
+        output_path = (payload or {}).get("output_path")
+        if not output_path:
+            return response
+        result = getattr(response, "result", None)
+        if not isinstance(result, dict) or result.get("type") != "binary_content":
+            return response
+        async with current_context_scope(
+            self._uow_factory, request=request, user_id=user_id
+        ) as scope:
+            new_result = await self._build(scope.uow).write_binary_output(
+                result, output_path=output_path, actor=scope.ctx
+            )
+        return OperationExecutionResponse(result=new_result)
 
     async def _flag_account_reauth_required(
         self, resolved: ResolvedConnectorExecution

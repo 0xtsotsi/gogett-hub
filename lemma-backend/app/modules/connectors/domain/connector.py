@@ -16,6 +16,20 @@ class AuthProvider(str, enum.Enum):
     COMPOSIO = "COMPOSIO"
 
 
+class ConnectorKind(str, enum.Enum):
+    """Execution model for a native (LEMMA-provider) connector.
+
+    Drives runtime dispatch: operations carry an ``execution`` descriptor whose
+    ``kind`` selects the executor. ``None``/absent on the capability means the
+    vendored ``lemma-connectors`` package path (Gmail/Slack/Jira) or a plain
+    OAuth HTTP app.
+    """
+
+    HTTP = "http"
+    SQL = "sql"
+    MCP = "mcp"
+
+
 class OAuth2Defaults(BaseModel):
     authorization_url: str
     token_url: str | None = None
@@ -62,6 +76,12 @@ class LemmaProviderCapability(BaseModel):
     supports_org_custom_oauth: bool = False
     system_default_available: bool = False
     package_name: str | None = None
+    # Execution model for package-free connectors (http/sql/mcp). None => vendored
+    # package path or plain OAuth HTTP. Drives which executor + discoverer are used.
+    kind: ConnectorKind | None = None
+    # Whether an org can create many auth-config instances of this connector
+    # (e.g. several SQL databases / MCP servers / OpenAPI specs).
+    supports_multiple_instances: bool = False
 
 
 class ComposioProviderCapability(BaseModel):

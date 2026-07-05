@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from typing import Any, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,6 +12,13 @@ class ConnectorOperationEntity(BaseModel):
 
     id: str = Field(..., description="Unique catalog ID for the operation")
     connector_id: str = Field(..., description="Connector ID")
+    auth_config_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Auth-config this operation was discovered for (per-instance ops like "
+            "an org's MCP server or OpenAPI spec). Null = catalog-static operation."
+        ),
+    )
     provider: AuthProvider = Field(
         default=AuthProvider.LEMMA,
         description="Backend provider that owns this operation",
@@ -36,6 +44,14 @@ class ConnectorOperationEntity(BaseModel):
     output_schema: Optional[dict[str, Any]] = Field(
         default=None,
         description="JSON schema describing the operation output",
+    )
+    execution: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Polymorphic execution descriptor for package-free operations, keyed by "
+            "`kind` ('http' | 'sql' | 'mcp'). Null for vendored-package and Composio "
+            "operations (which route by provider instead)."
+        ),
     )
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

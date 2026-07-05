@@ -922,3 +922,56 @@ async def test_upsert_trigger_tags_provider():
     assert entity.provider == AuthProvider.COMPOSIO
     assert entity.id == "gmail:composio:new_message"
     assert entity.event_type == "new_message"
+
+
+class _FakeOperationRepo:
+    def __init__(self):
+        self.saved = []
+
+    async def get_by_connector_provider_and_name(self, connector_id, provider, name):
+        return None
+
+    async def create(self, entity):
+        self.saved.append(entity)
+        return entity
+
+    async def update(self, entity):  # pragma: no cover - create path only here
+        self.saved.append(entity)
+        return entity
+
+
+def _github_openapi_cfg() -> dict:
+    apps = importer._load_lemma_apps_config()
+    github = next(a for a in apps if a["name"] == "github")
+    return github["openapi"]
+
+
+@pytest.mark.asyncio
+async def test_sync_openapi_operations_imports_github_curated_ops():
+    repo = _FakeOperationRepo()
+    count = await importer._sync_openapi_operations(repo, "github", _github_openapi_cfg())
+
+    # 7 curated ops + 1 raw passthrough.
+    assert count == 8
+    assert len(repo.saved) == 8
+
+    by_name = {op.name: op for op in repo.saved}
+    # Every OpenAPI op is a LEMMA op carrying an execution descriptor.
+    assert all(op.provider == AuthProvider.LEMMA for op in repo.saved)
+    assert all(op.execution for op in repo.saved)
+
+    # Named ops present and correctly shaped.
+    assert "issues_create" in by_name
+    assert by_name["issues_create"].execution["method"] == "POST"
+    assert by_name["repos_download_tarball_archive"].execution["response"]["binary"] is True
+    # Operation-level server override honored at import time.
+    assert by_name["repos_upload_release_asset"].execution["server_url"] == "https://uploads.github.com"
+
+    # Raw passthrough synthesized.
+    assert "github_http_request" in by_name
+    assert by_name["github_http_request"].execution["mode"] == "raw"
+
+
+def test_list_native_sync_targets_includes_github():
+    assert "github" in importer._list_native_sync_targets(None)
+    assert importer._list_native_sync_targets({"github"}) == ["github"]

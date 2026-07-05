@@ -1,7 +1,8 @@
 import re
 from typing import Optional, Sequence
+from uuid import UUID
 
-from sqlalchemy import case, desc, func, or_, select
+from sqlalchemy import case, delete, desc, func, or_, select
 
 from app.core.domain.message_bus import MessageBus
 from app.core.infrastructure.db.repository import SqlAlchemyRepository
@@ -162,6 +163,40 @@ class ConnectorOperationRepository(
         result = await self.session.execute(stmt)
         instance = result.scalars().first()
         return instance.to_entity() if instance else None
+
+    async def get_by_connector_authconfig_and_name(
+        self,
+        connector_id: str,
+        auth_config_id: UUID,
+        operation_name: str,
+    ) -> Optional[ConnectorOperationEntity]:
+        """Load a per-auth-config discovered operation (MCP tool, OpenAPI-URL op)."""
+        normalized_name = operation_name.strip().lower()
+        stmt = select(ConnectorOperation).where(
+            ConnectorOperation.connector_id == connector_id,
+            ConnectorOperation.auth_config_id == auth_config_id,
+            func.lower(ConnectorOperation.name) == normalized_name,
+        )
+        result = await self.session.execute(stmt)
+        instance = result.scalars().first()
+        return instance.to_entity() if instance else None
+
+    async def list_by_auth_config(
+        self, auth_config_id: UUID
+    ) -> Sequence[ConnectorOperationEntity]:
+        stmt = select(ConnectorOperation).where(
+            ConnectorOperation.auth_config_id == auth_config_id
+        )
+        result = await self.session.execute(stmt)
+        return [instance.to_entity() for instance in result.scalars().all()]
+
+    async def delete_by_auth_config(self, auth_config_id: UUID) -> int:
+        """Remove all operations discovered for an auth-config (on delete/refresh)."""
+        stmt = delete(ConnectorOperation).where(
+            ConnectorOperation.auth_config_id == auth_config_id
+        )
+        result = await self.session.execute(stmt)
+        return int(result.rowcount or 0)
 
     async def get_by_connector_provider_and_name(
         self,

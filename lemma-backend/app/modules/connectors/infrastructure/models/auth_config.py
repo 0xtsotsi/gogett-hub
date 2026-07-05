@@ -59,13 +59,11 @@ class AuthConfig(UUIDAuditBase):
     updated_by_user: Mapped["User"] = relationship("User", foreign_keys=[updated_by_user_id])
 
     __table_args__ = (
-        Index(
-            "ix_auth_configs_unique_active_org_app",
-            "organization_id",
-            "connector_id",
-            unique=True,
-            postgresql_where=(status == AuthConfigStatus.ACTIVE.value),
-        ),
+        # NOTE: the (org, connector_id) active-uniqueness is intentionally NOT a DB
+        # constraint — multi-instance connectors (sql/mcp/openapi) allow many
+        # auth-configs per connector. Single-instance connectors enforce one-per-
+        # connector in the service layer (create_auth_config), keyed on the
+        # capability's ``supports_multiple_instances`` flag. Names stay unique per org.
         Index(
             "ix_auth_configs_unique_active_org_name",
             "organization_id",

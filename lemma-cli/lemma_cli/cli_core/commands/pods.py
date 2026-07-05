@@ -275,6 +275,23 @@ def create_pod(
     from ...cli_app.pod_bundle import import_pod_bundle
 
     pod_id = str(to_plain(result).get("id") or "")
+    # Bind the scaffolded bundle to the new pod on the active server so later
+    # `lemma` commands from that folder target it. Skipped under the env server.
+    if pod_id and not state.server_read_only:
+        from ..project_env import write_server_env
+
+        values = {"LEMMA_POD_ID": pod_id}
+        org_id = str(to_plain(result).get("organization_id") or "")
+        if org_id:
+            values["LEMMA_ORG_ID"] = org_id
+        try:
+            binding = write_server_env(target, state.server, values)
+            console.print(
+                f"[green]bound[/green] {target} -> pod on server "
+                f"'{state.server}' ([dim]{binding}[/dim])"
+            )
+        except OSError:
+            pass
     run_with_client(
         ctx,
         lambda client, s: import_pod_bundle(

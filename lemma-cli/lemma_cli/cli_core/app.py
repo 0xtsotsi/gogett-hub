@@ -7,6 +7,7 @@ import typer
 from .context import selected_conversation, selected_org, selected_pod
 from .io import emit
 from .lazy import LazyEntry, LazyRootGroup
+from .project_env import load_project_env
 from .sdk import pod_client
 from .state import build_state, run_with_client, state_from_ctx
 
@@ -125,6 +126,13 @@ def root(
         help="Expand folded/truncated fields in pretty output (schemas, long values).",
     ),
 ) -> None:
+    # Load the project-folder .lemma.env family BEFORE build_state so its
+    # LEMMA_SERVER / LEMMA_POD_ID feed server selection and pod resolution. The
+    # loader keys off the same server build_state will pick; real process env always
+    # wins (setdefault semantics).
+    project_env = load_project_env(
+        server_flag=server_name, config_file=config_file.expanduser()
+    )
     state = build_state(
         config_file=config_file.expanduser(),
         server=server_name,
@@ -136,6 +144,7 @@ def root(
         output="json" if json_output else output,
         full=full,
     )
+    state.project_env = project_env
     state.config.setdefault("_runtime", {})
     state.config["_runtime"]["org"] = org
     state.config["_runtime"]["pod"] = pod

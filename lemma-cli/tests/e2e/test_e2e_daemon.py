@@ -62,9 +62,9 @@ def _daemon_config(tmp_path: Path, base_url: str, token: str) -> Path:
     config_path.write_text(
         json.dumps(
             {
-                "active_server": "default",
+                "active_server": "lemma-cloud",
                 "servers": {
-                    "default": {
+                    "lemma-cloud": {
                         "base_url": base_url,
                         "token": token,
                         "defaults": {},

@@ -11,7 +11,7 @@ from typing import Any, Iterator
 DEFAULT_BASE_URL = "https://api.lemma.work"
 DEFAULT_AUTH_URL = "https://lemma.work/auth"
 DEFAULT_CONFIG_PATH = Path.home() / ".lemma" / "config.json"
-DEFAULT_SERVER_NAME = "default"
+DEFAULT_SERVER_NAME = "lemma-cloud"
 ENV_SERVER_NAME = "env"
 
 
@@ -56,17 +56,25 @@ def load_json(raw: str) -> Any:
 
 
 def _migrate_legacy_config(data: dict[str, Any]) -> dict[str, Any]:
-    """Translate pre-rename config keys (contexts/active_context) to servers/active_server."""
-    if isinstance(data.get("servers"), dict):
-        data.pop("contexts", None)
-        data.pop("active_context", None)
-        return data
-    if isinstance(data.get("contexts"), dict):
-        data = dict(data)
+    """Upgrade legacy config in place: contexts/active_context -> servers/active_server,
+    and the previously-shipped default server ``default`` -> ``DEFAULT_SERVER_NAME``
+    (``lemma-cloud``)."""
+    # Older rename: contexts -> servers.
+    if not isinstance(data.get("servers"), dict) and isinstance(data.get("contexts"), dict):
         data["servers"] = data.pop("contexts")
         legacy_active = data.pop("active_context", None)
         if "active_server" not in data and legacy_active:
             data["active_server"] = legacy_active
+    data.pop("contexts", None)
+    data.pop("active_context", None)
+    # This rename: the shipped default server `default` -> `lemma-cloud`. Skip when a
+    # `lemma-cloud` already exists so an explicit one is never clobbered; a
+    # user-customized `default` is preserved verbatim under the new name.
+    servers = data.get("servers")
+    if isinstance(servers, dict) and "default" in servers and DEFAULT_SERVER_NAME not in servers:
+        servers[DEFAULT_SERVER_NAME] = servers.pop("default")
+        if data.get("active_server") == "default":
+            data["active_server"] = DEFAULT_SERVER_NAME
     return data
 
 

@@ -2249,7 +2249,7 @@ def test_config_servers_are_isolated(tmp_path):
     assert saved["servers"]["local"]["base_url"] == "http://localhost:8000"
     assert saved["servers"]["local"]["auth_url"] == "http://localhost:3000/auth"
     assert saved["servers"]["local"]["defaults"] == {}
-    assert saved["servers"]["default"]["defaults"] == {}
+    assert saved["servers"]["lemma-cloud"]["defaults"] == {}
 
 
 def test_server_create_without_use_keeps_active_server(tmp_path):
@@ -2270,7 +2270,7 @@ def test_server_create_without_use_keeps_active_server(tmp_path):
     assert result.exit_code == 0, result.stdout
 
     saved = json.loads(config_file.read_text(encoding="utf-8"))
-    assert saved["active_server"] == "default"
+    assert saved["active_server"] == "lemma-cloud"
     assert saved["servers"]["staging"]["base_url"] == "http://staging:8000"
 
 
@@ -2374,9 +2374,9 @@ def test_servers_select_without_name_opens_picker(tmp_path):
     config_file.write_text(
         json.dumps(
             {
-                "active_server": "default",
+                "active_server": "lemma-cloud",
                 "servers": {
-                    "default": {"defaults": {}},
+                    "lemma-cloud": {"defaults": {}},
                     "local": {"base_url": "http://localhost:8000", "defaults": {}},
                 },
             }
@@ -2400,9 +2400,9 @@ def test_bare_servers_command_lists_read_only(tmp_path):
     config_file.write_text(
         json.dumps(
             {
-                "active_server": "default",
+                "active_server": "lemma-cloud",
                 "servers": {
-                    "default": {"defaults": {}},
+                    "lemma-cloud": {"defaults": {}},
                     "local": {"base_url": "http://localhost:8000", "defaults": {}},
                 },
             }
@@ -2418,9 +2418,9 @@ def test_bare_servers_command_lists_read_only(tmp_path):
     # Bare `servers` is read-only: it lists servers and never switches the active
     # one (switching is `servers select`).
     assert result.exit_code == 0, result.stdout
-    assert "default" in result.stdout and "local" in result.stdout
+    assert "lemma-cloud" in result.stdout and "local" in result.stdout
     saved = json.loads(config_file.read_text(encoding="utf-8"))
-    assert saved["active_server"] == "default"
+    assert saved["active_server"] == "lemma-cloud"
 
 
 def test_server_show_shows_sources_and_selected_values(tmp_path):
@@ -2584,8 +2584,8 @@ def test_init_selects_single_org_and_pod(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.stdout
     saved = json.loads(config_file.read_text(encoding="utf-8"))
-    assert saved["servers"]["default"]["defaults"]["org_id"] == "org-1"
-    assert saved["servers"]["default"]["defaults"]["pod_id"] == "pod-1"
+    assert saved["servers"]["lemma-cloud"]["defaults"]["org_id"] == "org-1"
+    assert saved["servers"]["lemma-cloud"]["defaults"]["pod_id"] == "pod-1"
 
 
 DESTRUCTIVE_COMMANDS = [

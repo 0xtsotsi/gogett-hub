@@ -11,7 +11,7 @@ from ..confirm import confirm_destructive
 from ..io import emit, list_items, to_plain
 from ..payload import read_json
 from ..state import console, run_with_client, state_from_ctx
-from ..context import selected_org
+from ..context import org_for
 
 app = typer.Typer(help="Connector, account, and operation commands.")
 
@@ -89,7 +89,7 @@ def _list_accounts(client, state, *, connector: str | None, limit: int):  # type
     if hasattr(api, "accounts"):
         return api.accounts.list(app=connector, limit=limit)
     return api.list_accounts(
-        organization_id=selected_org(state),
+        organization_id=org_for(client, state),
         connector_id=connector,
         limit=limit,
     )
@@ -108,7 +108,7 @@ def _list_triggers(  # type: ignore[no-untyped-def]
     if hasattr(api, "triggers"):
         return api.triggers.list(resolved, search=search, limit=limit)
     return api.list_connector_triggers(
-        organization_id=selected_org(state),
+        organization_id=org_for(client, state),
         auth_config_name=resolved,
         search=search,
         limit=limit,
@@ -121,7 +121,7 @@ def _get_trigger(client, state, *, auth_config: str | None, trigger: str):  # ty
     if hasattr(api, "triggers"):
         return api.triggers.get(resolved, trigger)
     return api.get_connector_trigger(
-        organization_id=selected_org(state),
+        organization_id=org_for(client, state),
         auth_config_name=resolved,
         trigger_name=trigger,
     )
@@ -276,7 +276,7 @@ def create_account(
             )
             if hasattr(client.connectors, "accounts")
             else client.connectors.create_account(
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
                 auth_config_name=auth_config,
                 auth_config_id=auth_config_id,
                 credentials=credentials,
@@ -361,7 +361,7 @@ def create_auth_config(
             )
             if hasattr(client.connectors, "auth_configs")
             else client.connectors.create_auth_config(
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
                 connector_id=connector,
                 name=name,
                 provider=provider,
@@ -408,7 +408,7 @@ def create_connect_request(
             if hasattr(client.connectors, "connect_request")
             else client.connectors.create_connect_request(
                 connector,
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
                 auth_config_id=auth_config_id,
             )
         ),
@@ -445,7 +445,7 @@ def search_operations(
             if hasattr(client.connectors, "operations")
             else client.connectors.search_operations(
                 _resolve_auth_config(client, auth_config),
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
                 query=query or search_text,
                 limit=limit,
             )
@@ -494,7 +494,7 @@ def operation_details(
             if hasattr(client.connectors, "operations")
             else client.connectors.get_operation_details_batch(
                 _resolve_auth_config(client, auth_config),
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
                 operation_names=operations or [],
             )
         ),
@@ -522,7 +522,7 @@ def get_operation(
             else client.connectors.get_operation_details(
                 auth_config,
                 operation,
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
             )
         ),
     )
@@ -570,7 +570,7 @@ def execute_operation(
             else client.connectors.execute_operation(
                 _resolve_auth_config(client, auth_config),
                 operation,
-                organization_id=selected_org(s),
+                organization_id=org_for(client, s),
                 payload=payload.get("payload", payload),
                 account_id=account or payload.get("account_id"),
             )

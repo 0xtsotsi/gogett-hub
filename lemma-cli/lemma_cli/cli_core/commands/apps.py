@@ -10,7 +10,8 @@ import typer
 from lemma_sdk.openapi_client.models.create_app_request import CreateAppRequest
 from lemma_sdk.openapi_client.models.update_app_request import UpdateAppRequest
 
-from ..context import selected_pod
+from ..context import selected_org, selected_pod
+from ..project_env import write_server_env
 from ..app_scaffold import (
     DEFAULT_TEMPLATE_SOURCE,
     AppScaffoldOptions,
@@ -32,10 +33,23 @@ from lemma_sdk.config import resolve_auth_url, resolve_base_url, resolve_token
 from ...cli_app.app_bundle import (
     classify_app_source,
     deploy_app_bundle,
-    resolve_app_project_env,
 )
 
 app = typer.Typer(help="App commands.")
+
+
+def _bundle_root(directory: Path) -> Path:
+    """The pod-bundle root (nearest ancestor with ``pod.json``) to bind, else the
+    given directory itself. Bounded by the git root / filesystem root."""
+    directory = directory.resolve()
+    current = directory
+    while True:
+        if (current / "pod.json").is_file():
+            return current
+        if (current / ".git").exists() or current.parent == current:
+            break
+        current = current.parent
+    return directory
 
 
 def _app_browser_url(url: str, *, env_key: str, log: bool = True) -> str:
@@ -54,62 +68,6 @@ def _app_browser_url(url: str, *, env_key: str, log: bool = True) -> str:
             "from inside Docker."
         )
     return browser_url
-
-
-def _context_app_env(client, state, pod: str | None) -> tuple[dict[str, str], str]:  # type: ignore[no-untyped-def]
-    # Resolve EITHER a UUID OR a pod name/slug. Pod-detail routes require a UUID,
-    # so passing a name here previously raised "badly formed hexadecimal UUID
-    # string" — every other command accepts names, so `apps deploy` must too.
-    # Local import avoids a commands.pods <-> commands.apps import cycle.
-    from .pods import resolve_pod_id
-
-    pod_id = resolve_pod_id(client, state, pod)
-    base_url = resolve_base_url(
-        state.base_url,
-        state.config,
-        use_env=state.server_source == "env",
-    )
-    auth_url = resolve_auth_url(
-        state.auth_url,
-        state.config,
-        use_env=state.server_source == "env",
-    )
-
-    log_rewrite = state.output != "json"
-    return (
-        {
-            "VITE_LEMMA_API_URL": _app_browser_url(
-                base_url, env_key="VITE_LEMMA_API_URL", log=log_rewrite
-            ),
-            "VITE_LEMMA_AUTH_URL": _app_browser_url(
-                auth_url, env_key="VITE_LEMMA_AUTH_URL", log=log_rewrite
-            ),
-            "VITE_LEMMA_POD_ID": pod_id,
-        },
-        pod_id,
-    )
-
-
-def _warn_env_mismatches(
-    *,
-    project_env: dict[str, str],
-    context_env: dict[str, str],
-) -> None:
-    for key, expected in context_env.items():
-        actual = project_env.get(key)
-        if actual and actual != expected:
-            console.print(
-                f"[yellow]Warning:[/yellow] {key} in project env is {actual!r}, "
-                f"but the active server has {expected!r}."
-            )
-
-    # Apps are served by host at the root of their subdomain.
-    env_base = project_env.get("VITE_LEMMA_APP_BASE_PATH")
-    if env_base and env_base != "/":
-        console.print(
-            f"[yellow]Warning:[/yellow] VITE_LEMMA_APP_BASE_PATH is {env_base!r}, "
-            "but host-based serving expects '/'."
-        )
 
 
 @app.command("list")
@@ -371,7 +329,9 @@ def deploy_app(
     source_dir = source_dir if source_dir is not None else source
 
     def run(client, s):  # type: ignore[no-untyped-def]
-        context_env, pod_id = _context_app_env(client, s, pod)
+        from .pods import resolve_pod_id
+
+        pod_id = resolve_pod_id(client, s, pod)
         pod_label = pod_id
         try:
             pod_payload = to_plain(client.pods.get(pod_id))
@@ -384,35 +344,19 @@ def deploy_app(
             pass
 
         tier = classify_app_source(source_dir)
-        is_vite = tier == "vite"
-
-        if is_vite:
-            project_env = resolve_app_project_env(source_dir)
-            _warn_env_mismatches(
-                project_env=project_env,
-                context_env=context_env,
-            )
 
         if not yes:
             console.print("[bold]App deploy[/bold]")
             console.print(f"App: {app}")
             console.print(f"Pod: {pod_label}")
             console.print(f"Source: {source_dir} ({tier})")
-            if is_vite:
-                console.print(
-                    f"Project API URL: {project_env.get('VITE_LEMMA_API_URL', '')}"
-                )
-                console.print(
-                    f"Project Auth URL: {project_env.get('VITE_LEMMA_AUTH_URL', '')}"
-                )
-                console.print(
-                    f"Project Pod ID: {project_env.get('VITE_LEMMA_POD_ID', '')}"
-                )
-            else:
-                console.print(
-                    "No-build app: pod context is injected by the host at serve "
-                    "time (no VITE_LEMMA_* env baked in)."
-                )
+            # Pod context (pod id, API/auth URLs) is injected by the host as
+            # window.__LEMMA_CONFIG__ at serve time, so the build carries no baked
+            # pod and runs on whichever pod it's deployed to.
+            console.print(
+                "Pod context is injected by the host at serve time — the build is "
+                "pod-agnostic (VITE_LEMMA_* in .env.local is dev-only)."
+            )
             if not typer.confirm("Continue with deploy?"):
                 fail("Deploy cancelled.", code=0)
 
@@ -586,6 +530,21 @@ def init_app(
         fail(str(exc))
         return
 
+    # Bind the folder to this pod on the active server so later `lemma` commands
+    # target it automatically. Skipped under the read-only env server (agentbox).
+    binding_path: Path | None = None
+    if not state.server_read_only:
+        values = {"LEMMA_POD_ID": selected_pod_id}
+        org_id = selected_org(state, required=False)
+        if org_id:
+            values["LEMMA_ORG_ID"] = org_id
+        try:
+            binding_path = write_server_env(
+                _bundle_root(options.target_dir), state.server, values
+            )
+        except OSError:
+            binding_path = None
+
     if state.output == "json":
         emit(
             state,
@@ -593,12 +552,18 @@ def init_app(
                 "directory": str(options.target_dir.resolve()),
                 "name": options.name,
                 "steps": steps,
+                "binding": str(binding_path) if binding_path else None,
             },
         )
         return
 
     for step in steps:
         console.print(f"[green]✓[/green] {step}")
+    if binding_path:
+        console.print(
+            f"[green]✓[/green] Bound to pod on server '{state.server}' "
+            f"([dim]{binding_path}[/dim])"
+        )
     console.print()
     console.print(f"[bold]App scaffold ready:[/bold] {options.target_dir.resolve()}")
     console.print(f"Next: cd {options.target_dir.resolve()} && npm run dev")

@@ -625,7 +625,7 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
                         {(['SLACK', 'GMAIL', 'TELEGRAM'] as const).map((key) => (
                             <span
                                 key={key}
-                                className="flex h-7 w-7 items-center justify-center rounded-md border border-[color:color-mix(in_srgb,var(--border-subtle)_50%,transparent)] bg-[var(--surface-2)]"
+                                className="surface-logo-chip flex h-7 w-7 items-center justify-center rounded-md"
                             >
                                 <Image src={SURFACE_META[key].logo} alt={SURFACE_META[key].label} width={16} height={16} className="object-contain" />
                             </span>
@@ -637,9 +637,9 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
                             href={surfacesHref}
                             className="custom-focus-ring font-medium text-[var(--text-primary)] underline-offset-2 hover:underline"
                         >
-                            connect one
+                            connect a surface
                         </Link>{' '}
-                        so this pod can answer messages.
+                        so this pod can answer messages where your team already works.
                     </p>
                 </div>
             </section>
@@ -677,7 +677,12 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
                                 href={surfacesHref}
                                 className="group flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[color:color-mix(in_srgb,var(--surface-2)_55%,transparent)]"
                             >
-                                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[color:color-mix(in_srgb,var(--border-subtle)_50%,transparent)] bg-[var(--surface-2)]">
+                                <span className={cn(
+                                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                                    meta?.logo
+                                        ? 'surface-logo-chip'
+                                        : 'border border-[color:color-mix(in_srgb,var(--border-subtle)_50%,transparent)] bg-[var(--surface-2)]'
+                                )}>
                                     {meta?.logo ? (
                                         <Image src={meta.logo} alt="" width={16} height={16} className="object-contain" />
                                     ) : (

@@ -7,6 +7,9 @@ including None scopes and the nested PrincipalRef sets.
 
 from uuid import uuid4
 
+import pytest
+
+from app.core.authorization import cache as cache_module
 from app.core.authorization.cache import RoleSnapshot, _deserialize, _serialize
 from app.core.authorization.context import PrincipalRef
 
@@ -37,11 +40,6 @@ def test_role_snapshot_serialization_handles_empty_and_none_scopes():
         grant_principal_sets=(),
     )
     assert _deserialize(_serialize(snapshot)) == snapshot
-
-
-import pytest
-
-from app.core.authorization import cache as cache_module
 
 
 class _BrokenCache:

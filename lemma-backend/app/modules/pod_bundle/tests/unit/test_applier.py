@@ -520,21 +520,31 @@ class FakeSurfaceService:
         self.created: dict | None = None
         self.updated: dict | None = None
 
-    async def get_surface_by_platform_in_pod(self, *, pod_id, platform):
+    async def get_surface_by_name_in_pod(self, *, pod_id, name):
         from app.modules.agent_surfaces.domain.errors import AgentSurfaceNotFoundError
 
         if self._existing is None:
-            raise AgentSurfaceNotFoundError(platform)
+            raise AgentSurfaceNotFoundError(name)
         return self._existing
 
     async def create_surface(
-        self, *, pod_id, agent_id, platform, config, credential_mode, account_id, ctx=None
+        self,
+        *,
+        pod_id,
+        agent_id,
+        platform,
+        name,
+        config,
+        credential_mode,
+        account_id,
+        ctx=None,
     ):
         from types import SimpleNamespace
         from uuid import uuid4 as _uuid4
 
         self.created = {
             "platform": platform.value,
+            "name": name,
             "agent_id": agent_id,
             "account_id": account_id,
             "credential_mode": credential_mode,

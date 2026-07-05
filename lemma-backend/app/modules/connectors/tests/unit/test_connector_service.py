@@ -115,21 +115,38 @@ async def test_get_connector_raises_not_found():
         await service.get_connector("missing")
 
 
-async def test_initiate_connect_request_raises_conflict_when_account_exists():
+async def test_initiate_connect_request_allowed_when_account_exists():
+    """Multiple accounts per auth config are allowed, so an existing connected
+    account no longer blocks a new connect request."""
     user_id = uuid4()
     auth_config = _auth_config()
+    auth_provider = AsyncMock()
+    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state")
+    registry = Mock()
+    registry.get.return_value = auth_provider
+    uow = AsyncMock()
+    connect_repo = AsyncMock()
+    connect_repo.create.side_effect = lambda req: req
+    redirect_builder = Mock()
+    redirect_builder.build.return_value = "https://callback"
+
     service = _service(
+        uow=uow,
         connector_repository=AsyncMock(get=AsyncMock(return_value=_connector())),
         auth_config_repository=_auth_config_repo(auth_config),
         account_repository=AsyncMock(
             get_by_user_and_auth_config=AsyncMock(return_value=_account(user_id))
         ),
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+        redirect_uri_builder=redirect_builder,
     )
 
-    with pytest.raises(AccountAlreadyConnectedError):
-        await service.initiate_connect_request(
-            user_id=user_id, organization_id=ORG_ID, connector_id="slack"
-        )
+    result = await service.initiate_connect_request(
+        user_id=user_id, organization_id=ORG_ID, connector_id="slack"
+    )
+
+    assert isinstance(result, ConnectRequestEntity)
 
 
 async def test_initiate_connect_request_success():
@@ -255,6 +272,7 @@ async def test_create_account_composio_api_key_connects_via_provider():
 
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     uow = AsyncMock()
 
@@ -277,6 +295,60 @@ async def test_create_account_composio_api_key_connects_via_provider():
     auth_provider.connect_with_credentials.assert_awaited_once()
     account_repo.create.assert_awaited_once()
     uow.commit.assert_awaited_once()
+
+
+async def test_create_account_allows_multiple_and_sets_default():
+    """Multiple credential-managed accounts are allowed; the first one
+    connected is the default, later ones are not."""
+    user_id = uuid4()
+    app = ConnectorEntity(
+        id="airtable",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="airtable",
+                auth_scheme=AuthScheme.API_KEY,
+            )
+        ],
+    )
+    auth_config = _composio_auth_config("airtable")
+    auth_provider = AsyncMock()
+    auth_provider.connect_with_credentials.return_value = ComposioCredentials(
+        connection_id="ca_airtable"
+    )
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    account_repo = AsyncMock()
+    account_repo.create.side_effect = lambda entity: entity
+
+    def _make_service():
+        return _service(
+            uow=AsyncMock(),
+            connector_repository=AsyncMock(get=AsyncMock(return_value=app)),
+            auth_config_repository=_auth_config_repo(auth_config),
+            account_repository=account_repo,
+            auth_provider_registry=registry,
+        )
+
+    # First account for the auth config -> default.
+    account_repo.get_by_user_and_auth_config.return_value = None
+    first = await _make_service().create_account(
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        credentials={"api_key": "one"},
+    )
+    assert first.is_default is True
+
+    # A second account is allowed (no conflict) and is not the default.
+    account_repo.get_by_user_and_auth_config.return_value = first
+    second = await _make_service().create_account(
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        credentials={"api_key": "two"},
+    )
+    assert second.is_default is False
 
 
 async def test_create_account_rejects_oauth2_scheme():
@@ -594,6 +666,7 @@ async def test_handle_oauth_callback_sets_provider_account_id_on_create():
 
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     connect_repo = AsyncMock()
     connect_repo.get_by_state.return_value = connect_request
@@ -661,6 +734,7 @@ async def test_handle_oauth_callback_enriches_slack_account_profile():
     ]
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     connect_repo = AsyncMock()
     connect_repo.get_by_state.return_value = connect_request
@@ -810,6 +884,7 @@ async def test_handle_oauth_callback_populates_email_via_profile_operation():
 
     account_repo = AsyncMock()
     account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
     account_repo.create.side_effect = lambda entity: entity
     connect_repo = AsyncMock()
     connect_repo.get_by_state.return_value = connect_request
@@ -895,3 +970,179 @@ async def test_handle_oauth_callback_surfaces_upstream_error_details():
 
     assert exc_info.value.details == {"upstream_message": "provider broke"}
     connect_repo.update.assert_awaited_once()
+
+
+async def test_reauth_new_identity_does_not_clobber_null_provider_default():
+    """A re-auth for a *different* provider identity must not overwrite the
+    default account when the default's provider_account_id is null — it creates a
+    new account instead (regression for the credential-clobber bug)."""
+    user_id = uuid4()
+    auth_config = _auth_config("slack")
+    connect_request = ConnectRequestEntity(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        connector_id="slack",
+        authorization_url="https://auth",
+        status=ConnectRequestStatus.PENDING,
+        attributes={"state": "state-clobber"},
+    )
+    credentials = OAuthCredentials(
+        access_token="xoxb-new-identity",
+        raw_response={"authed_user": {"id": "U_NEW_IDENTITY"}},
+    )
+    auth_provider = AsyncMock()
+    auth_provider.exchange_code_for_credentials.return_value = credentials
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    # The user's default account has a NULL provider_account_id.
+    default_account = _account(user_id, "slack")
+    default_account.is_default = True
+    default_account.provider_account_id = None
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = default_account
+    # No account matches the incoming (different) provider identity.
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
+    account_repo.create.side_effect = lambda entity: entity
+    connect_repo = AsyncMock()
+    connect_repo.get_by_state.return_value = connect_request
+    connect_repo.update.side_effect = lambda req: req
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("slack"))),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+    )
+
+    with patch.object(service, "_load_native_account_profile", AsyncMock(return_value=None)):
+        account = await service.handle_oauth_callback(
+            redirect_uri="https://cb?state=state-clobber&code=abc",
+            state="state-clobber",
+        )
+
+    # A NEW account was created for the new identity; the default was not touched.
+    account_repo.create.assert_awaited_once()
+    account_repo.update.assert_not_awaited()
+    assert account.provider_account_id == "U_NEW_IDENTITY"
+    assert account.is_default is False
+
+
+async def test_delete_default_account_promotes_next_default():
+    """Deleting the default account promotes the oldest remaining one so the
+    'exactly one default per (user, auth_config)' invariant survives."""
+    user_id = uuid4()
+    default_account = _account(user_id, "telegram")
+    default_account.is_default = True
+
+    account_repo = AsyncMock()
+    service = _service(
+        account_repository=account_repo,
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("telegram"))),
+    )
+    service.get_account = AsyncMock(return_value=default_account)
+    service._resolve_auth_config = AsyncMock(return_value=_auth_config("telegram"))
+    service._should_revoke_account = Mock(return_value=False)
+
+    await service.delete_account(default_account.id, user_id)
+
+    account_repo.delete.assert_awaited_once_with(default_account.id)
+    account_repo.promote_next_default.assert_awaited_once()
+    kwargs = account_repo.promote_next_default.await_args.kwargs
+    assert kwargs["user_id"] == user_id
+    assert kwargs["auth_config_id"] == default_account.auth_config_id
+    assert kwargs["exclude_account_id"] == default_account.id
+
+
+async def test_delete_non_default_account_does_not_promote():
+    user_id = uuid4()
+    account = _account(user_id, "telegram")
+    account.is_default = False
+
+    account_repo = AsyncMock()
+    service = _service(
+        account_repository=account_repo,
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("telegram"))),
+    )
+    service.get_account = AsyncMock(return_value=account)
+    service._resolve_auth_config = AsyncMock(return_value=_auth_config("telegram"))
+    service._should_revoke_account = Mock(return_value=False)
+
+    await service.delete_account(account.id, user_id)
+
+    account_repo.delete.assert_awaited_once_with(account.id)
+    account_repo.promote_next_default.assert_not_awaited()
+
+
+def _airtable_service(*, existing_by_identity):
+    app = ConnectorEntity(
+        id="airtable",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="airtable", auth_scheme=AuthScheme.API_KEY
+            )
+        ],
+    )
+    auth_config = _composio_auth_config("airtable")
+    auth_provider = AsyncMock()
+    auth_provider.connect_with_credentials.return_value = ComposioCredentials(
+        connection_id="ca_airtable"
+    )
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = (
+        existing_by_identity
+    )
+    account_repo.create.side_effect = lambda entity: entity
+
+    service = _service(
+        uow=AsyncMock(),
+        connector_repository=AsyncMock(get=AsyncMock(return_value=app)),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        auth_provider_registry=registry,
+    )
+    return service, auth_config, account_repo
+
+
+async def test_create_account_rejects_duplicate_connected_identity():
+    """Connecting the same provider identity again while a healthy account
+    already exists is rejected."""
+    user_id = uuid4()
+    existing = _account(user_id, "airtable")  # status CONNECTED by default
+    service, auth_config, _ = _airtable_service(existing_by_identity=existing)
+
+    with pytest.raises(AccountAlreadyConnectedError):
+        await service.create_account(
+            user_id=user_id,
+            organization_id=ORG_ID,
+            auth_config_id=auth_config.id,
+            provider_account_id="acc-dup",
+            credentials={"api_key": "x"},
+        )
+
+
+async def test_create_account_allows_when_existing_identity_unhealthy():
+    """An unhealthy (needs-reauth) account for the same identity does not block a
+    new connect."""
+    user_id = uuid4()
+    existing = _account(user_id, "airtable")
+    existing.status = AccountStatus.REAUTH_REQUIRED
+    service, auth_config, account_repo = _airtable_service(existing_by_identity=existing)
+
+    account = await service.create_account(
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        provider_account_id="acc-dup",
+        credentials={"api_key": "x"},
+    )
+    account_repo.create.assert_awaited_once()
+    assert account.provider_account_id == "acc-dup"

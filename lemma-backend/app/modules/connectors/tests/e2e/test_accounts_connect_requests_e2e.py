@@ -352,16 +352,22 @@ async def test_direct_credential_managed_account_create_encrypts_credentials(
     stored_account = result.mappings().one()
     assert stored_account["credentials"]["_encrypted"] == "lemma-secret-v2"
     assert "telegram-secret-token" not in str(stored_account["credentials"])
+    # The first account connected for an auth config is the default.
+    assert account["is_default"] is True
 
-    duplicate_response = await authenticated_client.post(
+    # Multiple credential-managed accounts per auth config are allowed (e.g.
+    # several bot tokens); a subsequent one succeeds and is not the default.
+    second_response = await authenticated_client.post(
         f"/organizations/{org_id}/connectors/accounts",
         json={
             "auth_config_name": connector_id,
             "credentials": {"bot_token": "another-secret"},
         },
     )
-    assert duplicate_response.status_code == 409
-    assert duplicate_response.json()["code"] == "ACCOUNT_ALREADY_CONNECTED"
+    assert second_response.status_code == 200, second_response.text
+    second_account = second_response.json()
+    assert second_account["id"] != account_id
+    assert second_account["is_default"] is False
 
 
 @pytest.mark.asyncio
@@ -590,3 +596,83 @@ async def test_gmail_connector_api_reflects_runtime_oauth_resolution(
     assert response.status_code == 200, response.text
     capability = response.json()["provider_capabilities"][0]
     assert capability["system_default_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_credential_managed_account_rejects_duplicate_identity_and_exposes_display_name(
+    authenticated_client,
+    fixed_test_org,
+    db_session,
+):
+    """The same provider identity can't be connected twice, and the account
+    response carries a ``display_name`` field for the UI."""
+    connector_id = f"dedup-app-{uuid4().hex[:8]}"
+    app = Connector(
+        id=connector_id,
+        title="Dedup App",
+        description="Credential-managed dedup test app",
+        provider_capabilities=[
+            {
+                "provider": "LEMMA",
+                "auth_scheme": "API_KEY",
+                "credential_schema": {
+                    "type": "object",
+                    "required": ["bot_token"],
+                    "properties": {"bot_token": {"type": "string", "format": "password"}},
+                },
+            }
+        ],
+        is_active=True,
+    )
+    db_session.add(app)
+    await db_session.commit()
+
+    org_id = fixed_test_org["id"]
+    auth_config_response = await authenticated_client.post(
+        f"/organizations/{org_id}/connectors/auth-configs",
+        json={
+            "connector_id": connector_id,
+            "provider": "LEMMA",
+            "config_source": "ORG_CUSTOM",
+            "name": connector_id,
+        },
+    )
+    assert auth_config_response.status_code == 200, auth_config_response.text
+
+    # First connect for identity "acc-alpha".
+    first = await authenticated_client.post(
+        f"/organizations/{org_id}/connectors/accounts",
+        json={
+            "auth_config_name": connector_id,
+            "credentials": {"bot_token": "tok-1"},
+            "provider_account_id": "acc-alpha",
+        },
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["provider_account_id"] == "acc-alpha"
+    assert "display_name" in body  # field is exposed to the UI
+
+    # Same identity again → rejected (not silently duplicated).
+    dup = await authenticated_client.post(
+        f"/organizations/{org_id}/connectors/accounts",
+        json={
+            "auth_config_name": connector_id,
+            "credentials": {"bot_token": "tok-2"},
+            "provider_account_id": "acc-alpha",
+        },
+    )
+    assert dup.status_code == 409, dup.text
+    assert dup.json()["code"] == "ACCOUNT_ALREADY_CONNECTED"
+
+    # A different identity under the same auth config is still allowed.
+    other = await authenticated_client.post(
+        f"/organizations/{org_id}/connectors/accounts",
+        json={
+            "auth_config_name": connector_id,
+            "credentials": {"bot_token": "tok-3"},
+            "provider_account_id": "acc-beta",
+        },
+    )
+    assert other.status_code == 200, other.text
+    assert other.json()["provider_account_id"] == "acc-beta"

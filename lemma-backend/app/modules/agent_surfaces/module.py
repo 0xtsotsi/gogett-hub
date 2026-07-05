@@ -11,12 +11,16 @@ logger = get_logger(__name__)
 def _routers():
     from app.modules.agent_surfaces.api.controllers.surface_controller import (
         router as surface,
+        setup_guide_router as surface_setup_guide,
+    )
+    from app.modules.agent_surfaces.api.controllers.user_surfaces_controller import (
+        router as user_surfaces,
     )
     from app.modules.agent_surfaces.api.controllers.webhook_controller import (
         router as surface_public,
     )
 
-    return [surface, surface_public]
+    return [surface, surface_setup_guide, user_surfaces, surface_public]
 
 
 def _event_routers():

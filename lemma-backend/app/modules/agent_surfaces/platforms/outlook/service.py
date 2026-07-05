@@ -16,12 +16,14 @@ from app.modules.agent_surfaces.domain.models import (
 from app.modules.agent_surfaces.domain.surface_event_metadata import (
     OutlookSurfaceEventMetadata,
 )
+from app.modules.agent_surfaces.platforms.attachment_limits import inline_cap
 from app.modules.agent_surfaces.platforms.email_common import (
     append_attachment_links,
     coerce_display_resource_plans,
     render_email_content,
     reply_subject,
     resolve_outbound_email_attachments,
+    resolve_outbound_email_attachment_urls,
 )
 from app.modules.agent_surfaces.platforms.email_models import (
     OutlookFileAttachment,
@@ -36,7 +38,6 @@ from app.modules.agent_surfaces.platforms.composio_email import (
 from app.modules.agent_surfaces.platforms.outlook.parser import OutlookMessageParser
 
 _GRAPH_API_BASE = "https://graph.microsoft.com"
-_OUTLOOK_INLINE_ATTACHMENT_LIMIT_BYTES = 3 * 1024 * 1024
 _OUTLOOK_APP_ID = "outlook"
 
 
@@ -157,13 +158,56 @@ class OutlookPlatformService:
                 error="The current Outlook message is missing a reply recipient email.",
             )
 
-        # Attachment paths resolve against the pod datastore (/me/...) or the
-        # workspace. Files within the Graph inline limit are attached; larger
-        # files become download links appended to the body.
+        effective_message_id = str(metadata.message_id or "").strip()
+        if not effective_message_id:
+            return OutlookReplyEmailResult(
+                success=False,
+                error="The current Outlook message is missing a provider message id.",
+            )
+
+        # Composio's Outlook action attaches a file passed as a URL in its
+        # `attachment` field (single file), so datastore paths become signed URLs:
+        # the first is attached natively, the rest are appended as links.
+        if self._is_composio:
+            url_attachments, unresolved = await resolve_outbound_email_attachment_urls(
+                ctx.deps, request.attachment_paths
+            )
+            primary_url = url_attachments[0][1] if url_attachments else None
+            composio_content = append_attachment_links(
+                request.content, url_attachments[1:]
+            )
+            if unresolved:
+                composio_content = (
+                    f"{composio_content}\n\nCould not attach: {', '.join(unresolved)}"
+                    if composio_content
+                    else f"Could not attach: {', '.join(unresolved)}"
+                )
+            try:
+                await self._reply_to_message(
+                    message_id=effective_message_id,
+                    content=composio_content,
+                    content_type=request.content_type,
+                    attachment_url=primary_url,
+                )
+            except Exception as exc:
+                return OutlookReplyEmailResult(
+                    success=False,
+                    error=f"Outlook reply failed: {exc}",
+                )
+            return OutlookReplyEmailResult(
+                success=True,
+                message="Sent Outlook reply on the current email thread.",
+                thread_id=metadata.thread_id,
+                message_id=None,
+                attachment_count=1 if primary_url else 0,
+            )
+
+        # Native (Graph) path: files within the inline cap are attached via the
+        # draft flow; larger files become download links appended to the body.
         inline_files, attachment_links = await resolve_outbound_email_attachments(
             ctx.deps,
             request.attachment_paths,
-            inline_cap_bytes=_OUTLOOK_INLINE_ATTACHMENT_LIMIT_BYTES,
+            inline_cap_bytes=inline_cap("OUTLOOK"),
         )
         content = append_attachment_links(request.content, attachment_links)
         attachments: list[dict[str, Any]] = [
@@ -177,33 +221,6 @@ class OutlookPlatformService:
         ]
 
         try:
-            effective_message_id = str(metadata.message_id or "").strip()
-            if not effective_message_id:
-                return OutlookReplyEmailResult(
-                    success=False,
-                    error="The current Outlook message is missing a provider message id.",
-                )
-            if self._is_composio:
-                # OUTLOOK_REPLY_EMAIL sends text/HTML only. Outbound attachments
-                # require the multi-step draft flow, not yet wired for Composio.
-                await self._reply_to_message(
-                    message_id=effective_message_id,
-                    content=content,
-                    content_type=request.content_type,
-                )
-                message = "Sent Outlook reply on the current email thread."
-                if attachments:
-                    message += (
-                        " Attachments were not included — outbound attachments are "
-                        "not yet supported for Composio-connected Outlook accounts."
-                    )
-                return OutlookReplyEmailResult(
-                    success=True,
-                    message=message,
-                    thread_id=metadata.thread_id,
-                    message_id=None,
-                    attachment_count=0,
-                )
             if attachments:
                 draft_id = await self._create_reply_draft(
                     message_id=effective_message_id
@@ -350,6 +367,7 @@ class OutlookPlatformService:
         message_id: str,
         content: str,
         content_type: str,
+        attachment_url: str | None = None,
         display_resource_plans: list[SurfaceDisplayRenderPlan] | None = None,
     ) -> None:
         plain_text, html_body = render_email_content(
@@ -359,14 +377,19 @@ class OutlookPlatformService:
         )
 
         if self._is_composio:
+            # Composio downloads a URL passed in `attachment` and attaches it
+            # (single file); the remaining files are folded into the body as links.
+            payload: dict[str, Any] = {
+                "message_id": message_id,
+                "comment": html_body or plain_text,
+                "is_html": bool(html_body),
+            }
+            if attachment_url:
+                payload["attachment"] = attachment_url
             await execute_composio_operation(
                 connector_id=_OUTLOOK_APP_ID,
                 operation_name="OUTLOOK_REPLY_EMAIL",
-                payload={
-                    "message_id": message_id,
-                    "comment": html_body or plain_text,
-                    "is_html": bool(html_body),
-                },
+                payload=payload,
                 credentials=self.credentials,
             )
             return

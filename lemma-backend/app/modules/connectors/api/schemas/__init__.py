@@ -123,9 +123,11 @@ class AccountResponseSchema(BaseSchema):
     organization_id: UUID
     auth_config_id: UUID
     connector_id: str
+    is_default: bool = False
     status: str
     provider_account_id: Optional[str] = None
     email: Optional[str]
+    display_name: Optional[str] = None
     preferences: Optional[Dict[str, Any]]
     allowed_scopes: Optional[List[str]]
     # Include connector info

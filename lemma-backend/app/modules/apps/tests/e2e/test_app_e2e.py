@@ -53,6 +53,10 @@ async def test_app_assets_support_private_and_public_asset_routes(
     test_pod,
     monkeypatch,
 ):
+    # Pin both inputs the app URL is built from so the assertion is hermetic and
+    # independent of the local .env (the scheme is taken from api_url's scheme,
+    # so a developer's https ngrok api_url must not leak into this test).
+    monkeypatch.setattr(settings, "api_url", "http://api.apps.test")
     monkeypatch.setattr(settings, "app_base_domain", "apps.test")
     expected_url = f"http://{{slug}}.{settings.app_base_domain}"
 

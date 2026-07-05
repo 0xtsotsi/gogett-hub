@@ -394,6 +394,7 @@ class TelegramPollingReceiverRunner:
                             source="telegram",
                             payload=update,
                             receiver_key=self._candidate.key,
+                            surface_ids=self._candidate.surface_ids,
                         )
                 except asyncio.CancelledError:
                     raise
@@ -473,6 +474,7 @@ class SlackSocketReceiverRunner:
                 source="slack",
                 payload=req.payload,
                 receiver_key=self._candidate.key,
+                surface_ids=self._candidate.surface_ids,
             )
 
         client.socket_mode_request_listeners.append(_listener)
@@ -608,6 +610,7 @@ async def _publish_native_receiver_event(
     source: str,
     payload: dict[str, Any],
     receiver_key: str | None,
+    surface_ids: "tuple[UUID, ...] | None" = None,
 ) -> None:
     headers = {"x-lemma-surface-event-mode": "native_receiver"}
     if receiver_key:
@@ -616,6 +619,9 @@ async def _publish_native_receiver_event(
         source=source,
         payload=payload,
         headers=headers,
+        # Scope downstream ingress to the surfaces this bot actually serves, so a
+        # custom bot's update can't be mis-attributed to another bot's surface.
+        receiver_surface_ids=list(surface_ids) if surface_ids else None,
     )
     await get_message_bus().publish(stream=event.stream_name(), event=event)
 

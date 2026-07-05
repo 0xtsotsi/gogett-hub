@@ -80,6 +80,13 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.worker)
         if fixture_names & WORKSPACE_FIXTURES:
             item.add_marker(pytest.mark.workspace)
+        # Any test that (transitively) needs the shared Kreuzberg container asks
+        # for the ``kreuzberg_url`` fixture — directly, or via ``kreuzberg_wired``
+        # / ``index_datastore_file``. Mark those ``indexing`` so test-e2e-fast can
+        # exclude them and never boot the RAM-heavy extraction container; they run
+        # in the dedicated test-e2e-indexing job instead.
+        if "kreuzberg_url" in fixture_names:
+            item.add_marker(pytest.mark.indexing)
         if (
             (
                 item.path.name == "test_agent_usage_e2e.py"

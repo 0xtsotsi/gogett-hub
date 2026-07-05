@@ -21,7 +21,12 @@ from app.modules.test_support.e2e import fixtures as e2e_fixtures
 
 pytestmark = pytest.mark.e2e
 
-_shared_e2e_settings = e2e_fixtures.e2e_settings
+# Use the base session settings unchanged. Kreuzberg is NOT wired in here: it is
+# a RAM-heavy ML container, so only the fixtures that actually extract documents
+# (``index_datastore_file`` below, and ``kreuzberg_url`` consumers like
+# ``test_kreuzberg_helper_e2e``) pull it in — the rest of the datastore e2e suite
+# runs on just postgres/redis/supertokens and never starts it.
+e2e_settings = e2e_fixtures.e2e_settings
 
 test_network = e2e_fixtures.test_network
 postgres_container = e2e_fixtures.postgres_container
@@ -53,15 +58,17 @@ def kreuzberg_url(tmp_path_factory, worker_id):
         yield url
 
 
-@pytest.fixture(scope="session")
-def e2e_settings(_shared_e2e_settings, kreuzberg_url):
-    # kreuzberg_url lives on datastore_settings. Object storage stays on the core
-    # per-worker root WITHOUT a datastore-specific suffix: the streaq worker
-    # (which indexes uploaded files) reads core settings, so the datastore object
-    # store must match what the API/test process writes — diverging the suffix
-    # left the worker looking in the wrong place ("Storage object not found").
+@pytest.fixture
+def kreuzberg_wired(kreuzberg_url):
+    """Point in-process document processing at the shared Kreuzberg.
+
+    Depend on this (rather than wiring Kreuzberg into the session-wide
+    ``e2e_settings``) from any fixture/test that actually extracts a document —
+    that's what keeps the RAM-heavy container from starting for the datastore
+    tests that never touch one.
+    """
     datastore_settings.kreuzberg_url = kreuzberg_url
-    return _shared_e2e_settings
+    return kreuzberg_url
 
 
 @pytest.fixture
@@ -102,7 +109,7 @@ async def member_users(
 
 
 @pytest_asyncio.fixture(scope="function")
-async def index_datastore_file(db_manager):
+async def index_datastore_file(db_manager, kreuzberg_wired):
     import asyncio
 
     from app.modules.datastore.domain.file_entities import FileStatus
@@ -158,6 +165,7 @@ __all__ = [
     "fixed_test_user",
     "index_datastore_file",
     "kreuzberg_url",
+    "kreuzberg_wired",
     "member_users",
     "pod_api",
     "postgres_container",

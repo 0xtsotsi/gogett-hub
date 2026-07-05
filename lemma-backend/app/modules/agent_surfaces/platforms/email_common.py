@@ -10,7 +10,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Literal
 
+from app.core.log.log import get_logger
 from app.modules.agent_surfaces.domain.models import SurfaceDisplayRenderPlan
+
+logger = get_logger(__name__)
 
 try:
     import markdown as markdown_lib
@@ -277,7 +280,11 @@ async def resolve_outbound_email_attachments(
                     deps.pod_id, path, services.ctx
                 )
                 size = entity.size_bytes
-                if size is not None and 0 <= size <= inline_cap_bytes:
+                # A known, positive size at/below the cap inlines. Treat 0 or an
+                # unrecorded size as "not known to fit" and deliver a link, so an
+                # unbounded file whose size wasn't stamped can't be inlined at full
+                # size and blow the provider's hard limit.
+                if isinstance(size, int) and 0 < size <= inline_cap_bytes:
                     _entity, content = await services.file.download_file_content_by_path(
                         deps.pod_id, path, services.ctx
                     )
@@ -299,8 +306,53 @@ async def resolve_outbound_email_attachments(
             raw = await deps.file_manager.read_file(path)
             content = raw.encode("utf-8") if isinstance(raw, str) else raw
             name = file_name_from_path(path)
+            # Workspace files can't be signed into a link, so bound them by the
+            # actual byte length — an oversize workspace file inlined unconditionally
+            # would fail the whole send. Skip (with a warning) rather than hard-fail.
+            if len(content) > inline_cap_bytes:
+                logger.warning(
+                    "Skipping oversize workspace email attachment %s (%d bytes > cap %d)",
+                    name,
+                    len(content),
+                    inline_cap_bytes,
+                )
+                continue
             inline.append((name, content, guess_content_type(name)))
     return inline, links
+
+
+async def resolve_outbound_email_attachment_urls(
+    deps: Any,
+    paths: list[str],
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Resolve attachment paths to signed URLs for a Composio email send.
+
+    Composio's Gmail/Outlook actions accept a public/signed URL in their
+    ``attachment`` field and download it server-side, so datastore files become
+    ``(name, signed_url)``. Workspace files can't be signed into a URL and are
+    returned as unresolved names (the caller notes them). Returns
+    ``(url_attachments, unresolved_names)``.
+    """
+    from app.modules.agent.tools.file_access import is_datastore_path
+    from app.modules.agent.tools.pod.pod_data_access import pod_services
+
+    resolved: list[tuple[str, str]] = []
+    unresolved: list[str] = []
+    for path in paths:
+        if is_datastore_path(path):
+            async with pod_services(deps) as services:
+                entity = await services.file.get_file_by_path(
+                    deps.pod_id, path, services.ctx
+                )
+                _entity, signed_url, _expires, _hits = (
+                    await services.file.create_signed_url(
+                        deps.pod_id, path, services.ctx
+                    )
+                )
+                resolved.append((entity.name, signed_url))
+        else:
+            unresolved.append(file_name_from_path(path))
+    return resolved, unresolved
 
 
 def append_attachment_links(content: str, links: list[tuple[str, str]]) -> str:

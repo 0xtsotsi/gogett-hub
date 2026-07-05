@@ -21,7 +21,7 @@ from app.modules.agent.tools.user_interaction.models import (
     DisplayResourceType,
 )
 from app.modules.agent_surfaces.platforms.attachment_limits import fits_inline
-from app.modules.agent_surfaces.platforms.rendering import strip_thinking_tokens
+from app.modules.agent_surfaces.platforms.rendering import sanitize_user_visible_text
 from app.modules.datastore.api.dependencies import build_file_service
 from app.modules.agent_surfaces.domain.entities import (
     AgentSurfaceConversationLink,
@@ -206,6 +206,22 @@ class AgentSurfaceIngressService:
 
         surfaces = await self.surface_repository.list_active_by_type(platform)
 
+        # Scope to the bot that actually delivered this event when a native
+        # receiver told us which surfaces it serves (Telegram polling / Slack
+        # socket). This prevents a custom bot's update from being attributed to a
+        # different bot's surface. A shared system-bot platform webhook leaves
+        # this unset → platform-wide fan-in (disambiguated per-sender below).
+        if request.receiver_surface_ids:
+            allowed_ids = set(request.receiver_surface_ids)
+            surfaces = [surface for surface in surfaces if surface.id in allowed_ids]
+            if not surfaces:
+                logger.info(
+                    "Agent surface ignored native-receiver webhook: no active "
+                    "surface among receiver ids platform=%s",
+                    platform,
+                )
+                return None
+
         # Mention verification for Telegram groups: the parser records any
         # @username / text_mention entities but does NOT set mentioned_agent for
         # generic mentions (a `mention` entity is just a plain @username and
@@ -246,24 +262,25 @@ class AgentSurfaceIngressService:
             return None
 
         # Resolve the sender once (using the first candidate's credentials) and
-        # pick the candidate whose pod the sender belongs to. An unknown sender
-        # only proceeds when the target surface is unambiguous — it gets the
-        # signup/link flow on that surface.
+        # pick the surface this event belongs to (continuity → pod membership →
+        # user default → deterministic tiebreak). An unknown sender only proceeds
+        # when the target surface is unambiguous — it gets the signup/link flow.
         identity_surface = candidates[0]
         resolved_user = await self._resolve_sender_identity(
             adapter=adapter,
             parsed=parsed,
             credentials=await self._resolve_credentials(identity_surface),
         )
-        matched_surface = await self._match_surface_for_user(
-            surfaces=candidates,
+        matched_surface = await self._select_surface(
+            candidates=candidates,
             resolved_user=resolved_user,
+            parsed=parsed,
+            platform=platform,
         )
-        if (
-            matched_surface is None
-            and len(candidates) == 1
-            and resolved_user.internal_user_id is None
-        ):
+        if matched_surface is None and len(candidates) == 1 and parsed.is_dm:
+            # Single unambiguous DM surface: route to it so the onboarding flow
+            # runs — an unknown sender gets the signup link, a signed-up
+            # non-member gets the pod-access link (see _prepare_surface_context).
             matched_surface = identity_surface
 
         if matched_surface is None:
@@ -747,6 +764,46 @@ class AgentSurfaceIngressService:
         )
         return resolved
 
+    async def send_to_member(
+        self,
+        *,
+        surface: AgentSurfaceEntity,
+        user_id: UUID,
+        message: str,
+    ) -> bool:
+        """Proactively send a message to a pod member on a specific surface.
+
+        Powers ``surface.send`` (notifications from functions/workflows, or an
+        agent reaching a specific member). Reuses the member's existing thread on
+        the surface — bots can't cold-DM, so the member must have interacted
+        before; returns ``False`` when no reachable thread exists.
+        """
+        if not surface.is_active:
+            return False
+        # Only ever reach members of the surface's pod.
+        if self.pod_membership_port is not None:
+            member_pod_ids = set(
+                await self.pod_membership_port.get_user_pod_ids(user_id)
+            )
+            if surface.pod_id not in member_pod_ids:
+                return False
+        external_user_repository = getattr(self, "external_user_repository", None)
+        if external_user_repository is None:
+            return False
+        ext = await external_user_repository.get_by_resolved_user(
+            platform=surface.surface_type.value, resolved_user_id=user_id
+        )
+        if ext is None or not ext.external_user_id:
+            return False
+        link = await self.conversation_link_repository.get_latest_by_surface_and_external_user(
+            surface_id=surface.id, external_user_id=ext.external_user_id
+        )
+        if link is None:
+            return False
+        return await self.send_agent_message_for_conversation(
+            conversation_id=link.conversation_id, message=message
+        )
+
     async def send_agent_message_for_conversation(
         self,
         *,
@@ -760,7 +817,7 @@ class AgentSurfaceIngressService:
         # Safety net: never deliver model reasoning/thinking tokens
         # (``<tool_call>…``) as a chat message to any surface. Some
         # OpenAI-compatible models emit these inline in the text content.
-        clean_message = strip_thinking_tokens(message)
+        clean_message = sanitize_user_visible_text(message)
         if not clean_message:
             return False
         message_metadata = await self._egress_metadata_with_agent_name(target, metadata)
@@ -835,6 +892,13 @@ class AgentSurfaceIngressService:
         target = await self._resolve_egress_target(conversation_id)
         if target is None:
             return False
+        if target.surface.surface_type.is_email:
+            # Email is non-interactive: never pause for a tappable/typed answer.
+            logger.info(
+                "ask_user suppressed on email surface conversation=%s",
+                conversation_id,
+            )
+            return False
         pending = await self.conversation_service.get_pending_ask_user(
             conversation_id=conversation_id
         )
@@ -900,14 +964,23 @@ class AgentSurfaceIngressService:
         target = await self._resolve_egress_target(conversation_id)
         if target is None:
             return False
+        if target.surface.surface_type.is_email:
+            # Email is non-interactive: never pause for an approve/deny reply.
+            logger.info(
+                "request_approval suppressed on email surface conversation=%s",
+                conversation_id,
+            )
+            return False
         pending = await self.conversation_service.get_pending_user_interaction(
             conversation_id=conversation_id
         )
         if not isinstance(pending, dict) or pending.get("kind") != "request_approval":
             return False
         tool_args = pending.get("tool_args") or {}
-        title = str(tool_args.get("title") or "Action requires your approval")
-        reason = str(tool_args.get("reason") or "").strip()
+        title = sanitize_user_visible_text(
+            str(tool_args.get("title") or "Action requires your approval")
+        )
+        reason = sanitize_user_visible_text(str(tool_args.get("reason") or "")).strip()
         inner_tool = str(tool_args.get("tool_name") or "")
         lines = [f"Approval needed: {title}"]
         if reason:
@@ -940,6 +1013,8 @@ class AgentSurfaceIngressService:
         target = await self._resolve_egress_target(conversation_id)
         if target is None:
             return False
+        # The caption is model-authored — strip any reasoning before delivery.
+        caption = sanitize_user_visible_text(caption) if caption else caption
         try:
             conversation = (
                 await self.conversation_service.conversation_repository.get_conversation(
@@ -1262,6 +1337,85 @@ class AgentSurfaceIngressService:
                 return surface
         return None
 
+    async def _select_surface(
+        self,
+        *,
+        candidates: list[AgentSurfaceEntity],
+        resolved_user: ResolvedSurfaceUser | None,
+        parsed: ParsedInboundSurfaceEvent,
+        platform: str,
+    ) -> AgentSurfaceEntity | None:
+        """Pick which candidate surface an inbound event belongs to.
+
+        Deterministic precedence — this is what makes a sender reachable via a
+        shared system bot/number across pods in multiple orgs route consistently:
+
+        1. **Continuity** — reuse the surface an existing conversation for this
+           exact chat already lives on, so a returning chat never bounces between
+           pods (independent of pod-membership ordering).
+        2. **Pod membership** — only surfaces whose pod the sender belongs to.
+        3. **User default** — when the sender belongs to several such pods,
+           honor ``users.preferences.default_surfaces[platform]``.
+        4. **Deterministic tiebreak** — the first member candidate (``candidates``
+           is ordered by ``created_at, id``).
+
+        Membership is still re-validated downstream in ``_prepare_surface_context``
+        (which sends the pod-access/signup reply when appropriate), so continuity
+        only decides *which* candidate — never bypasses the access check.
+        """
+        # 1. Continuity — reuse the surface this chat already lives on.
+        continuity_id = (
+            await self.conversation_link_repository.find_surface_id_for_external_thread(
+                platform=platform,
+                external_channel_id=parsed.external_channel_id,
+                external_thread_id=parsed.external_thread_id,
+                external_user_id=parsed.sender_external_user_id,
+            )
+        )
+        if continuity_id is not None:
+            for surface in candidates:
+                if surface.id == continuity_id:
+                    return surface
+
+        if resolved_user is None or resolved_user.internal_user_id is None:
+            return None
+        if not self.pod_membership_port:
+            return None
+
+        user_pod_ids = set(
+            await self.pod_membership_port.get_user_pod_ids(
+                resolved_user.internal_user_id
+            )
+        )
+        member_candidates = [s for s in candidates if s.pod_id in user_pod_ids]
+        if not member_candidates:
+            return None
+        if len(member_candidates) == 1:
+            return member_candidates[0]
+
+        # 3. Several pods across orgs share this bot — honor the user's default.
+        get_default = getattr(
+            self.pod_membership_port, "get_user_default_surface_id", None
+        )
+        if get_default is not None:
+            default_id = await get_default(resolved_user.internal_user_id, platform)
+            if default_id is not None:
+                for surface in member_candidates:
+                    if surface.id == default_id:
+                        return surface
+
+        # 4. Deterministic tiebreak (candidates are ordered by created_at, id).
+        # The user can pick a default via GET/PUT /surfaces/me when this happens.
+        logger.info(
+            "Agent surface sender resolves to %d candidate surfaces on shared "
+            "platform=%s with no default set; routing to the oldest (surface=%s). "
+            "User can set a default via /surfaces/me.",
+            len(member_candidates),
+            platform,
+            member_candidates[0].id,
+        )
+        return member_candidates[0]
+
     async def _telegram_text_mention_enrich(
         self,
         parsed: ParsedInboundSurfaceEvent,
@@ -1362,6 +1516,13 @@ class AgentSurfaceIngressService:
         return (
             "Please sign up before chatting with this agent. "
             f"You can get started here: {signup_url}"
+        )
+
+    def _pod_access_message(self, pod_id: UUID) -> str:
+        base = settings.auth_frontend_url.rstrip("/")
+        return (
+            "You're signed up, but don't have access to this workspace yet. "
+            f"Request access here: {base}/pods/{pod_id}"
         )
 
     def _reply_context(
@@ -1518,6 +1679,17 @@ class AgentSurfaceIngressService:
                 resolved_user.internal_user_id,
                 surface.pod_id,
             )
+            # Signed up but not a pod member: on any DM surface, point them to the
+            # pod home page to request access (instead of dropping). Safe for both
+            # system bots and custom/personal bots — a custom bot's token maps to
+            # exactly one surface (one pod), so the join target is unambiguous.
+            if parsed.is_dm:
+                return self._reply_context(
+                    surface=surface,
+                    parsed=parsed,
+                    agent_display_name=fallback_agent_display_name,
+                    reply=(self._pod_access_message(surface.pod_id), {}),
+                )
             return None
         if not surface.config.identity.allows_email(resolved_user.email):
             logger.info(

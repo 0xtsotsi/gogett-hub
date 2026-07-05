@@ -4,16 +4,19 @@ import { use, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
     Bot,
+    Boxes,
+    CalendarClock,
     ChevronRight,
     Plus,
     Share2,
+    Waypoints,
+    type LucideIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { DestructiveConfirmationDialog } from '@/components/shared/destructive-confirmation-dialog';
 import { EmptyState } from '@/components/shared/empty-state';
-import { ProductIcon } from '@/components/pod/product-icon';
 import { ConceptHint } from '@/components/education/concept-hint';
 import { SectionPrimer } from '@/components/education/section-primer';
 import { ResourceIndexHeader, ResourceIndexShell, ResourceMetricButton, ResourceMetricStrip } from '@/components/pod/resource-layout';
@@ -29,7 +32,6 @@ import { useSchedules } from '@/lib/hooks/use-schedules';
 import type { Agent, UpdateAgentData, Workflow } from '@/lib/types';
 import { NodeType } from '@/lib/types';
 import { getAgentNodeName } from '@/lib/utils/flow-node-config';
-import { cn } from '@/lib/utils';
 
 type AgentFilter = 'all' | 'workflows' | 'scheduled';
 
@@ -221,6 +223,45 @@ export default function AgentsPage({
     );
 }
 
+// Stable per-agent tint (see .resource-monogram[data-tint] in builders-and-ledgers.css)
+// so identical sparkle avatars become distinguishable.
+const AGENT_TINT_COUNT = 6;
+
+function hashString(value: string): number {
+    let result = 0;
+    for (let i = 0; i < value.length; i += 1) {
+        result = (result << 5) - result + value.charCodeAt(i);
+        result |= 0;
+    }
+    return Math.abs(result);
+}
+
+function agentInitials(name: string): string {
+    const tokens = name.trim().split(/[\s\-_]+/).filter(Boolean);
+    if (tokens.length >= 2) return `${tokens[0][0]}${tokens[1][0]}`.toUpperCase();
+    return (tokens[0] || name).slice(0, 2).toUpperCase();
+}
+
+function AgentMonogram({ name }: { name: string }) {
+    return (
+        <span
+            className="resource-monogram flex h-full w-full items-center justify-center rounded-lg text-sm font-semibold"
+            data-tint={hashString(name) % AGENT_TINT_COUNT}
+        >
+            {agentInitials(name)}
+        </span>
+    );
+}
+
+function AgentStat({ icon: Icon, value, label }: { icon: LucideIcon; value: number; label: string }) {
+    return (
+        <span className="inline-flex items-center gap-1" title={label} aria-label={label}>
+            <Icon className="h-3.5 w-3.5" aria-hidden />
+            {value}
+        </span>
+    );
+}
+
 function AgentProfileCard({
     agent,
     podId,
@@ -242,13 +283,11 @@ function AgentProfileCard({
 }) {
     const connectionCount = countConnections(agent);
     const summary = agentSummary(agent);
-    const statusLabel = activeScheduleCount > 0
-        ? 'Scheduled'
+    const status = activeScheduleCount > 0
+        ? { label: 'Scheduled', className: 'text-[var(--state-success)]' }
         : workflowCount > 0
-            ? 'In workflow'
-            : connectionCount > 0
-                ? `Access ${connectionCount}`
-                : 'Draft';
+            ? { label: 'In workflow', className: 'text-[var(--text-secondary)]' }
+            : null;
     const hasMenuActions = canUpdate || canDelete;
     const agentShareUrl = typeof window === 'undefined'
         ? undefined
@@ -264,14 +303,15 @@ function AgentProfileCard({
                         label={agent.name}
                         imageClassName="object-contain p-1"
                         className="h-11 w-11 shrink-0 rounded-lg bg-transparent"
-                        fallback={<ProductIcon tone="agents" size="lg" />}
+                        fallback={<AgentMonogram name={agent.name} />}
                     />
                 </Link>
-                <div className="flex shrink-0 items-center gap-1">
-                    <span className={cn('chip chip-sm', getAgentStatusClass(activeScheduleCount, workflowCount, connectionCount))}>
-                        {statusLabel}
+                {status ? (
+                    <span className={`inline-flex shrink-0 items-center gap-1.5 text-xs font-medium ${status.className}`}>
+                        <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                        {status.label}
                     </span>
-                </div>
+                ) : null}
             </div>
 
             <Link href={`/pod/${podId}/agents/${encodeURIComponent(agent.name)}`} className="block">
@@ -281,20 +321,29 @@ function AgentProfileCard({
                         {summary || 'Ready for instructions, tools, and pod context.'}
                     </p>
                 </div>
-
-                <div className="mt-4 flex flex-wrap gap-1.5">
-                    <ResourceVisibilityBadge visibility={agent.visibility} resourceLabel="agents" />
-                    <AgentCardPill label={`Access ${connectionCount}`} muted={connectionCount === 0} />
-                    <AgentCardPill label={`${workflowCount} workflow${workflowCount === 1 ? '' : 's'}`} muted={workflowCount === 0} />
-                    <AgentCardPill label={activeScheduleCount ? `${activeScheduleCount} schedule${activeScheduleCount === 1 ? '' : 's'}` : 'No schedules'} muted={activeScheduleCount === 0} />
-                </div>
             </Link>
 
-            <div className="mt-3 flex items-center justify-between text-xs text-[var(--text-tertiary)]">
+            <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-tertiary)]">
+                <div className="flex min-w-0 items-center gap-3">
+                    <ResourceVisibilityBadge visibility={agent.visibility} resourceLabel="agents" hideWhenDefault />
+                    {connectionCount > 0 ? (
+                        <AgentStat icon={Boxes} value={connectionCount} label={`${connectionCount} tool${connectionCount === 1 ? '' : 's'} & data source${connectionCount === 1 ? '' : 's'} connected`} />
+                    ) : null}
+                    {workflowCount > 0 ? (
+                        <AgentStat icon={Waypoints} value={workflowCount} label={`In ${workflowCount} workflow${workflowCount === 1 ? '' : 's'}`} />
+                    ) : null}
+                    {activeScheduleCount > 0 ? (
+                        <AgentStat icon={CalendarClock} value={activeScheduleCount} label={`${activeScheduleCount} active schedule${activeScheduleCount === 1 ? '' : 's'}`} />
+                    ) : null}
+                    {connectionCount === 0 && workflowCount === 0 && activeScheduleCount === 0 ? (
+                        <span>Ready to set up</span>
+                    ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
                 {hasMenuActions ? (
                     <ResourceActionsMenu
                         ariaLabel={`Open actions for ${agent.name}`}
-                        align="start"
+                        align="end"
                         triggerClassName="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                         {canUpdate ? (
@@ -328,35 +377,18 @@ function AgentProfileCard({
                             </DestructiveResourceActionItem>
                         ) : null}
                     </ResourceActionsMenu>
-                ) : <span />}
+                ) : null}
                 <Link
                     href={`/pod/${podId}/agents/${encodeURIComponent(agent.name)}`}
-                    className="inline-flex items-center gap-1 font-medium text-[var(--text-secondary)] opacity-0 transition-gentle group-hover:translate-x-0.5 group-hover:opacity-100"
+                    className="inline-flex items-center gap-1 font-medium text-[var(--text-secondary)] transition-gentle group-hover:translate-x-0.5"
                 >
                     Open
                     <ChevronRight className="h-3.5 w-3.5" />
                 </Link>
+                </div>
             </div>
         </div>
     );
-}
-
-function AgentCardPill({ label, muted }: { label: string; muted?: boolean }) {
-    return (
-        <span className={cn(
-            'chip chip-sm',
-            muted ? 'chip-muted text-[var(--text-tertiary)]' : 'state-badge-brand'
-        )}>
-            {label}
-        </span>
-    );
-}
-
-function getAgentStatusClass(activeScheduleCount: number, workflowCount: number, connectionCount: number): string {
-    if (activeScheduleCount > 0) return 'state-badge-brand';
-    if (workflowCount > 0) return 'state-badge-brand';
-    if (connectionCount > 0) return 'state-badge-brand';
-    return 'chip-muted text-[var(--text-tertiary)]';
 }
 
 function buildAgentUsage(flows: Workflow[]) {

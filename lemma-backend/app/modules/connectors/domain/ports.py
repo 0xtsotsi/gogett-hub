@@ -140,6 +140,16 @@ class ConnectorOperationRepositoryPort(Protocol):
         self, connector_id: str, provider: str, operation_name: str
     ) -> Optional[ConnectorOperationEntity]: ...
 
+    async def get_by_connector_authconfig_and_name(
+        self, connector_id: str, auth_config_id: UUID, operation_name: str
+    ) -> Optional[ConnectorOperationEntity]: ...
+
+    async def list_by_auth_config(
+        self, auth_config_id: UUID
+    ) -> Sequence[ConnectorOperationEntity]: ...
+
+    async def delete_by_auth_config(self, auth_config_id: UUID) -> int: ...
+
     async def has_operations(self, connector_id: str) -> bool: ...
 
 

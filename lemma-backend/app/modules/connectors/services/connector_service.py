@@ -1,6 +1,6 @@
 from datetime import datetime
 import secrets
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from app.core.domain.uow import IUnitOfWork
@@ -588,7 +588,7 @@ class ConnectorService:
         provider_enum = AuthProvider(provider)
         config_source_enum = AuthConfigSource(config_source)
         try:
-            connector.capability_for(provider_enum)
+            capability = connector.capability_for(provider_enum)
         except ValueError:
             raise UnsupportedAuthProviderError(provider_enum.value)
         provider_config = provider_config or None
@@ -598,11 +598,15 @@ class ConnectorService:
             config_source=config_source_enum,
             provider_config=provider_config,
         )
-        existing = await self.auth_config_repository.get_active_by_org_and_app(
-            organization_id, connector_id
-        )
-        if existing:
-            raise AccountAlreadyConnectedError(connector_id)
+        # Multi-instance kinds (sql/mcp/openapi) allow many auth-configs per
+        # connector; single-instance connectors still enforce one active per org.
+        multi_instance = bool(getattr(capability, "supports_multiple_instances", False))
+        if not multi_instance:
+            existing = await self.auth_config_repository.get_active_by_org_and_app(
+                organization_id, connector_id
+            )
+            if existing:
+                raise AccountAlreadyConnectedError(connector_id)
 
         entity = AuthConfigEntity(
             organization_id=organization_id,
@@ -616,7 +620,159 @@ class ConnectorService:
         )
         entity = await self.auth_config_repository.create(entity)
         await self.uow.commit()
+        # Discover per-instance operations (MCP tools / OpenAPI-URL spec) after the
+        # config is committed — network I/O runs outside the create transaction.
+        await self._discover_and_backfill(
+            entity, connector, getattr(capability, "kind", None)
+        )
         return entity
+
+    async def refresh_auth_config_operations(
+        self,
+        *,
+        user_id: UUID,
+        organization_id: UUID,
+        auth_config_id: UUID | None = None,
+        auth_config_name: str | None = None,
+    ) -> AuthConfigEntity:
+        """Re-discover operations for an auth-config (MCP tools / OpenAPI spec)."""
+        await self._require_org_member(
+            user_id=user_id,
+            organization_id=organization_id,
+            allowed_roles=["ORG_OWNER", "ORG_EDITOR"],
+        )
+        auth_config = await self._resolve_auth_config(
+            organization_id=organization_id,
+            auth_config_id=auth_config_id,
+            auth_config_name=auth_config_name,
+        )
+        connector = await self.get_connector(auth_config.connector_id)
+        provider_enum = AuthProvider(self._provider_value(auth_config))
+        try:
+            capability = connector.capability_for(provider_enum)
+        except ValueError:
+            capability = None
+        # Use the requesting user's connected account credentials when present
+        # (e.g. an MCP bearer token) so an authenticated server can be introspected.
+        credentials = None
+        account = await self.account_repository.get_by_user_and_auth_config(
+            user_id, auth_config.id
+        )
+        if account is not None and account.credentials:
+            credentials = self._serialize_account_credentials(account.credentials)
+        await self._discover_and_backfill(
+            auth_config, connector, getattr(capability, "kind", None), credentials=credentials
+        )
+        return await self._resolve_auth_config(
+            organization_id=organization_id, auth_config_id=auth_config.id
+        )
+
+    def _serialize_account_credentials(self, credentials: Any) -> dict | None:
+        if credentials is None:
+            return None
+        if hasattr(credentials, "model_dump"):
+            return credentials.model_dump(mode="json")
+        if isinstance(credentials, dict):
+            return credentials
+        return None
+
+    async def _discover_and_backfill(
+        self,
+        auth_config: AuthConfigEntity,
+        connector: Any,
+        kind: Any,
+        *,
+        credentials: dict | None = None,
+    ) -> None:
+        """Discover and backfill per-auth-config operations for a discovery kind.
+
+        No-op for connectors whose op set is static (catalog HTTP like GitHub, SQL).
+        Network failures are surfaced in ``metadata.discovery`` (never raised).
+        """
+        if self.operation_repository is None:
+            return
+        from app.modules.connectors.services.discovery import (
+            discover_mcp,
+            discover_openapi,
+        )
+
+        kind_value = getattr(kind, "value", kind)
+        connection_config = auth_config.provider_config or {}
+        is_openapi_url = kind_value == "http" and (
+            connection_config.get("spec_url") or connection_config.get("spec_inline")
+        )
+        if kind_value != "mcp" and not is_openapi_url:
+            return  # static / non-discovery connector (catalog HTTP like GitHub, SQL)
+
+        try:
+            if kind_value == "mcp":
+                operations = await discover_mcp(
+                    connection_config=connection_config, credentials=credentials
+                )
+            else:
+                operations = await discover_openapi(
+                    connection_config=connection_config, credentials=credentials
+                )
+        except Exception as exc:  # noqa: BLE001 - surface, don't fail the whole flow
+            logger.warning(
+                "Operation discovery failed for auth-config %s: %s", auth_config.id, exc
+            )
+            await self._set_discovery_status(auth_config, status="ERROR", error=str(exc))
+            return
+
+        await self.operation_repository.delete_by_auth_config(auth_config.id)
+        for op in operations:
+            await self.operation_repository.create(
+                self._discovered_operation_entity(auth_config, op)
+            )
+        await self._set_discovery_status(
+            auth_config, status="READY", error=None, count=len(operations)
+        )
+        await self.uow.commit()
+
+    def _discovered_operation_entity(self, auth_config: AuthConfigEntity, op: Any):
+        from app.modules.connectors.domain.connector_operation import (
+            ConnectorOperationEntity,
+        )
+        from app.modules.connectors.services.discovery.base import (
+            normalize_operation_name,
+        )
+
+        name = normalize_operation_name(op.name)
+        return ConnectorOperationEntity(
+            id=f"{auth_config.connector_id}:lemma:{auth_config.id}:{name}",
+            connector_id=auth_config.connector_id,
+            auth_config_id=auth_config.id,
+            provider=AuthProvider.LEMMA,
+            name=name,
+            provider_operation_name=name,
+            display_name=op.display_name,
+            description=op.description,
+            input_schema=op.input_schema,
+            output_schema=op.output_schema,
+            execution=op.execution,
+        )
+
+    async def _set_discovery_status(
+        self,
+        auth_config: AuthConfigEntity,
+        *,
+        status: str,
+        error: str | None = None,
+        count: int | None = None,
+    ) -> None:
+        from datetime import datetime, timezone
+
+        metadata = dict(auth_config.metadata or {})
+        metadata["discovery"] = {
+            "status": status,
+            "error": (error or "")[:500] or None,
+            "operation_count": count,
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        auth_config.metadata = metadata
+        await self.auth_config_repository.update(auth_config)
+        await self.uow.commit()
 
     async def list_auth_configs(
         self,
@@ -1305,6 +1461,11 @@ class ConnectorService:
                         exc,
                     )
             await self.account_repository.delete(account.id)
+
+        # Remove any operations discovered for this auth-config (MCP tools /
+        # OpenAPI-URL ops). FK cascade also covers this, but do it explicitly.
+        if self.operation_repository is not None:
+            await self.operation_repository.delete_by_auth_config(auth_config.id)
 
         await self.auth_config_repository.delete(auth_config.id)
         await self.uow.commit()

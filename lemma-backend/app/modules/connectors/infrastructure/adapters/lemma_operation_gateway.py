@@ -24,6 +24,7 @@ from app.modules.connectors.infrastructure.adapters.lemma_connector_factory impo
 from app.modules.connectors.infrastructure.adapters.openapi_http_executor import (
     OpenApiHttpExecutor,
 )
+from app.modules.connectors.infrastructure.adapters.mcp_executor import McpExecutor
 from app.modules.connectors.infrastructure.adapters.sql_executor import SqlExecutor
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,14 @@ class LemmaOperationGateway(AppOperationGatewayPort):
         self,
         http_executor: OpenApiHttpExecutor | None = None,
         sql_executor: SqlExecutor | None = None,
+        mcp_executor: McpExecutor | None = None,
     ):
         # Operations carrying an ``execution`` descriptor run package-free through
         # a per-kind executor (http/sql/mcp); everything else keeps using the
         # vendored ``lemma-connectors`` package path.
         self._http_executor = http_executor or OpenApiHttpExecutor()
         self._sql_executor = sql_executor or _shared_sql_executor()
+        self._mcp_executor = mcp_executor or McpExecutor()
 
     async def _execute_by_kind(
         self,
@@ -81,6 +84,15 @@ class LemmaOperationGateway(AppOperationGatewayPort):
             )
         if kind == "sql":
             return await self._sql_executor.execute(
+                connector_id=connector_id,
+                operation_name=operation_name,
+                execution=execution,
+                payload=payload,
+                third_party_credentials=third_party_credentials,
+                connection_config=connection_config,
+            )
+        if kind == "mcp":
+            return await self._mcp_executor.execute(
                 connector_id=connector_id,
                 operation_name=operation_name,
                 execution=execution,

@@ -467,8 +467,13 @@ def build_operation_descriptors(
     overrides: dict[str, Any] | None = None,
     default_headers: dict[str, str] | None = None,
 ) -> list[OpenAPIOperation]:
-    """Walk ``spec.paths`` and materialize the allowlisted operations."""
+    """Walk ``spec.paths`` and materialize operations.
+
+    ``allowlist=None`` selects ALL operations (generic OpenAPI-URL connectors);
+    a list (even empty) selects only the matching operationIds / method+path.
+    """
     overrides = overrides or {}
+    select_all = allowlist is None
     allowed_ids, allowed_paths = _index_allowlist(allowlist)
     paths = spec.get("paths") or {}
 
@@ -482,7 +487,7 @@ def build_operation_descriptors(
             if method not in _HTTP_METHODS or not isinstance(operation, dict):
                 continue
             op_id = operation.get("operationId") or ""
-            if op_id not in allowed_ids and (method, path) not in allowed_paths:
+            if not select_all and op_id not in allowed_ids and (method, path) not in allowed_paths:
                 continue
             override = overrides.get(op_id) or overrides.get(f"{method} {path}") or {}
             results.append(

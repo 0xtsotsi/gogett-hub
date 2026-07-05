@@ -913,5 +913,65 @@
         "output_schema": { "type": "object", "properties": { "rows": { "type": "array" } } }
       }
     ]
+  },
+  {
+    "name": "mcp",
+    "title": "MCP Server",
+    "description": "Connect to an external MCP server; its tools become connector operations.",
+    "auth_method": "API_KEY",
+    "auth_provider": "LEMMA",
+    "operation_executor": "LEMMA",
+    "kind": "mcp",
+    "supports_multiple_instances": true,
+    "auth_config_schema": {
+      "type": "object",
+      "required": ["server_url"],
+      "properties": {
+        "server_url": { "type": "string", "description": "MCP server URL (streamable HTTP)." },
+        "extra_headers": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "credential_schema": {
+      "type": "object",
+      "properties": {
+        "bearer_token": { "type": "string", "format": "password", "description": "Optional bearer token for the MCP server." }
+      },
+      "additionalProperties": false
+    },
+    "agent_instruction": "Use this connector's operations, which are proxied from the tools of a connected MCP server.",
+    "is_active": true,
+    "triggers": []
+  },
+  {
+    "name": "openapi",
+    "title": "OpenAPI (custom API)",
+    "description": "Connect any REST API by providing its OpenAPI spec URL; operations are generated from the spec.",
+    "auth_method": "API_KEY",
+    "auth_provider": "LEMMA",
+    "operation_executor": "LEMMA",
+    "kind": "http",
+    "supports_multiple_instances": true,
+    "auth_config_schema": {
+      "type": "object",
+      "required": ["spec_url"],
+      "properties": {
+        "spec_url": { "type": "string", "description": "URL of the OpenAPI JSON spec." },
+        "server_url": { "type": "string", "description": "Override base URL (else the spec's servers[0])." },
+        "default_headers": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "credential_schema": {
+      "type": "object",
+      "properties": {
+        "access_token": { "type": "string", "format": "password", "description": "Optional bearer token." },
+        "api_key": { "type": "string", "format": "password", "description": "Optional API key." }
+      },
+      "additionalProperties": false
+    },
+    "agent_instruction": "Use operations generated from the connected API's OpenAPI spec.",
+    "is_active": true,
+    "triggers": []
   }
 ]

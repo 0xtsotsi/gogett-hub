@@ -1,8 +1,13 @@
-"""add auth_config_id to connector_operations + relax auth-config multi-instance
+"""connectors revamp: execution descriptor + per-auth-config operation scoping
 
-Revision ID: 0004_op_authcfg_multi
-Revises: 0003_op_execution
-Create Date: 2026-07-05 00:00:01.000000
+Adds the polymorphic ``execution`` descriptor column and per-instance operation
+scoping (``auth_config_id`` + partial unique indexes) to ``connector_operations``,
+and relaxes the single-instance auth-config constraint so multi-instance kinds
+(sql/mcp/openapi) can have many auth-configs per (org, connector).
+
+Revision ID: 0003_connectors_kinds
+Revises: 0002_surfaces_rework
+Create Date: 2026-07-05 12:00:00.000000
 
 """
 
@@ -15,8 +20,8 @@ from sqlalchemy.dialects import postgresql
 __all__ = ["downgrade", "upgrade", "schema_upgrades", "schema_downgrades", "data_upgrades", "data_downgrades"]
 
 # revision identifiers, used by Alembic.
-revision = "0004_op_authcfg_multi"
-down_revision = "0003_op_execution"
+revision = "0003_connectors_kinds"
+down_revision = "0002_surfaces_rework"
 branch_labels = None
 depends_on = None
 
@@ -39,7 +44,12 @@ def downgrade() -> None:
 
 def schema_upgrades() -> None:
     """schema upgrade migrations go here."""
-    # Per-instance operation scoping.
+    # Polymorphic execution descriptor (kind: http/sql/mcp) for package-free ops.
+    op.add_column(
+        "connector_operations",
+        sa.Column("execution", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    )
+    # Per-instance operation scoping (discovered MCP tools / OpenAPI-URL ops).
     op.add_column(
         "connector_operations",
         sa.Column("auth_config_id", postgresql.UUID(as_uuid=True), nullable=True),
@@ -52,7 +62,7 @@ def schema_upgrades() -> None:
         ["id"],
         ondelete="CASCADE",
     )
-    # Replace the plain unique index with two partial ones (catalog vs per-auth-config).
+    # Replace the baseline unique index with two partial ones (catalog vs per-auth-config).
     op.drop_index("ix_connector_operations_app_provider_name", table_name="connector_operations")
     op.create_index(
         "uq_connector_operations_catalog_name",
@@ -73,8 +83,7 @@ def schema_upgrades() -> None:
         "connector_operations",
         ["auth_config_id"],
     )
-
-    # Relax multi-instance: multiple auth-configs per (org, connector) are allowed;
+    # Relax multi-instance: many auth-configs per (org, connector) are allowed;
     # single-instance is enforced in the service layer by capability flag.
     op.drop_index("ix_auth_configs_unique_active_org_app", table_name="auth_configs")
 
@@ -103,6 +112,7 @@ def schema_downgrades() -> None:
         type_="foreignkey",
     )
     op.drop_column("connector_operations", "auth_config_id")
+    op.drop_column("connector_operations", "execution")
 
 
 def data_upgrades() -> None:

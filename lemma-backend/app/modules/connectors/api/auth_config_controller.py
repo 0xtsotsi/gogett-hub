@@ -150,3 +150,23 @@ async def delete_auth_config(
         auth_config_name=auth_config_name,
     )
     return {"success": True}
+
+
+@router.post(
+    "/{auth_config_name}/operations/refresh",
+    response_model=AuthConfigResponseSchema,
+    operation_id="connector.auth_config.refresh_operations",
+)
+async def refresh_auth_config_operations(
+    user: CurrentUser,
+    organization_id: UUID,
+    auth_config_name: str,
+    connector_service: ConnectorServiceDep,
+) -> AuthConfigResponseSchema:
+    """Re-discover operations for a discovery-based auth-config (MCP / OpenAPI-URL)."""
+    auth_config = await connector_service.refresh_auth_config_operations(
+        user_id=user.id,
+        organization_id=organization_id,
+        auth_config_name=auth_config_name,
+    )
+    return _response_from_entity(auth_config)

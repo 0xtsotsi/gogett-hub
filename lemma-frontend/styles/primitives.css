@@ -622,22 +622,13 @@
    assistant docks (narrow surface), 2 then 3 columns as room opens up. Driven
    by the surface container, not the viewport, so a docked assistant gives
    stacked full-width cards instead of a crushed grid. */
+/* Launcher grid: many small, square-ish tiles. auto-fill (not auto-fit) keeps
+   tiles compact even when there are only one or two apps, instead of stretching
+   a lone tile across the whole row. */
 .apps-grid {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-@container pod-surface (min-width: 720px) {
-  .apps-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@container pod-surface (min-width: 1100px) {
-  .apps-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
 }
 
 .docs-list-toolbar {
@@ -1543,5 +1534,14 @@
 /* ────────────────────────────────────────────
    UTILITY LAYER
    ──────────────────────────────────────────── */
+
+  /* Hide scrollbar chrome while keeping the element scrollable — used by
+     horizontally scrolling strips like the pod app tabs. */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 
 }

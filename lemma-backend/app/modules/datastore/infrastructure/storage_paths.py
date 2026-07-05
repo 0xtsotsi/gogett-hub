@@ -56,6 +56,12 @@ _CHILD_PAGES_DIR = "pages"
 CHILD_MARKDOWN_ARTIFACT = "document.md"
 # Name of the manifest artifact inside a child container.
 CHILD_MANIFEST_ARTIFACT = "manifest.json"
+# Name of the user-provided ("bring your own") markdown source inside a child
+# container. Unlike document.md (derived), this is user-authored source data: the
+# processor chunks/indexes it on behalf of the original document when present.
+# delete_child_artifacts wipes the whole container on every reprocess, so the
+# processor re-persists this on each projection write (it holds the bytes).
+CHILD_USER_MARKDOWN_ARTIFACT = "source.md"
 
 
 def build_datastore_child_container_prefix(
@@ -91,6 +97,16 @@ def build_datastore_child_markdown_key(
     path: str,
 ) -> str:
     return build_datastore_child_artifact_key(pod_id, path, CHILD_MARKDOWN_ARTIFACT)
+
+
+def build_datastore_child_user_markdown_key(
+    pod_id: UUID,
+    path: str,
+) -> str:
+    """Storage key for a file's user-provided markdown source (``source.md``)."""
+    return build_datastore_child_artifact_key(
+        pod_id, path, CHILD_USER_MARKDOWN_ARTIFACT
+    )
 
 
 def child_page_artifact_name(page_number: int) -> str:

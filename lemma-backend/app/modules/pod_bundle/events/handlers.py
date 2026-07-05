@@ -105,6 +105,8 @@ async def export_pod_bundle(context: dict[str, str | None]) -> None:
                     pod_id=pod_id,
                     user_id=user_id,
                     with_data=state.with_data,
+                    data_tables=state.data_tables,
+                    with_files=state.with_files,
                     include=state.include,
                     ctx=ctx,
                     uow=uow,
@@ -369,11 +371,12 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
     if state.status == ImportStatus.COMPLETED:
         return
 
+    from app.modules.pod_bundle.infrastructure.app_builder import AppStepRunner
     from app.modules.pod_bundle.infrastructure.applier import (
         BundleApplier,
         StepNotApplicableError,
     )
-    from app.modules.pod_bundle.domain.state import StepStatus
+    from app.modules.pod_bundle.domain.state import StepKind, StepStatus
 
     try:
         state.status = ImportStatus.APPLYING
@@ -384,7 +387,18 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
         if archive is None:
             raise BundleStagingMissingError()
 
-        replacements = dict(state.variables_provided or {})
+        # Resolve ${var} placeholders from the plan's defaults first, then the
+        # importer-provided values (which win). Required variables are validated at
+        # apply-request time, so anything still unresolved here is an optional var
+        # with no default and is dropped by the service layer.
+        replacements = {
+            v.name: v.default for v in state.plan.variables if v.default is not None
+        }
+        replacements.update(state.variables_provided or {})
+
+        # APP steps build in the agentbox and must not hold a pooled DB connection,
+        # so they run through a self-scoped runner instead of the per-step uow_scope.
+        app_runner = AppStepRunner(uow_factory=worker_ctx.uow_factory)
 
         with tempfile.TemporaryDirectory(prefix="lemma-pod-apply-") as tmp:
             from lemma_pod_bundle import extract_bundle
@@ -401,28 +415,41 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
             while (step := state.plan.next_pending_step()) is not None:
                 step.status = StepStatus.RUNNING
                 try:
-                    async with uow_scope(worker_ctx.uow_factory) as uow:
-                        ctx = await AuthorizationDataService(
-                            uow.session
-                        ).build_user_context(user_id=user_id, pod_id=pod_id)
-                        async with context_scope(ctx):
-                            applier = BundleApplier(
-                                uow=uow,
-                                ctx=ctx,
-                                pod_id=pod_id,
-                                user_id=user_id,
-                                bundle_root=bundle_root,
-                                replacements=replacements,
-                            )
-                            await applier.apply_step(step)
-                            # Commit the step before checkpointing it DONE: the
-                            # bare UoW rolls back on error but does NOT auto-commit
-                            # on success, so uncommitted writes (e.g. a workflow a
-                            # later schedule step must resolve) would otherwise be
-                            # lost — and a DONE checkpoint on lost data would break
-                            # crash-resume. Idempotent when the service already
-                            # committed internally.
-                            await uow.commit()
+                    if step.kind is StepKind.APP:
+                        # Self-scoped: creates the app, builds it in the agentbox
+                        # (no connection held), then deploys — managing its own short
+                        # UoWs. Idempotent-by-name + dist sha256 dedup, so a replay
+                        # after a crash converges.
+                        await app_runner.run(
+                            step,
+                            pod_id=pod_id,
+                            user_id=user_id,
+                            bundle_root=bundle_root,
+                            replacements=replacements,
+                        )
+                    else:
+                        async with uow_scope(worker_ctx.uow_factory) as uow:
+                            ctx = await AuthorizationDataService(
+                                uow.session
+                            ).build_user_context(user_id=user_id, pod_id=pod_id)
+                            async with context_scope(ctx):
+                                applier = BundleApplier(
+                                    uow=uow,
+                                    ctx=ctx,
+                                    pod_id=pod_id,
+                                    user_id=user_id,
+                                    bundle_root=bundle_root,
+                                    replacements=replacements,
+                                )
+                                await applier.apply_step(step)
+                                # Commit the step before checkpointing it DONE: the
+                                # bare UoW rolls back on error but does NOT auto-commit
+                                # on success, so uncommitted writes (e.g. a workflow a
+                                # later schedule step must resolve) would otherwise be
+                                # lost — and a DONE checkpoint on lost data would break
+                                # crash-resume. Idempotent when the service already
+                                # committed internally.
+                                await uow.commit()
                     step.status = StepStatus.DONE
                 except StepNotApplicableError as exc:
                     # Deferred kind (app/surface/grants) — skip, don't fail.
@@ -496,7 +523,10 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
     if state is None or state.status == PublishStatus.COMPLETED:
         return
 
-    from app.modules.pod_bundle.infrastructure.ai_readme import polish_readme
+    from app.modules.pod_bundle.infrastructure.ai_readme import (
+        build_system_polish_fn,
+        polish_readme,
+    )
     from app.modules.pod_bundle.infrastructure.exporter import BundleExporter
     from app.modules.pod_bundle.infrastructure.github_publisher import (
         ComposioGithubOps,
@@ -513,15 +543,20 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
         async def _noop_progress(done: int, total: int) -> None:
             return None
 
+        organization_id = None
         async with uow_scope(worker_ctx.uow_factory) as uow:
             ctx = await AuthorizationDataService(uow.session).build_user_context(
                 user_id=user_id, pod_id=pod_id
             )
+            organization_id = ctx.organization_id
             async with context_scope(ctx):
+                # Resources only: a pod published to (possibly public) GitHub ships
+                # a template that recreates the pod in an empty-table state, never a
+                # dump of its row data.
                 pod_name, zip_bytes, _warnings = await BundleExporter().export(
                     pod_id=pod_id,
                     user_id=user_id,
-                    with_data=True,
+                    with_data=False,
                     include=None,
                     ctx=ctx,
                     uow=uow,
@@ -530,17 +565,8 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
 
         files = _zip_to_files(zip_bytes)
         counts = _resource_counts(files)
-        owner_guess = state.repo_name  # refined from the created repo below
-        readme = render_readme(
-            pod_name=pod_name.removesuffix(".zip"),
-            description=None,
-            resource_counts=counts,
-            owner=owner_guess,
-            repo=state.repo_name,
-        )
-        if state.ai_readme:
-            readme = await polish_readme(readme, polish_fn=None)
-        state.readme = readme
+        pod_meta = _pod_meta_from_files(files)
+        repo_description = pod_meta.get("description")
 
         # (2) PUBLISHING — create the repo + push files via Composio (no DB held
         # across the HTTP calls beyond each short per-operation scope).
@@ -572,6 +598,36 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
 
         publisher = GithubPublisher(ComposioGithubOps(_run_op))
 
+        # Create the repo first so the README's install button carries the real
+        # GitHub owner (not the repo name), then render + optionally AI-polish the
+        # README and push everything.
+        repo = await publisher.create_repo(
+            repo_name=state.repo_name,
+            private=state.private,
+            description=repo_description,
+        )
+        state.repo_url = repo.html_url
+        state.repo_created = True
+        await store.save_publish(state)
+
+        readme = render_readme(
+            pod_name=pod_meta.get("name") or pod_name.removesuffix(".zip"),
+            description=repo_description,
+            resource_counts=counts,
+            owner=repo.owner,
+            repo=repo.repo,
+            icon_url=pod_meta.get("icon_url"),
+        )
+        if state.ai_readme:
+            polish_fn = build_system_polish_fn(
+                user_id=user_id,
+                organization_id=organization_id,
+                pod_id=pod_id,
+            )
+            readme = await polish_readme(readme, polish_fn=polish_fn)
+        state.readme = readme
+        await store.save_publish(state)
+
         async def _on_file(path: str, done: int, total: int) -> None:
             state.progress.done = done
             state.progress.total = total
@@ -583,10 +639,11 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
         repo = await publisher.publish(
             repo_name=state.repo_name,
             private=state.private,
-            description=None,
+            description=repo_description,
             files=files,
             readme=readme,
             on_progress=_on_file,
+            already_created=repo,
         )
 
         state.status = PublishStatus.COMPLETED
@@ -634,6 +691,27 @@ def _zip_to_files(zip_bytes: bytes) -> dict[str, bytes]:
                 continue
             files[name] = zf.read(info)
     return files
+
+
+def _pod_meta_from_files(files: dict[str, bytes]) -> dict[str, str | None]:
+    """Read the pod's name/description/icon_url from the bundle's ``pod.json`` so
+    the README uses the real pod identity (not the export filename)."""
+    import json
+
+    raw = files.get("pod.json")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - a malformed manifest just yields no meta
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "name": data.get("name"),
+        "description": data.get("description"),
+        "icon_url": data.get("icon_url"),
+    }
 
 
 def _resource_counts(files: dict[str, bytes]) -> dict[str, int]:

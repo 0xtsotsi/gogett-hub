@@ -1,5 +1,6 @@
 from datetime import date
 from sqlalchemy import Boolean, Date, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.infrastructure.db.base import UUIDAuditBase
 from app.modules.identity.domain.user_entities import UserEntity
@@ -23,6 +24,8 @@ class User(UUIDAuditBase):
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
     timezone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Typed UserPreferences blob (per-user surface defaults, etc.); nullable.
+    preferences: Mapped[dict | None] = mapped_column(JSONB, default=None, nullable=True)
 
     def to_entity(self) -> UserEntity:
         return UserEntity.model_validate(self)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import NamedTuple
 from uuid import UUID
 
 
@@ -26,6 +27,7 @@ from app.modules.agent.domain.entities import (
 from app.modules.agent.domain.errors import (
     AgentNotFoundError,
     ConversationNotFoundError,
+    UnknownApprovalError,
 )
 from app.modules.agent.domain.events import (
     AGENT_EVENTS_STREAM,
@@ -67,6 +69,20 @@ _POD_ASSISTANT_AGENT_ID = DEFAULT_POD_AGENT_ID
 # as a card by the client) and are resolved via the approvals endpoint, which
 # synthesizes their tool return and resumes the run.
 _PAUSING_TOOL_NAMES = ("ask_user", "request_approval")
+
+
+class ApprovalResolution(NamedTuple):
+    """Outcome of resolving an approval.
+
+    ``status`` is ``"resolved"`` when this call recorded the decision, or
+    ``"reconciled"`` when the decision already existed and this call only
+    finished (or re-finished) the resume — the self-heal path. ``decision`` is
+    the authoritative (stored) decision, which may differ from what a late
+    caller submitted.
+    """
+
+    status: str
+    decision: AgentRunApprovalDecision
 
 
 # When set, starting a new agent run does NOT publish the AgentRunStartedEvent
@@ -439,7 +455,7 @@ class ConversationService:
         decision: AgentRunApprovalDecision,
         response: dict[str, object] | None = None,
         agent_name: str | None = None,
-    ) -> None:
+    ) -> ApprovalResolution:
         """Record the user's decision and resume the paused agent run.
 
         ``ask_user`` / ``request_approval`` end their run when called (conversation
@@ -460,7 +476,7 @@ class ConversationService:
             agent_name=agent_name,
             action=Permissions.AGENT_EXECUTE,
         )
-        await self.resolve_user_approval_internal(
+        return await self.resolve_user_approval_internal(
             conversation=conversation,
             approval_id=approval_id,
             user_id=user_id,
@@ -480,81 +496,171 @@ class ConversationService:
         decision: AgentRunApprovalDecision,
         response: dict[str, object] | None = None,
         agent_name: str | None = None,
-    ) -> None:
+    ) -> ApprovalResolution:
         """Resume a paused run for an already-authorized + loaded conversation.
 
-        Carries the safety-critical core of :meth:`resolve_user_approval` (the
-        unique decision-record lock, the synthesized tool return, the
-        all-siblings-resolved resume gate). Callers MUST have authorized the
-        resolver against this conversation first. The caller's current auth
-        context must be the conversation owner's, since an approved
-        ``request_approval`` runs the wrapped tool with that authority.
+        Idempotent and self-healing. Classifies the approval three ways:
+          * neither a paused call nor a recorded decision exists -> it is unknown
+            (``UnknownApprovalError`` -> 404);
+          * no decision yet -> record it (the unique (conversation, approval) row
+            is the double-submit lock), then reconcile;
+          * a decision already exists -> adopt it and reconcile (the retry /
+            self-heal path) instead of erroring.
+
+        The reconcile step is safe to call repeatedly: the approved tool runs at
+        most once (guarded by an existing tool return) and the resume run starts
+        at most once. Callers MUST have authorized the resolver against this
+        conversation first. The caller's current auth context must be the
+        conversation owner's, since an approved ``request_approval`` runs the
+        wrapped tool with that authority.
         """
-        pending = await self._pending_user_approval_from_messages(
+        decision_row = await self.conversation_repository.get_approval_decision(
             conversation_id=conversation.id,
             approval_id=approval_id,
         )
-        if pending is None:
-            raise RuntimeError("Approval is not pending or no longer live")
-        kind = str(pending["kind"])
-        tool_args = pending["tool_args"] if isinstance(pending["tool_args"], dict) else {}
-
-        # Record the decision first so the unique (conversation, approval) row locks
-        # out a concurrent double-submit before any side-effecting tool runs.
-        decision_tool_name = (
-            "ask_user"
-            if kind == "ask_user"
-            else str(tool_args.get("tool_name") or "request_approval")
-        )
-        recorded = await self.conversation_repository.record_approval_decision(
+        paused = await self._paused_call_from_messages(
             conversation_id=conversation.id,
             approval_id=approval_id,
-            agent_run_id=pending["agent_run_id"],
-            tool_name=decision_tool_name,
-            decision=decision,
-            response=response or {},
-            resolved_by_user_id=user_id,
         )
-        if not recorded:
-            raise RuntimeError("Approval already resolved")
-        await self.uow.commit()
+        if decision_row is None and paused is None:
+            # Nothing to resolve and nothing to heal — the approval never existed
+            # or its call was never persisted.
+            raise UnknownApprovalError()
 
-        # Synthesize the tool return the resumed run will replay, and persist it under
-        # the *paused* run (the one that made the call). For an approved
-        # request_approval this runs the wrapped tool as the user. History is
-        # reconstructed per conversation, so _build_tool_batch pairs this return with
-        # its call regardless of which run each lives in.
-        paused_run_id = pending["agent_run_id"]
-        return_tool_name, tool_result = await self._build_resume_tool_return(
+        if paused is None:
+            # Unreachable in practice: the pausing tool call message is never
+            # deleted, so a recorded decision always has its call. Guard anyway —
+            # we cannot faithfully rebuild a resume without the original call.
+            raise UnknownApprovalError()
+        kind = str(paused["kind"])
+        tool_args = paused["tool_args"] if isinstance(paused["tool_args"], dict) else {}
+        paused_run_id = paused["agent_run_id"]
+
+        if decision_row is None:
+            # Fresh resolve: record the decision. The unique (conversation,
+            # approval) row locks out a concurrent double-submit before any
+            # side-effecting tool runs.
+            decision_tool_name = (
+                "ask_user"
+                if kind == "ask_user"
+                else str(tool_args.get("tool_name") or "request_approval")
+            )
+            recorded = await self.conversation_repository.record_approval_decision(
+                conversation_id=conversation.id,
+                approval_id=approval_id,
+                agent_run_id=paused_run_id,
+                tool_name=decision_tool_name,
+                decision=decision,
+                response=response or {},
+                resolved_by_user_id=user_id,
+            )
+            await self.uow.commit()
+            if recorded:
+                effective_decision, effective_response, status = (
+                    decision,
+                    response or {},
+                    "resolved",
+                )
+            else:
+                # A concurrent resolve won the race; adopt its stored decision and
+                # reconcile (idempotent) rather than raising "already resolved".
+                stored = await self.conversation_repository.get_approval_decision(
+                    conversation_id=conversation.id,
+                    approval_id=approval_id,
+                )
+                effective_decision, effective_response = (
+                    stored if stored is not None else (decision, response or {})
+                )
+                status = "reconciled"
+        else:
+            # Decision already recorded (retry / self-heal). Do NOT re-record or
+            # re-run the tool; adopt the stored decision and finish whatever the
+            # prior attempt left undone.
+            effective_decision, effective_response = decision_row
+            status = "reconciled"
+
+        await self._reconcile_approval_resume(
             conversation=conversation,
-            user_id=user_id,
+            approval_id=approval_id,
+            paused_run_id=paused_run_id,
             kind=kind,
             tool_args=tool_args,
-            decision=decision,
-            response=response or {},
-            paused_agent_run_id=paused_run_id,
+            decision=effective_decision,
+            response=effective_response,
+            user_id=user_id,
+            pod_id=pod_id,
+            agent_name=agent_name,
         )
-        saved_return = await self.conversation_repository.append_message(
+        return ApprovalResolution(status=status, decision=effective_decision)
+
+    async def _reconcile_approval_resume(
+        self,
+        *,
+        conversation: Conversation,
+        approval_id: str,
+        paused_run_id: UUID,
+        kind: str,
+        tool_args: dict[str, object],
+        decision: AgentRunApprovalDecision,
+        response: dict[str, object],
+        user_id: UUID,
+        pod_id: UUID,
+        agent_name: str | None,
+    ) -> None:
+        """Finish (or re-finish) an approval's resume; safe to call repeatedly.
+
+        Two idempotent halves:
+          1. Synthesize + persist the paused call's tool return exactly once. If a
+             return already exists the approved tool has already run, so we skip
+             the rebuild entirely — re-executing it (e.g. re-deploying an app, or
+             re-recording session grants) would be a correctness bug.
+          2. Start the resume run only once every pausing call in the paused run is
+             resolved and no run is already active. The conversation lock
+             serializes this so two near-simultaneous resolves don't each start a
+             run.
+
+        A resolve that died mid-flight (decision committed, return not appended,
+        or run not started) self-heals when this runs again on the user's retry.
+        """
+        existing_return = await self.conversation_repository.get_tool_return(
             conversation_id=conversation.id,
-            agent_run_id=paused_run_id,
-            draft=MessageDraft.of_tool_return(
-                tool_call_id=approval_id,
-                tool_name=return_tool_name,
-                tool_result=tool_result,
-            ),
+            tool_call_id=approval_id,
         )
-        await self.uow.commit()
-        await publish_conversation_event(
-            conversation.id,
-            message_payload(paused_run_id, message_to_payload(saved_return)),
-        )
+        if existing_return is None:
+            # Synthesize the tool return the resumed run will replay, and persist it
+            # under the *paused* run (the one that made the call). For an approved
+            # request_approval this runs the wrapped tool as the user. History is
+            # reconstructed per conversation, so _build_tool_batch pairs this return
+            # with its call regardless of which run each lives in.
+            return_tool_name, tool_result = await self._build_resume_tool_return(
+                conversation=conversation,
+                user_id=user_id,
+                kind=kind,
+                tool_args=tool_args,
+                decision=decision,
+                response=response,
+                paused_agent_run_id=paused_run_id,
+            )
+            saved_return = await self.conversation_repository.append_message(
+                conversation_id=conversation.id,
+                agent_run_id=paused_run_id,
+                draft=MessageDraft.of_tool_return(
+                    tool_call_id=approval_id,
+                    tool_name=return_tool_name,
+                    tool_result=tool_result,
+                ),
+            )
+            await self.uow.commit()
+            await publish_conversation_event(
+                conversation.id,
+                message_payload(paused_run_id, message_to_payload(saved_return)),
+            )
 
         # A turn can pause with several pending interactions (e.g. request_approval +
         # ask_user in one assistant turn). Resume only once every pausing tool call in
         # the paused run is resolved — otherwise the unresolved sibling would be
         # orphaned (no return) and dropped from the resumed run's history, making the
-        # agent re-ask it. The conversation lock serializes the resume decision so two
-        # near-simultaneous resolves don't each start a run.
+        # agent re-ask it.
         await self.conversation_repository.lock_conversation(conversation.id)
         remaining = await self._unresolved_pausing_call_ids(
             conversation_id=conversation.id,
@@ -838,39 +944,52 @@ class ConversationService:
             pod_cwd=resolve_pod_cwd(conversation),
         )
 
+    async def _paused_call_from_messages(
+        self,
+        *,
+        conversation_id: UUID,
+        approval_id: str,
+    ) -> dict[str, object] | None:
+        """The pausing tool call for an approval, regardless of decision state.
+
+        Addressed directly by ``tool_call_id`` (not a message-window scan) so a
+        long conversation can't hide the original call during resume
+        reconciliation. Returns ``{agent_run_id, kind, tool_args}`` or ``None``.
+        """
+        message = await self.conversation_repository.get_tool_call(
+            conversation_id=conversation_id,
+            tool_call_id=approval_id,
+        )
+        if (
+            message is None
+            or message.tool_name not in _PAUSING_TOOL_NAMES
+            or message.agent_run_id is None
+        ):
+            return None
+        tool_args = message.tool_args if isinstance(message.tool_args, dict) else {}
+        return {
+            "agent_run_id": message.agent_run_id,
+            "kind": message.tool_name,
+            "tool_args": tool_args,
+        }
+
     async def _pending_user_approval_from_messages(
         self,
         *,
         conversation_id: UUID,
         approval_id: str,
     ) -> dict[str, object] | None:
+        """The paused call only if it has NOT been resolved yet (else ``None``)."""
         already_resolved = await self.conversation_repository.get_approval_decision(
             conversation_id=conversation_id,
             approval_id=approval_id,
         )
         if already_resolved is not None:
             return None
-        messages, _ = await self.conversation_repository.list_messages(
+        return await self._paused_call_from_messages(
             conversation_id=conversation_id,
-            limit=500,
+            approval_id=approval_id,
         )
-        for message in messages:
-            if (
-                message.kind != MessageKind.TOOL_CALL
-                or message.tool_name not in _PAUSING_TOOL_NAMES
-                or message.tool_call_id != approval_id
-                or message.agent_run_id is None
-            ):
-                continue
-            tool_args = (
-                message.tool_args if isinstance(message.tool_args, dict) else {}
-            )
-            return {
-                "agent_run_id": message.agent_run_id,
-                "kind": message.tool_name,
-                "tool_args": tool_args,
-            }
-        return None
 
     async def get_pending_ask_user(
         self,

@@ -126,6 +126,13 @@ function formatTimeValue(value: string): string {
     return trimmed;
 }
 
+const CRON_DAY_NAMES: Record<string, string> = {
+    '0': 'Sundays', '7': 'Sundays', '1': 'Mondays', '2': 'Tuesdays',
+    '3': 'Wednesdays', '4': 'Thursdays', '5': 'Fridays', '6': 'Saturdays',
+    SUN: 'Sundays', MON: 'Mondays', TUE: 'Tuesdays', WED: 'Wednesdays',
+    THU: 'Thursdays', FRI: 'Fridays', SAT: 'Saturdays',
+};
+
 export function describeCron(cron: string): string {
     const parts = cron.trim().split(/\s+/);
     if (parts.length < 5) return cron;
@@ -140,7 +147,12 @@ export function describeCron(cron: string): string {
     if (hour.startsWith('*/') && minute === '0') return `Every ${hour.slice(2)} hours`;
     if (hour === '*' && minute.startsWith('*/')) return `Every ${minute.slice(2)} min`;
     if (dayOfWeek === '1-5' && timeStr) return `Weekdays at ${timeStr}`;
+    if (dayOfWeek === '0,6' && timeStr) return `Weekends at ${timeStr}`;
     if (dayOfWeek === '*' && dayOfMonth === '*' && timeStr) return `Daily at ${timeStr}`;
+    if (dayOfMonth === '*' && timeStr) {
+        const dayName = CRON_DAY_NAMES[dayOfWeek.toUpperCase()];
+        if (dayName) return `${dayName} at ${timeStr}`;
+    }
     if (dayOfMonth === '1' && timeStr) return `1st of each month at ${timeStr}`;
 
     return cron;

@@ -24,8 +24,33 @@ class ExportStartRequest(BaseModel):
     """Body for starting a pod export."""
 
     with_data: bool = Field(
-        default=True,
-        description="Include table row data (data.csv per table) in the bundle.",
+        default=False,
+        description=(
+            "Opt-in: include row data for EVERY table (data.csv per table) as "
+            "seed/default data. Off by default — an export carries only pod "
+            "resources, which recreate the pod in an empty-table state. Prefer "
+            "`data_tables` to seed only specific setup tables; enable this only to "
+            "seed the whole pod. Row data is capped (per-table + total) regardless."
+        ),
+    )
+    data_tables: list[str] | None = Field(
+        default=None,
+        description=(
+            "Opt-in per-table seed selection: include row data only for these named "
+            "tables (the common case — ship a few setup/config tables' rows). "
+            "Ignored for names that aren't real tables (a warning is surfaced). "
+            "Combined with `with_data` as a union; omit both for a resources-only "
+            "export."
+        ),
+    )
+    with_files: bool = Field(
+        default=False,
+        description=(
+            "Opt-in: include the pod's POD-visible file storage (folders + file "
+            "bytes) in the bundle. Off by default. File bytes share a conservative "
+            "size budget with table row data (meant for small skill/script/seed "
+            "files, not a bulk file dump)."
+        ),
     )
     include: list[str] | None = Field(
         default=None,
@@ -109,6 +134,14 @@ class VariableSpecResponse(BaseModel):
     description: str | None = None
     required: bool = False
     default: str | None = None
+    platform: str | None = Field(
+        default=None,
+        description=(
+            "For a connector account variable, the platform the account must "
+            "belong to (e.g. 'slack'), so the importer can connect the right "
+            "connector. Null for non-connector variables."
+        ),
+    )
 
 
 class ImportPlanResponse(BaseModel):
@@ -144,6 +177,7 @@ class ImportPlanResponse(BaseModel):
                     description=v.description,
                     required=v.required,
                     default=v.default,
+                    platform=v.platform,
                 )
                 for v in plan.variables
             ],

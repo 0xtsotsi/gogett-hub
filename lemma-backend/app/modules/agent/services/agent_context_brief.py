@@ -224,7 +224,12 @@ class AgentContextBriefBuilder:
             repo = AgentContextBriefRepository(uow)
             rows = await repo.get_agent_grants(pod_id=pod_id, agent_id=agent.id)
             if not rows:
-                return ["\n## Granted Resources\n- (none)"]
+                return [
+                    "\n## Granted Resources",
+                    "- (none) — you have no resource grants yet. If a tool returns "
+                    "a permission error (403), call request_approval so the user "
+                    "can grant access or run it for you.",
+                ]
 
             refs: list[tuple[ResourceType, UUID]] = []
             perms_by_ref: dict[tuple[str, UUID], set[str]] = {}
@@ -266,7 +271,13 @@ class AgentContextBriefBuilder:
                 finally:
                     reset_current_context(token)
 
-        lines = ["\n## Granted Resources"]
+        lines = [
+            "\n## Granted Resources",
+            "These are pre-authorized for you — read, query, and act on them "
+            "directly without asking for approval. Only call request_approval if a "
+            "tool returns a permission error (403), or for an explicitly "
+            "destructive action.",
+        ]
         for (resource_type, resource_id), perms in list(perms_by_ref.items())[
             :_MAX_RESOURCES
         ]:

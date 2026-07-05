@@ -90,21 +90,8 @@ async def test_outlook_reply_email_uses_composio_operation(monkeypatch):
     assert "Done" in calls[0]["payload"]["comment"]
 
 
-async def test_outlook_reply_email_composio_notes_dropped_attachments(monkeypatch):
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        outlook_service, "execute_composio_operation", _capture_executor(calls, None)
-    )
-
-    async def fake_read_file(self, path: str):
-        return "body"
-
-    monkeypatch.setattr(WorkspaceFileManager, "read_file", fake_read_file)
-
-    tool = build_outlook_surface_toolset(credentials=dict(_COMPOSIO_CREDS)).tools[
-        "outlook_reply_email"
-    ]
-    ctx = SimpleNamespace(
+def _outlook_ctx():
+    return SimpleNamespace(
         deps=ConversationContext(
             user_id=uuid4(),
             pod_id=uuid4(),
@@ -121,6 +108,57 @@ async def test_outlook_reply_email_composio_notes_dropped_attachments(monkeypatc
             ),
         )
     )
+
+
+async def test_outlook_reply_email_composio_attaches_datastore_url(monkeypatch):
+    """A datastore attachment is delivered to Composio as a signed URL in the
+    `attachment` field (the SDK downloads + attaches it)."""
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        outlook_service, "execute_composio_operation", _capture_executor(calls, None)
+    )
+
+    async def fake_urls(deps, paths):
+        return [("report.pdf", "https://signed.example/report.pdf")], []
+
+    monkeypatch.setattr(
+        outlook_service, "resolve_outbound_email_attachment_urls", fake_urls
+    )
+
+    tool = build_outlook_surface_toolset(credentials=dict(_COMPOSIO_CREDS)).tools[
+        "outlook_reply_email"
+    ]
+    request = SimpleNamespace(
+        content="hi",
+        content_type="markdown",
+        attachment_paths=["/me/report.pdf"],
+        subject=None,
+    )
+
+    response = await tool.function(_outlook_ctx(), request)
+
+    assert response.success is True
+    assert response.attachment_count == 1
+    assert calls[0]["operation_name"] == "OUTLOOK_REPLY_EMAIL"
+    assert calls[0]["payload"]["attachment"] == "https://signed.example/report.pdf"
+
+
+async def test_outlook_reply_email_composio_notes_unattachable_workspace_file(monkeypatch):
+    """A workspace file can't be signed into a URL, so it's noted in the body and
+    the reply still sends (no silent drop, no hard failure)."""
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        outlook_service, "execute_composio_operation", _capture_executor(calls, None)
+    )
+
+    async def fake_read_file(self, path: str):
+        return "body"
+
+    monkeypatch.setattr(WorkspaceFileManager, "read_file", fake_read_file)
+
+    tool = build_outlook_surface_toolset(credentials=dict(_COMPOSIO_CREDS)).tools[
+        "outlook_reply_email"
+    ]
     request = SimpleNamespace(
         content="hi",
         content_type="markdown",
@@ -128,12 +166,62 @@ async def test_outlook_reply_email_composio_notes_dropped_attachments(monkeypatc
         subject=None,
     )
 
-    response = await tool.function(ctx, request)
+    response = await tool.function(_outlook_ctx(), request)
 
     assert response.success is True
     assert response.attachment_count == 0
-    assert "not yet supported" in response.message
-    assert calls[0]["operation_name"] == "OUTLOOK_REPLY_EMAIL"
+    assert "attachment" not in calls[0]["payload"]
+    assert "Could not attach: a.txt" in calls[0]["payload"]["comment"]
+
+
+async def test_gmail_reply_email_composio_attaches_datastore_url(monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        gmail_service,
+        "execute_composio_operation",
+        _capture_executor(calls, {"id": "gmail-sent-1"}),
+    )
+
+    async def fake_urls(deps, paths):
+        return [("report.pdf", "https://signed.example/report.pdf")], []
+
+    monkeypatch.setattr(
+        gmail_service, "resolve_outbound_email_attachment_urls", fake_urls
+    )
+
+    tool = build_gmail_surface_toolset(credentials=dict(_COMPOSIO_CREDS)).tools[
+        "gmail_reply_email"
+    ]
+    ctx = SimpleNamespace(
+        deps=ConversationContext(
+            user_id=uuid4(),
+            pod_id=uuid4(),
+            conversation_id=uuid4(),
+            surface_platform="GMAIL",
+            external_channel_id="assistant@gmail.test",
+            external_thread_id="gmail-thread-1",
+            surface_metadata=GmailSurfaceEventMetadata(
+                mailbox_email="assistant@gmail.test",
+                subject="Need review",
+                thread_id="gmail-thread-1",
+                message_id="gmail-message-1",
+                reply_to_email="rahul@example.com",
+            ),
+        )
+    )
+    request = SimpleNamespace(
+        content="## Done",
+        content_type="markdown",
+        attachment_paths=["/me/report.pdf"],
+        subject=None,
+    )
+
+    response = await tool.function(ctx, request)
+
+    assert response.success is True
+    assert response.attachment_count == 1
+    assert calls[0]["operation_name"] == "GMAIL_REPLY_TO_THREAD"
+    assert calls[0]["payload"]["attachment"] == "https://signed.example/report.pdf"
 
 
 async def test_gmail_reply_email_uses_composio_operation(monkeypatch):

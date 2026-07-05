@@ -42,9 +42,9 @@ def _write_config(tmp_path: Path) -> Path:
     config_file.write_text(
         json.dumps(
             {
-                "active_server": "default",
+                "active_server": "lemma-cloud",
                 "servers": {
-                    "default": {
+                    "lemma-cloud": {
                         "base_url": "http://localhost:8711",
                         "defaults": {"org_id": "org-1", "pod_id": "pod-1"},
                     }
@@ -385,9 +385,9 @@ async def test_server_picker_switches_server(tmp_path):
     config_file.write_text(
         json.dumps(
             {
-                "active_server": "default",
+                "active_server": "lemma-cloud",
                 "servers": {
-                    "default": {"defaults": {"org_id": "org-1", "pod_id": "pod-1"}},
+                    "lemma-cloud": {"defaults": {"org_id": "org-1", "pod_id": "pod-1"}},
                     "local": {
                         "base_url": "http://localhost:8711",
                         "defaults": {"org_id": "org-2", "pod_id": "pod-2"},

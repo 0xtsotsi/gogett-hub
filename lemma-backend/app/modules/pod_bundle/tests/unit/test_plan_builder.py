@@ -105,6 +105,30 @@ async def test_create_vs_update_classification(tmp):
     assert [s.index for s in plan.steps] == list(range(len(plan.steps)))
 
 
+async def test_files_produce_folder_then_file_steps(tmp):
+    root = _build_bundle(tmp)
+    # files/docs/.folder.json (folder) + files/docs/guide.md (file) + manifest.
+    _write(root / "files" / "docs" / ".folder.json", {"visibility": "POD"})
+    (root / "files" / "docs" / "guide.md").write_text("hi", encoding="utf-8")
+    _write(root / "files" / ".files.json", {"files": [{"path": "/docs/guide.md"}]})
+
+    plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
+
+    file_steps = [s for s in plan.steps if s.kind == StepKind.FILE]
+    # Folder first (so it exists before the file), then the file — manifest and
+    # .folder.json are layout metadata, not steps.
+    assert [(s.name, s.detail.get("is_folder")) for s in file_steps] == [
+        ("docs", True),
+        ("docs/guide.md", False),
+    ]
+
+
+async def test_no_files_dir_yields_no_file_steps(tmp):
+    root = _build_bundle(tmp)
+    plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
+    assert not [s for s in plan.steps if s.kind == StepKind.FILE]
+
+
 async def test_destructive_column_drop_flagged(tmp):
     root = _build_bundle(tmp)
     # Bundle table has fewer columns than the pod's live table -> a drop.
@@ -153,18 +177,30 @@ async def test_variables_classified(tmp):
     root = _build_bundle(
         tmp,
         variables={
-            "acct": {"type": "account", "source_value": "x"},
+            "acct": {"type": "account", "source_value": "x", "platform": "slack"},
             "owner": {"type": "member", "source_value": "y"},
             "region": {"type": "string", "source_value": "z"},
+            "app_slug": {"type": "app_slug", "source_value": "s", "default": "s"},
         },
     )
     plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
     by_name = {v.name: v for v in plan.variables}
+    # Connector accounts must be supplied by the importer -> required, and carry
+    # the platform so the UI can prompt for the right connector.
     assert by_name["acct"].kind == "account"
-    assert by_name["acct"].required is False
+    assert by_name["acct"].required is True
+    assert by_name["acct"].platform == "slack"
+    # A variable with no platform context leaves it None.
+    assert by_name["region"].platform is None
+    # Pod members auto-resolve to the importing user -> not required.
     assert by_name["owner"].kind == "pod_member"
+    assert by_name["owner"].required is False
+    # A free var with no default is required; the app slug has a default, so not.
     assert by_name["region"].kind == "free"
     assert by_name["region"].required is True
+    assert by_name["app_slug"].kind == "free"
+    assert by_name["app_slug"].required is False
+    assert by_name["app_slug"].default == "s"
 
 
 async def test_agent_grants_step_deferred_after_resources(tmp):

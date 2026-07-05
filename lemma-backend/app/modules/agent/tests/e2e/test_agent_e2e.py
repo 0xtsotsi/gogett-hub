@@ -808,12 +808,17 @@ class TestPodAgentLifecycle:
         )
         assert approvals_after.json()["items"] == []
 
+        # Re-deciding an already-resolved call self-heals idempotently: it
+        # reconciles (no new run, no re-execution) and reports the stored decision
+        # instead of erroring with a conflict.
         duplicate = await authenticated_client.post(
             f"/pods/{pod_id}/conversations/{conversation_id}"
             f"/approvals/{approval_id}/decision",
             json={"decision": "DENY", "response": {}},
         )
-        assert duplicate.status_code == status.HTTP_409_CONFLICT
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["status"] == "reconciled"
+        assert duplicate.json()["decision"] == "APPROVE_ONCE"
 
     async def test_request_approval_denial_resumes_without_executing(
         self,
@@ -859,12 +864,116 @@ class TestPodAgentLifecycle:
         )
         assert approvals_after.json()["items"] == []
 
+        # A retry after a resolved denial reconciles idempotently (stored DENY),
+        # never re-running the wrapped tool.
         duplicate = await authenticated_client.post(
             f"/pods/{pod_id}/conversations/{conversation_id}"
             f"/approvals/{approval_id}/decision",
             json={"decision": "APPROVE_ONCE", "response": {}},
         )
-        assert duplicate.status_code == status.HTTP_409_CONFLICT
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["status"] == "reconciled"
+        assert duplicate.json()["decision"] == "DENY"
+
+    async def test_resolution_self_heals_after_recorded_but_unfinished_resume(
+        self,
+        authenticated_client,
+        fixed_test_org,
+        fixed_test_user,
+    ):
+        """Regression for the stuck approval loop.
+
+        Reproduces the exact wedge: a decision was committed but its resume died
+        before appending the synthesized return or starting the resume run (no
+        TTL, no reaper). The next resolve must SELF-HEAL — finish the resume and
+        report ``reconciled`` — instead of raising "Approval is not pending or no
+        longer live" forever.
+        """
+        pod_id, conversation_id, _agent, paused_run, approval_id = (
+            await _seed_paused_interaction(
+                authenticated_client,
+                fixed_test_org,
+                tool_name="ask_user",
+                tool_args={
+                    "questions": [
+                        {
+                            "question": "Which auth method?",
+                            "header": "Auth",
+                            "options": [{"label": "OAuth"}, {"label": "API key"}],
+                        }
+                    ]
+                },
+            )
+        )
+
+        # Simulate the wedge: decision committed, resume never finished.
+        async with create_uow_from_session_maker(async_session_maker) as uow:
+            recorded = await ConversationRepository(uow).record_approval_decision(
+                conversation_id=conversation_id,
+                approval_id=approval_id,
+                agent_run_id=paused_run.id,
+                tool_name="ask_user",
+                decision=AgentRunApprovalDecision.APPROVE_ONCE,
+                response={"answers": {"Auth": "OAuth"}},
+                resolved_by_user_id=UUID(fixed_test_user["id"]),
+            )
+            assert recorded is True
+            await uow.commit()
+
+        # Precondition: genuinely stuck — no synthesized return, no resume run.
+        resume_run, tool_return = await _resume_run_and_tool_return(
+            conversation_id, paused_run.id, approval_id
+        )
+        assert resume_run is None
+        assert tool_return is None
+
+        # The user clicks approve again -> self-heals (no 409/RuntimeError).
+        healed = await authenticated_client.post(
+            f"/pods/{pod_id}/conversations/{conversation_id}"
+            f"/approvals/{approval_id}/decision",
+            json={"decision": "APPROVE_ONCE", "response": {"answers": {"Auth": "OAuth"}}},
+        )
+        assert healed.status_code == 200, healed.text
+        assert healed.json()["status"] == "reconciled"
+
+        resume_run, tool_return = await _resume_run_and_tool_return(
+            conversation_id, paused_run.id, approval_id
+        )
+        assert resume_run is not None
+        assert resume_run.status == AgentRunStatus.RUNNING
+        assert tool_return is not None
+        # The stored decision/answers drive the synthesized return, not the (empty)
+        # ones a late caller might resend.
+        assert tool_return.tool_result["answers"] == {"Auth": "OAuth"}
+
+    async def test_unknown_approval_id_returns_404(
+        self,
+        authenticated_client,
+        fixed_test_org,
+    ):
+        """An approval id with no paused call and no decision is a 404, not a 409."""
+        pod_id, conversation_id, _agent, _paused_run, _approval_id = (
+            await _seed_paused_interaction(
+                authenticated_client,
+                fixed_test_org,
+                tool_name="ask_user",
+                tool_args={
+                    "questions": [
+                        {
+                            "question": "Which auth method?",
+                            "header": "Auth",
+                            "options": [{"label": "OAuth"}, {"label": "API key"}],
+                        }
+                    ]
+                },
+            )
+        )
+        missing = await authenticated_client.post(
+            f"/pods/{pod_id}/conversations/{conversation_id}"
+            f"/approvals/does-not-exist/decision",
+            json={"decision": "APPROVE_ONCE", "response": {}},
+        )
+        assert missing.status_code == status.HTTP_404_NOT_FOUND, missing.text
 
     async def test_request_approval_approval_runs_tool_as_user_on_resume(
         self,
@@ -874,12 +983,13 @@ class TestPodAgentLifecycle:
     ):
         """An approved request_approval runs the wrapped tool as the user during
         resume and feeds its result back as the synthesized tool return."""
-        captured: dict[str, object] = {}
+        captured: dict[str, object] = {"calls": 0}
 
         async def fake_execute_as_user(
             self, *, conversation, user_id, agent_run_id, tool_name, args
         ):  # noqa: ANN001 - test stub matching the service signature
             del self, conversation, user_id, agent_run_id
+            captured["calls"] = int(captured["calls"]) + 1
             captured["tool_name"] = tool_name
             captured["args"] = args
             return {"ok": True, "value": {"stdout": "deleted", "success": True}}
@@ -921,6 +1031,18 @@ class TestPodAgentLifecycle:
         assert tool_return.tool_result["result"] == {"stdout": "deleted", "success": True}
         assert captured["tool_name"] == "exec_command"
         assert captured["args"] == {"cmd": "lemma records delete orders --id 42"}
+        assert captured["calls"] == 1
+
+        # Re-execution guard: a duplicate resolve reconciles idempotently and must
+        # NOT run the (destructive) wrapped tool a second time.
+        duplicate = await authenticated_client.post(
+            f"/pods/{pod_id}/conversations/{conversation_id}"
+            f"/approvals/{approval_id}/decision",
+            json={"decision": "APPROVE_ONCE", "response": {}},
+        )
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["status"] == "reconciled"
+        assert captured["calls"] == 1
 
     async def test_multiple_pending_interactions_resume_only_after_all_resolved(
         self,

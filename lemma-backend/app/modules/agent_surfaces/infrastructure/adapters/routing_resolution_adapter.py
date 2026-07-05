@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.modules.agent_surfaces.domain.ports import SurfacePodMembershipPort
+from app.modules.identity.domain.user_preferences import UserPreferences
 from app.modules.identity.infrastructure.models.user_models import User
 from app.modules.identity.infrastructure.models.organization_models import (
     OrganizationMember,
@@ -31,3 +32,16 @@ class SqlAlchemySurfaceRoutingResolutionAdapter(SurfacePodMembershipPort):
     async def get_user_email(self, user_id: UUID) -> str | None:
         stmt = select(User.email).where(User.id == user_id)
         return await self.session.scalar(stmt)
+
+    async def get_user_default_surface_id(
+        self, user_id: UUID, platform: str
+    ) -> UUID | None:
+        raw = await self.session.scalar(
+            select(User.preferences).where(User.id == user_id)
+        )
+        if not raw:
+            return None
+        try:
+            return UserPreferences.model_validate(raw).default_surface_for(platform)
+        except Exception:
+            return None

@@ -511,6 +511,19 @@ function sortMessagesByCreatedAt(messages: AssistantApiConversationMessage[]): A
   });
 }
 
+/** True when a synthesized tool return exists for this approval — i.e. the
+ *  server recorded + resumed it, so the card is resolved even if the HTTP
+ *  response the client saw failed. */
+function approvalResultPresent(
+  items: AssistantApiConversationMessage[] | null,
+  approvalId: string,
+): boolean {
+  if (!items) return false;
+  return items.some(
+    (msg) => msg.kind === "TOOL_RETURN" && msg.tool_call_id === approvalId,
+  );
+}
+
 function isConversationRunning(status: unknown): boolean {
   if (typeof status !== "string") return false;
   const normalized = status.trim().toLowerCase();
@@ -641,7 +654,7 @@ export function useAssistantController({
   const lastAutoLoadedConversationIdRef = useRef<string | null>(null);
   const loadingConversationIdRef = useRef<string | null>(null);
   const skipInitialLoadConversationIdsRef = useRef<Set<string>>(new Set());
-  const loadConversationMessagesRef = useRef<((conversationId: string) => Promise<void>) | null>(null);
+  const loadConversationMessagesRef = useRef<((conversationId: string) => Promise<AssistantApiConversationMessage[] | null>) | null>(null);
   const resumeIfRunningRef = useRef<((conversationId?: string | null) => Promise<boolean>) | null>(null);
 
   const scope = useMemo<AssistantConversationScope>(() => ({
@@ -841,7 +854,9 @@ export function useAssistantController({
     }
   }, [client, scope.organizationId]);
 
-  const loadConversationMessages = useCallback(async (conversationId: string) => {
+  const loadConversationMessages = useCallback(async (
+    conversationId: string,
+  ): Promise<AssistantApiConversationMessage[] | null> => {
     setIsLoadingMessages(true);
     try {
       const response = await sessionLoadMessages({
@@ -849,14 +864,16 @@ export function useAssistantController({
         limit: 100,
       });
       if (activeConversationIdRef.current !== conversationId) {
-        return;
+        return null;
       }
       const sorted = sortMessagesByCreatedAt((response.items || []) as AssistantApiConversationMessage[]);
       replaceLoadedMessages(sorted);
       setOlderMessagesCursor(response.next_page_token ?? null);
+      return sorted;
     } catch (err) {
       setLocalError((prev) => prev || (err instanceof Error ? err.message : "Failed to load messages"));
       setOlderMessagesCursor(null);
+      return null;
     } finally {
       setIsLoadingMessages(false);
     }
@@ -1361,6 +1378,15 @@ export function useAssistantController({
         setLocalError((prev) => prev || (error instanceof Error ? error.message : "Failed to resume conversation"));
       });
     } catch (err) {
+      // The resolve may have partially completed on the server (decision recorded,
+      // tool return appended) before the response failed. Reload and only surface
+      // the error if the approval is still genuinely pending — otherwise the card
+      // self-clears and the user can keep chatting instead of retrying a dead card.
+      const items = await loadConversationMessages(conversationId);
+      if (approvalResultPresent(items, approvalId)) {
+        void sessionResumeIfRunning(conversationId).catch(() => {});
+        return;
+      }
       setLocalError(err instanceof Error ? err.message : "Failed to resolve approval");
       throw err;
     }

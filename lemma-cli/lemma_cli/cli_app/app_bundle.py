@@ -10,6 +10,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from lemma_sdk.openapi_client.models.create_app_request import CreateAppRequest
 
+from ..cli_core.dotenv import read_env_file
+
 _REQUIRED_ENV_VARS = (
     "VITE_LEMMA_API_URL",
     "VITE_LEMMA_AUTH_URL",
@@ -17,37 +19,12 @@ _REQUIRED_ENV_VARS = (
 )
 
 
-def _strip_env_quotes(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        value = value[1:-1]
-    return value.replace(r"\"", '"').replace(r"\\", "\\")
-
-
-def _read_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if key.startswith("export "):
-            key = key.removeprefix("export ").strip()
-        if not key:
-            continue
-        values[key] = _strip_env_quotes(value)
-    return values
-
-
 def resolve_app_project_env(
     source_dir: Path,
 ) -> dict[str, str]:
     merged: dict[str, str] = {}
     for filename in (".env", ".env.local", ".env.production", ".env.production.local"):
-        merged.update(_read_env_file(source_dir / filename))
+        merged.update(read_env_file(source_dir / filename))
     merged.update(os.environ)
     return merged
 

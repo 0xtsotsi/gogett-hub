@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { DestructiveConfirmationDialog } from '@/components/shared/destructive-confirmation-dialog';
 import { QuietEmptyState } from '@/components/shared/empty-state';
+import { DatastoreTableSkeleton } from '@/components/data/datastore-table-skeleton';
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -338,11 +339,7 @@ export function DatastoreTableView({
     };
 
     if (tableLoading) {
-        return (
-            <div className="surface-card flex h-64 items-center justify-center">
-                <div className="text-[var(--text-secondary)]">Loading table...</div>
-            </div>
-        );
+        return <DatastoreTableSkeleton />;
     }
 
     if (!table) {

@@ -292,10 +292,12 @@ class TestDatastoreRecords:
         self,
         pod_api: DatastoreApi,
     ):
-        """Creating a record in the reserved reserved_users system table is a 403."""
+        """Writing to any ``reserved_*`` name is a 403. The controller's
+        mutability guard fires on the name prefix before any table lookup, so this
+        holds for reserved tables generically — no such table need exist."""
         reserved_write = await pod_api.request(
             "POST",
-            f"/pods/{pod_api.pod_id}/datastore/tables/reserved_users/records",
+            f"/pods/{pod_api.pod_id}/datastore/tables/reserved_anything/records",
             json={"data": {"email": "blocked@example.com"}},
         )
         assert reserved_write.status_code == status.HTTP_403_FORBIDDEN

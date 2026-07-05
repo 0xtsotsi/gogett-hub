@@ -66,11 +66,12 @@ class BundleApplier:
             StepKind.AGENT_GRANTS: self._apply_agent_grants,
             StepKind.SCHEDULE: self._apply_schedule,
             StepKind.WORKFLOW: self._apply_workflow,
+            StepKind.SURFACE: self._apply_surface,
+            StepKind.FILE: self._apply_file,
         }.get(step.kind)
         if handler is None:
-            # app / surface are deferred: the connector/runtime dependencies they
-            # need are out of scope for this slice. Mark the step
-            # skipped-with-reason instead of failing the import.
+            # APP is applied by the self-scoped AppStepRunner (it builds in the
+            # agentbox with no pooled connection held), so it never reaches here.
             raise StepNotApplicableError(
                 f"{step.kind.value} import is not supported yet; skipped."
             )
@@ -154,6 +155,51 @@ class BundleApplier:
         # key instead of raising on duplicates.
         await record_service.bulk_create_records(
             table_context, rows, self._user_id, upsert=True
+        )
+
+    # --- files -----------------------------------------------------------
+
+    async def _apply_file(self, step: PlanStep) -> None:
+        """Create a bundled folder or file. Idempotent: an existing path is left
+        as-is (create-once by path), so a replayed step converges. Folders are
+        planned parent-first, so the parent exists by the time a child runs."""
+        from app.modules.datastore.api.dependencies import build_file_service
+
+        parts = [p for p in str(step.name or "").split("/") if p]
+        if not parts:
+            return
+        pod_path = "/" + "/".join(parts)
+        files_root = self._root / "files"
+        service = build_file_service(self._uow)
+
+        if await _file_exists(service, self._pod_id, pod_path, self._ctx):
+            return
+
+        if step.detail.get("is_folder"):
+            meta = _read_json_file(files_root.joinpath(*parts) / ".folder.json")
+            await service.create_folder(
+                self._pod_id,
+                pod_path,
+                self._ctx,
+                description=meta.get("description"),
+                visibility=meta.get("visibility") or "POD",
+            )
+            return
+
+        source = files_root.joinpath(*parts)
+        if not source.is_file():
+            return
+        meta = _file_manifest_entry(files_root, pod_path)
+        directory_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+        await service.create_file(
+            self._pod_id,
+            parts[-1],
+            source.read_bytes(),
+            self._ctx,
+            description=meta.get("description"),
+            directory_path=directory_path,
+            search_enabled=bool(meta.get("search_enabled", True)),
+            visibility=meta.get("visibility") or "POD",
         )
 
     # --- functions -------------------------------------------------------
@@ -362,6 +408,132 @@ class BundleApplier:
             ctx=self._ctx,
         )
 
+    # --- surfaces (connectors) -------------------------------------------
+
+    async def _apply_surface(self, step: PlanStep) -> None:
+        """Create or update a pod surface, binding the connector ``account_id``
+        resolved from the required ``${..._account}`` variable. A pod may have
+        several surfaces per platform, each addressed by a stable pod-unique
+        ``name`` (defaults to the lowercased platform), so import is an idempotent
+        upsert keyed by that name — mirroring the surface create/update
+        controllers (reusing their config helpers) so an imported connector
+        behaves exactly like a hand-configured one."""
+        from app.modules.agent.api.dependencies import get_agent_service
+        from app.modules.agent_surfaces.api.controllers.surface_controller import (
+            _merge_surface_config,
+            _resolve_surface_config,
+        )
+        from app.modules.agent_surfaces.api.dependencies import get_surface_service
+        from app.modules.agent_surfaces.api.schemas import SurfaceCreateRequest
+        from app.modules.agent_surfaces.domain.entities import (
+            AgentSurfaceEntity,
+            SurfacePlatform,
+        )
+        from app.modules.agent_surfaces.domain.errors import AgentSurfaceNotFoundError
+
+        payload = self._load("surfaces", step.name)
+        platform_raw = str(payload.get("platform") or step.name)
+        try:
+            platform = SurfacePlatform(platform_raw.upper())
+        except ValueError as exc:
+            raise PodBundleDomainError(
+                f"Unsupported surface platform '{platform_raw}'.",
+                code="POD_BUNDLE_SURFACE_PLATFORM",
+            ) from exc
+
+        # The surface's pod-unique name (defaults to the lowercased platform);
+        # the upsert is keyed by it so several surfaces of the same platform
+        # round-trip.
+        resolved_name = (
+            str(payload.get("name") or "").strip()
+            or AgentSurfaceEntity.default_name_for(platform)
+        )
+
+        # Only the create-request fields (extra='forbid'); drop export-only keys.
+        # account_id has already been substituted from the provided account
+        # variable by self._load.
+        request = SurfaceCreateRequest.model_validate(
+            {
+                "platform": platform.value,
+                "name": resolved_name,
+                **{
+                    key: value
+                    for key, value in payload.items()
+                    if key
+                    in {
+                        "default_agent_name",
+                        "account_id",
+                        "credential_mode",
+                        "config",
+                        "is_enabled",
+                    }
+                },
+            }
+        )
+
+        agent_service = get_agent_service(self._uow)
+        service = get_surface_service(self._uow)
+
+        agent = (
+            await _get_agent(agent_service, self._pod_id, request.default_agent_name, self._ctx)
+            if request.default_agent_name
+            else None
+        )
+
+        try:
+            existing = await service.get_surface_by_name_in_pod(
+                pod_id=self._pod_id, name=resolved_name
+            )
+        except AgentSurfaceNotFoundError:
+            existing = None
+
+        if existing is None:
+            config = await _resolve_surface_config(
+                pod_id=self._pod_id,
+                config_input=request.config,
+                agent_service=agent_service,
+                ctx=self._ctx,
+            )
+            surface = await service.create_surface(
+                pod_id=self._pod_id,
+                agent_id=agent.id if agent else None,
+                platform=platform,
+                name=resolved_name,
+                config=config,
+                credential_mode=request.credential_mode,
+                account_id=request.account_id,
+                ctx=self._ctx,
+            )
+            if not request.is_enabled:
+                await service.update_surface(
+                    surface_id=surface.id, is_active=False, ctx=self._ctx
+                )
+            return
+
+        config = await _merge_surface_config(
+            existing=existing.config,
+            pod_id=self._pod_id,
+            config_input=request.config,
+            agent_service=agent_service,
+            ctx=self._ctx,
+        )
+        await service.update_surface(
+            surface_id=existing.id,
+            agent_id=agent.id if agent else None,
+            update_agent_id="default_agent_name" in request.model_fields_set,
+            config=config,
+            credential_mode=(
+                request.credential_mode
+                if "credential_mode" in request.model_fields_set
+                else None
+            ),
+            account_id=request.account_id,
+            is_active=(
+                request.is_enabled if "is_enabled" in request.model_fields_set else None
+            ),
+            ctx=self._ctx,
+        )
+
 
 # --- module helpers ----------------------------------------------------------
 
@@ -444,6 +616,36 @@ def _agent_toolsets(payload: dict[str, Any]) -> list[Any]:
             continue
         toolsets.append(toolset)
     return toolsets
+
+
+async def _file_exists(service, pod_id, path, ctx) -> bool:
+    # get_file_by_path raises when the path is absent; treat that as "create".
+    try:
+        return await service.get_file_by_path(pod_id, path, ctx) is not None
+    except Exception:
+        return False
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    import json
+
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _file_manifest_entry(files_root: Path, pod_path: str) -> dict[str, Any]:
+    """The ``.files.json`` entry for a file path (description/visibility/
+    search_enabled), or an empty dict when there is no manifest/entry."""
+    from lemma_pod_bundle.layout import FILES_MANIFEST
+
+    manifest = _read_json_file(files_root / FILES_MANIFEST)
+    for entry in manifest.get("files") or []:
+        if isinstance(entry, dict) and str(entry.get("path") or "") == pod_path:
+            return entry
+    return {}
 
 
 async def _get_table(service, pod_id, name, ctx):

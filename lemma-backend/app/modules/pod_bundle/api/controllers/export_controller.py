@@ -52,6 +52,8 @@ async def start_export(
         pod_id=pod_id,
         user_id=user.id,
         with_data=data.with_data,
+        data_tables=data.data_tables,
+        with_files=data.with_files,
         include=data.include,
         ttl_seconds=data.ttl_seconds,
     )

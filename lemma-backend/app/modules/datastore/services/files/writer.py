@@ -9,6 +9,7 @@ from app.core.log.log import get_logger
 from app.modules.datastore.domain.errors import (
     DatastoreFileNotFoundError,
     DatastoreInfrastructureError,
+    DatastoreObjectNotFoundError,
     DatastoreValidationError,
 )
 from app.modules.datastore.domain.file_entities import (
@@ -17,12 +18,17 @@ from app.modules.datastore.domain.file_entities import (
     FileKind,
     FileStatus,
 )
-from app.modules.datastore.domain.indexing_policy import is_indexable_mime_type
+from app.modules.datastore.domain.indexing_policy import (
+    is_indexable_mime_type,
+    normalize_mime_type,
+)
 from app.modules.datastore.domain.ports import (
     DatastoreSearchFactoryPort,
     DatastoreStoragePort,
 )
 from app.modules.datastore.infrastructure.storage_paths import (
+    build_datastore_child_artifact_key,
+    build_datastore_child_user_markdown_key,
     build_datastore_folder_storage_prefix,
 )
 from app.modules.datastore.services.files.authorizer import FileAuthorizer
@@ -38,6 +44,37 @@ from app.modules.datastore.services.files.storage_phase import (
 from app.modules.datastore.services.system_skill_files import SystemSkillFileProvider
 
 logger = get_logger(__name__)
+
+
+# Base mime types that ARE already markdown/plaintext — attaching a separate
+# markdown version to these is meaningless (the file is its own markdown).
+_ALREADY_TEXT_MIME_TYPES = frozenset(
+    {"text/markdown", "text/x-markdown", "text/plain"}
+)
+# Metadata keys + value flagging a file whose agent-facing markdown is user
+# provided (mirror file_processing_service._USER_MARKDOWN_SOURCE / asset key).
+_MARKDOWN_SOURCE_KEY = "markdown_source"
+_USER_MARKDOWN_SOURCE = "user"
+_MARKDOWN_ASSET_NAMES_KEY = "markdown_asset_names"
+
+
+def _safe_asset_name(filename: str) -> str:
+    """Reduce an uploaded image filename to a safe basename (no path/traversal)."""
+    base = (filename or "").replace("\\", "/").split("/")[-1].strip()
+    if not base or base in (".", ".."):
+        raise DatastoreValidationError(f"Invalid image filename: {filename!r}")
+    return base
+
+
+def _supports_user_markdown(file_entity: DatastoreFileEntity) -> bool:
+    """A user markdown version can be attached to an indexable document that is
+    not itself markdown/plaintext (i.e. a PDF, Word/ODT, HTML, RTF, EPUB, …)."""
+    if not file_entity.is_file:
+        return False
+    if not is_indexable_mime_type(file_entity.mime_type, file_entity.name):
+        return False
+    base = normalize_mime_type(file_entity.mime_type, file_entity.name)
+    return base not in _ALREADY_TEXT_MIME_TYPES
 
 
 class FileWriter:
@@ -156,6 +193,112 @@ class FileWriter:
 
         if self.paths._should_sync_projections(True, file_entity):
             file_entity.mark_created(requester_user_id)
+        return await self.file_repository.update(file_entity)
+
+    async def attach_user_markdown(
+        self,
+        pod_id: UUID,
+        path: str,
+        markdown_content: bytes,
+        requester_user_id: UUID,
+        images: list[tuple[str, bytes]] | None = None,
+        ctx: Context | None = None,
+    ) -> DatastoreFileEntity:
+        """Attach (or replace) a user-provided markdown version of a document,
+        plus any images the markdown references.
+
+        The markdown is stored as the document's ``source.md`` child artifact and
+        each image as a sibling child artifact (keyed by basename), so a markdown
+        reference like ``![](fig1.png)`` resolves through the same children
+        endpoint as extracted figures. The file is flagged ``markdown_source=user``
+        + re-queued, so the reprocess chunks/indexes the user's markdown (not an
+        extraction) and serves it — with resolvable images — as ``document.md``."""
+        file_entity = await self.reader.get_file_by_path(
+            pod_id, path, requester_user_id, ctx=ctx
+        )
+        await self.authorizer.require_file_write_permission(
+            file_entity=file_entity,
+            requester_user_id=requester_user_id,
+            message="Only pod editors and admins can attach markdown to shared pod files",
+            ctx=ctx,
+        )
+        if not _supports_user_markdown(file_entity):
+            raise DatastoreValidationError(
+                "Markdown can only be attached to an indexable, non-markdown "
+                "document (e.g. a PDF, Word/ODT, HTML, RTF, or EPUB file)."
+            )
+        if not markdown_content or not markdown_content.strip():
+            raise DatastoreValidationError("Markdown content cannot be empty")
+
+        await self.storage.upload_file(
+            build_datastore_child_user_markdown_key(pod_id, file_entity.path),
+            markdown_content,
+        )
+        asset_names: list[str] = []
+        for filename, content in images or []:
+            name = _safe_asset_name(filename)
+            await self.storage.upload_file(
+                build_datastore_child_artifact_key(pod_id, file_entity.path, name),
+                content,
+            )
+            if name not in asset_names:
+                asset_names.append(name)
+
+        metadata = dict(file_entity.metadata or {})
+        metadata[_MARKDOWN_SOURCE_KEY] = _USER_MARKDOWN_SOURCE
+        if asset_names:
+            metadata[_MARKDOWN_ASSET_NAMES_KEY] = asset_names
+        else:
+            metadata.pop(_MARKDOWN_ASSET_NAMES_KEY, None)
+        file_entity.update_metadata(metadata)
+        # Re-queue for processing so chunks are rebuilt from the user's markdown.
+        file_entity.mark_content_updated(requester_user_id)
+        return await self.file_repository.update(file_entity)
+
+    async def detach_user_markdown(
+        self,
+        pod_id: UUID,
+        path: str,
+        requester_user_id: UUID,
+        ctx: Context | None = None,
+    ) -> DatastoreFileEntity:
+        """Remove a document's user-provided markdown and fall back to extraction.
+
+        Deletes the stored ``source.md``, clears the flag, and re-queues so the
+        reprocess re-extracts via the configured document processor. Idempotent:
+        a no-op when no user markdown was attached."""
+        file_entity = await self.reader.get_file_by_path(
+            pod_id, path, requester_user_id, ctx=ctx
+        )
+        await self.authorizer.require_file_write_permission(
+            file_entity=file_entity,
+            requester_user_id=requester_user_id,
+            message="Only pod editors and admins can detach markdown from shared pod files",
+            ctx=ctx,
+        )
+        try:
+            await self.storage.delete_file(
+                build_datastore_child_user_markdown_key(pod_id, file_entity.path)
+            )
+        except DatastoreObjectNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete user markdown for %s: %s",
+                file_entity.path,
+                exc,
+                exc_info=True,
+            )
+
+        metadata = dict(file_entity.metadata or {})
+        had_flag = metadata.pop(_MARKDOWN_SOURCE_KEY, None) is not None
+        metadata.pop(_MARKDOWN_ASSET_NAMES_KEY, None)
+        if not had_flag:
+            return file_entity  # nothing attached → no reprocess needed
+        file_entity.update_metadata(metadata)
+        # Re-extract via the configured processor; its projection write wipes the
+        # container (source.md + companion images) and rebuilds document.md.
+        file_entity.mark_content_updated(requester_user_id)
         return await self.file_repository.update(file_entity)
 
     async def create_folder(
@@ -350,6 +493,17 @@ class FileWriter:
             file_entity.update_description(update_entity.description)
         if update_entity.metadata is not None:
             file_entity.update_metadata(update_entity.metadata)
+        # Replacing the original bytes drops any bring-your-own markdown: the
+        # user's markdown would now be stale vs the new content, so we clear the
+        # flags and let the reprocess re-extract via the fast path (the stale
+        # source.md + companion images are wiped by delete_child_artifacts during
+        # that reprocess).
+        if update_entity.content is not None and file_entity.metadata:
+            cleared = dict(file_entity.metadata)
+            had_source = cleared.pop(_MARKDOWN_SOURCE_KEY, None) is not None
+            had_assets = cleared.pop(_MARKDOWN_ASSET_NAMES_KEY, None) is not None
+            if had_source or had_assets:
+                file_entity.update_metadata(cleared)
         if update_entity.search_enabled is not None:
             file_entity.set_search_enabled(update_entity.search_enabled)
         if update_entity.visibility is not None:

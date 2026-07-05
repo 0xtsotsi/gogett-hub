@@ -32,14 +32,7 @@ from ..context import (
     selected_org,
     selected_pod,
 )
-from ..servers import (
-    DEFAULT_CLOUD_SERVER_NAME,
-    DEFAULT_LOCAL_AUTH_URL,
-    DEFAULT_LOCAL_BASE_URL,
-    upsert_cloud_server,
-    upsert_server,
-    upsert_local_server,
-)
+from ..servers import upsert_server
 from ..confirm import confirm_destructive
 from ..io import emit
 from ..io import list_items
@@ -227,6 +220,7 @@ def show(ctx: typer.Context) -> None:
                 "LEMMA_TOKEN": mask_token(os.getenv("LEMMA_TOKEN")),
                 "LEMMA_SERVER": os.getenv("LEMMA_SERVER"),
             },
+            "project_env": state.project_env,
             "auth": {"email": auth.get("email"), "user_id": auth.get("user_id")}
             if auth
             else None,
@@ -299,8 +293,10 @@ def set_server_config(
 def server_root(ctx: typer.Context) -> None:
     """List configured servers when run without a subcommand.
 
-    Bare `lemma servers` is read-only (it shows your servers); use `lemma servers
-    select` to switch the active one and `lemma servers add/set` to manage them.
+    `lemma-cloud` ships as the default; the lemma-stack installer adds `local`. Bare
+    `lemma servers` is read-only (it shows your servers); use `lemma servers select`
+    to switch the active one, `lemma servers create <name> --base-url … --auth-url …`
+    to add another, and `lemma servers set` to edit one.
     """
     if ctx.invoked_subcommand is None:
         list_servers(ctx)
@@ -464,72 +460,6 @@ def create_server(
     )
 
 
-@server_app.command("local")
-def local_server(
-    ctx: typer.Context,
-    use: bool = typer.Option(False, "--use", help="Switch to the local server."),
-    base_url: str = typer.Option(
-        DEFAULT_LOCAL_BASE_URL,
-        "--base-url",
-        help="Local backend API URL.",
-    ),
-    auth_url: str = typer.Option(
-        DEFAULT_LOCAL_AUTH_URL,
-        "--auth-url",
-        help="Local frontend/auth URL.",
-    ),
-) -> None:
-    """Add or update the local Lemma server."""
-    state = state_from_ctx(ctx)
-    emit(
-        state,
-        {
-            "server": upsert_local_server(
-                state,
-                make_active=use,
-                base_url=base_url,
-                auth_url=auth_url,
-            )
-        },
-    )
-
-
-@server_app.command("cloud")
-def cloud_server(
-    ctx: typer.Context,
-    use: bool = typer.Option(False, "--use", help="Switch to the cloud server."),
-    name: str = typer.Option(
-        DEFAULT_CLOUD_SERVER_NAME,
-        "--name",
-        help="Server name for the Lemma cloud server.",
-    ),
-    base_url: str = typer.Option(
-        resolve_base_url(None, {}, use_env=False),
-        "--base-url",
-        help="Cloud backend API URL.",
-    ),
-    auth_url: str = typer.Option(
-        resolve_auth_url(None, {}, use_env=False),
-        "--auth-url",
-        help="Cloud frontend/auth URL.",
-    ),
-) -> None:
-    """Add or update the Lemma cloud server."""
-    state = state_from_ctx(ctx)
-    emit(
-        state,
-        {
-            "server": upsert_cloud_server(
-                state,
-                name=name,
-                make_active=use,
-                base_url=base_url,
-                auth_url=auth_url,
-            )
-        },
-    )
-
-
 @server_app.command("select")
 def select_server(
     ctx: typer.Context,
@@ -569,7 +499,7 @@ def delete_server(
     if server_name == ENV_SERVER_NAME:
         fail("The env server is not stored and cannot be deleted.")
     if server_name == DEFAULT_SERVER_NAME:
-        fail("The default server cannot be deleted.")
+        fail(f"The {DEFAULT_SERVER_NAME} server cannot be deleted.")
     servers = root.get("servers") or {}
     if server_name not in servers:
         fail(f"Server not found: {server_name}")

@@ -11,15 +11,17 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.mark.asyncio
-async def test_kreuzberg_extracts_markdown_for_pdf(e2e_settings):
+async def test_kreuzberg_extracts_markdown_for_pdf(e2e_settings, kreuzberg_wired):
     """Kreuzberg extracts markdown text and chunks from a real arXiv PDF.
 
-    Uses the shared session-scoped Kreuzberg container via ``e2e_settings``
-    (which already points ``datastore_settings.kreuzberg_url`` at it). An earlier version
-    started its OWN second container and overwrote the shared
-    ``datastore_settings.kreuzberg_url`` without restoring it — once this test's container
-    was torn down, every later indexing test in the module pointed at a dead URL
-    and failed with ConnectionRefused. Reusing the session container keeps the
+    Depends on ``kreuzberg_wired``, which starts the shared session-scoped
+    Kreuzberg container and points ``datastore_settings.kreuzberg_url`` at it.
+    That fixture (rather than the session-wide ``e2e_settings``) is what pulls
+    Kreuzberg in, so it only starts for the tests that actually extract a
+    document. An earlier version started its OWN second container and overwrote
+    the shared URL without restoring it — once this test's container was torn
+    down, every later indexing test in the module pointed at a dead URL and
+    failed with ConnectionRefused. Reusing the shared container keeps the
     setting intact for the rest of the suite.
     """
     fixture_path = (

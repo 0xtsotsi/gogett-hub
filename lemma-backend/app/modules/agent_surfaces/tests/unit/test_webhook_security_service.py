@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import time
 import pytest
 from uuid import uuid4
 
@@ -12,6 +16,7 @@ from app.modules.agent_surfaces.domain.entities import (
 )
 from app.modules.agent_surfaces.services.webhook_security_service import (
     SurfaceWebhookSecurityService,
+    SurfaceWebhookAuthenticationError,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -36,6 +41,7 @@ async def test_verify_surface_request_uses_surface_telegram_secret(monkeypatch):
     surface = AgentSurfaceEntity(
         id=uuid4(),
         pod_id=uuid4(),
+        name="telegram",
         surface_type=SurfacePlatform.TELEGRAM,
         config=SurfaceConfig(type="TELEGRAM"),
         webhook_secret="surface-secret",
@@ -55,3 +61,86 @@ async def test_surface_webhook_auth_exclusion_matches_only_uuid_webhook_paths():
     assert _is_surface_webhook_path(f"/surfaces/{surface_id}/webhook/extra") is False
     assert _is_surface_webhook_path("/surfaces/not-a-uuid/webhook") is False
     assert _is_surface_webhook_path(f"/pods/{surface_id}/surfaces") is False
+
+
+# ── Resend (Svix) inbound signature verification ──────────────────────────────
+
+_RESEND_SECRET = "whsec_" + base64.b64encode(b"resend-inbound-secret-key").decode()
+
+
+def _svix_headers(raw_body: bytes, secret: str, *, timestamp: int | None = None) -> dict[str, str]:
+    """Build a valid Svix signature header set for ``raw_body``."""
+    svix_id = "msg_2b3c4d"
+    ts = str(timestamp if timestamp is not None else int(time.time()))
+    key = base64.b64decode(secret[len("whsec_") :])
+    signed = b"%b.%b.%b" % (svix_id.encode(), ts.encode(), raw_body)
+    sig = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+    return {
+        "svix-id": svix_id,
+        "svix-timestamp": ts,
+        "svix-signature": f"v1,{sig}",
+    }
+
+
+async def test_verify_resend_request_accepts_valid_svix_signature(monkeypatch):
+    monkeypatch.setattr(surface_settings, "surface_webhook_security_enabled", True)
+    monkeypatch.setattr(surface_settings, "resend_inbound_signing_secret", _RESEND_SECRET)
+    service = SurfaceWebhookSecurityService()
+    body = b'{"type":"email.inbound","data":{}}'
+
+    await service.verify_resend_request(
+        headers=_svix_headers(body, _RESEND_SECRET), raw_body=body
+    )
+
+
+async def test_verify_resend_request_rejects_tampered_body(monkeypatch):
+    monkeypatch.setattr(surface_settings, "surface_webhook_security_enabled", True)
+    monkeypatch.setattr(surface_settings, "resend_inbound_signing_secret", _RESEND_SECRET)
+    service = SurfaceWebhookSecurityService()
+    headers = _svix_headers(b'{"to":"pod-a@x"}', _RESEND_SECRET)
+
+    with pytest.raises(SurfaceWebhookAuthenticationError):
+        await service.verify_resend_request(
+            headers=headers, raw_body=b'{"to":"pod-attacker@x"}'
+        )
+
+
+async def test_verify_resend_request_rejects_missing_headers(monkeypatch):
+    monkeypatch.setattr(surface_settings, "surface_webhook_security_enabled", True)
+    monkeypatch.setattr(surface_settings, "resend_inbound_signing_secret", _RESEND_SECRET)
+    service = SurfaceWebhookSecurityService()
+
+    with pytest.raises(SurfaceWebhookAuthenticationError):
+        await service.verify_resend_request(headers={}, raw_body=b"{}")
+
+
+async def test_verify_resend_request_rejects_stale_timestamp(monkeypatch):
+    monkeypatch.setattr(surface_settings, "surface_webhook_security_enabled", True)
+    monkeypatch.setattr(surface_settings, "resend_inbound_signing_secret", _RESEND_SECRET)
+    service = SurfaceWebhookSecurityService()
+    body = b"{}"
+    stale = _svix_headers(body, _RESEND_SECRET, timestamp=int(time.time()) - 3600)
+
+    with pytest.raises(SurfaceWebhookAuthenticationError):
+        await service.verify_resend_request(headers=stale, raw_body=body)
+
+
+async def test_verify_resend_request_raises_when_secret_unconfigured(monkeypatch):
+    monkeypatch.setattr(surface_settings, "surface_webhook_security_enabled", True)
+    monkeypatch.setattr(surface_settings, "resend_inbound_signing_secret", None)
+    service = SurfaceWebhookSecurityService()
+    body = b"{}"
+
+    with pytest.raises(SurfaceWebhookAuthenticationError) as exc:
+        await service.verify_resend_request(
+            headers=_svix_headers(body, _RESEND_SECRET), raw_body=body
+        )
+    assert exc.value.status_code == 503
+
+
+async def test_verify_resend_request_skips_when_security_disabled(monkeypatch):
+    monkeypatch.setattr(surface_settings, "surface_webhook_security_enabled", False)
+    service = SurfaceWebhookSecurityService()
+
+    # No signature headers at all, but disabled security short-circuits.
+    await service.verify_resend_request(headers={}, raw_body=b"{}")

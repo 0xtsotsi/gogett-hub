@@ -12,6 +12,7 @@ import {
     Plus,
 } from 'lucide-react';
 import { Logo } from '@/components/brand/logo';
+import { HomeImportButton } from '@/components/bundle/home-import-button';
 import { ProductIcon, type ProductIconTone } from '@/components/pod/product-icon';
 import { SidebarEmptyState } from '@/components/shared/empty-state';
 import { ThemeToggle } from '@/components/theme/theme-toggle';
@@ -100,6 +101,7 @@ function SidebarContent({
                         <Plus className="h-4 w-4" />
                         New pod
                     </Link>
+                    <HomeImportButton onNavigate={onNavigate} />
                 </nav>
 
                 <div className="mt-8 space-y-5">

@@ -31,17 +31,6 @@ function formatDisplayName(value: string | null | undefined) {
     return cleaned.split(' ').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
 
-function formatUrlLabel(value: string | null | undefined) {
-    if (!value) return 'Link pending';
-
-    try {
-        const parsed = new URL(value);
-        return parsed.hostname.replace(/^www\./, '');
-    } catch {
-        return value;
-    }
-}
-
 function RecipeStarterCard({ recipe, onLaunch }: { recipe: Recipe; onLaunch: () => void }) {
     return (
         <button
@@ -220,55 +209,53 @@ export default function AppPagesRoute({ params }: { params: Promise<{ id: string
                         const accent = getAppAccent(page.slug);
                         const visibilityCopy = getResourceVisibilityCopy(page.visibility, 'apps');
                         const VisibilityIcon = visibilityCopy.icon;
+                        const showVisibility = visibilityCopy.value !== 'POD';
 
                         return (
                             <article
                                 key={page.slug}
                                 data-accent={accent}
-                                className="resource-index-card app-tile group"
+                                className="resource-index-card app-tile group relative flex min-h-36 p-4"
                             >
-                                <div className="flex items-center gap-3">
-                                    <Link href={viewHref} aria-label={`Open ${title}`} className="shrink-0">
-                                        <span className="app-icon flex h-10 w-10 items-center justify-center rounded-xl text-sm font-medium">
-                                            {page.icon || title.charAt(0)}
-                                        </span>
-                                    </Link>
-                                    <div className="min-w-0 flex-1 pb-0.5">
-                                        <Link href={viewHref} className="block truncate text-sm font-medium text-[var(--text-primary)]">
-                                            {title}
-                                        </Link>
-                                        <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-[var(--text-tertiary)]">
+                                <Link
+                                    href={viewHref}
+                                    aria-label={`Open ${title}`}
+                                    className="focus-ring flex flex-1 flex-col items-center justify-center gap-3 rounded-lg text-center"
+                                >
+                                    <span className="app-icon flex h-14 w-14 items-center justify-center rounded-2xl text-lg font-medium">
+                                        {page.icon || title.charAt(0)}
+                                    </span>
+                                    <span className="block w-full truncate text-sm font-medium text-[var(--text-primary)]">
+                                        {title}
+                                    </span>
+                                    {showVisibility ? (
+                                        <span className="inline-flex items-center gap-1.5 text-xs text-[var(--text-tertiary)]">
                                             <VisibilityIcon className="h-3 w-3 shrink-0" />
-                                            <span className="shrink-0">{visibilityCopy.label}</span>
-                                            {page.url ? (
-                                                <>
-                                                    <span className="shrink-0">·</span>
-                                                    <span className="truncate font-mono">{formatUrlLabel(page.url)}</span>
-                                                </>
-                                            ) : null}
-                                        </p>
+                                            {visibilityCopy.label}
+                                        </span>
+                                    ) : null}
+                                </Link>
+                                {(page.url || canManageApp) ? (
+                                    <div className="absolute right-2 top-2 flex items-center gap-0.5 opacity-0 transition-gentle group-hover:opacity-100 group-focus-within:opacity-100">
+                                        {page.url ? (
+                                            <Button asChild variant="ghost" size="icon" className="h-7 w-7">
+                                                <a href={page.url} target="_blank" rel="noreferrer" aria-label="Open live app" title="Open live app">
+                                                    <ExternalLink className="h-3.5 w-3.5" />
+                                                </a>
+                                            </Button>
+                                        ) : null}
+                                        {canManageApp ? (
+                                            <ResourceActionsMenu
+                                                ariaLabel={`Open actions for ${title}`}
+                                                triggerClassName="h-7 w-7 rounded-md text-[var(--text-tertiary)] hover:bg-[var(--surface-2)]"
+                                            >
+                                                <DestructiveResourceActionItem onSelect={() => setAppPendingDelete(page)}>
+                                                    Delete app
+                                                </DestructiveResourceActionItem>
+                                            </ResourceActionsMenu>
+                                        ) : null}
                                     </div>
-                                    <Button asChild variant="secondary" size="sm" className="shrink-0">
-                                        <Link href={viewHref}>Open</Link>
-                                    </Button>
-                                    {page.url ? (
-                                        <Button asChild variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                                            <a href={page.url} target="_blank" rel="noreferrer" aria-label="Open live app" title="Open live app">
-                                                <ExternalLink className="h-3.5 w-3.5" />
-                                            </a>
-                                        </Button>
-                                    ) : null}
-                                    {canManageApp ? (
-                                        <ResourceActionsMenu
-                                            ariaLabel={`Open actions for ${title}`}
-                                            triggerClassName="h-8 w-8 shrink-0 rounded-md text-[var(--text-tertiary)] hover:bg-[var(--surface-2)]"
-                                        >
-                                            <DestructiveResourceActionItem onSelect={() => setAppPendingDelete(page)}>
-                                                Delete app
-                                            </DestructiveResourceActionItem>
-                                        </ResourceActionsMenu>
-                                    ) : null}
-                                </div>
+                                ) : null}
                             </article>
                         );
                     })}

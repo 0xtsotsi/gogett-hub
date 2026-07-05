@@ -4,8 +4,11 @@ import os
 import shlex
 from typing import TYPE_CHECKING, Any
 
+from lemma_sdk.config import resolve_base_url
+from lemma_sdk.errors import LemmaAPIError
+
 from .io import list_items
-from .state import CliState, console, fail, update_config
+from .state import CliState, console, fail, humanize_error, update_config
 
 if TYPE_CHECKING:
     from lemma_sdk import Lemma
@@ -56,7 +59,8 @@ def selected_pod(
     )
     if required and not value:
         fail(
-            "No pod selected. Run `lemma pods`, pass --pod, or set LEMMA_POD_ID."
+            f"No pod bound for server '{state.server}'. Pass --pod, set LEMMA_POD_ID, "
+            f"or create .lemma.{state.server}.env (run `lemma pods select` or `lemma app init`)."
         )
     return str(value) if value else None
 
@@ -189,5 +193,54 @@ def resolve_pod(
     for pod in list_items(pods):
         if selector in {str(pod.get("id")), str(pod.get("slug")), str(pod.get("name"))}:
             return pod
-    fail(f"Pod not found: {selector}")
+    fail(pod_lookup_error(selector, state))
+    raise AssertionError("unreachable")
+
+
+def pod_lookup_error(
+    pod_id: str, state: CliState, exc: Exception | None = None
+) -> str:
+    """A pod-not-found/forbidden message that names the server, so a folder pointed
+    at the wrong server (or a stale ``LEMMA_POD_ID``) is obvious. Non 403/404 API
+    errors fall through to the normal humanized message."""
+    status = getattr(exc, "status_code", None) if exc is not None else None
+    if exc is not None and status not in (None, 403, 404):
+        return humanize_error(exc)
+    base = resolve_base_url(
+        state.base_url, state.config, use_env=state.server_source == "env"
+    )
+    return (
+        f"Pod '{pod_id}' not found on server '{state.server}' ({base}). "
+        "It may not exist there, or you may be pointed at the wrong server. "
+        "Check LEMMA_POD_ID / LEMMA_SERVER (or .lemma.env), or run `lemma pods list`."
+    )
+
+
+def org_for(client: Lemma, state: CliState, explicit: str | None = None) -> str:
+    """Resolve the organization, deriving it from the selected pod when needed.
+
+    Precedence: ``--org`` / runtime / ``LEMMA_ORG_ID`` / config default
+    (via :func:`selected_org`), else a ``pods.get`` on the selected pod. Lets a
+    folder that only pins ``LEMMA_POD_ID`` still run org-scoped commands. The
+    resolved org is cached into runtime so later ``selected_org`` calls see it.
+    """
+    org = selected_org(state, explicit, required=False)
+    if org:
+        return org
+    pod = selected_pod(state, required=False)
+    if pod:
+        try:
+            info = client.pods.get(pod).to_dict()
+        except LemmaAPIError as exc:
+            fail(pod_lookup_error(pod, state, exc))
+        org = info.get("organization_id") or info.get("org_id")
+        if org:
+            runtime = state.config.setdefault("_runtime", {})
+            if isinstance(runtime, dict):
+                runtime["org"] = str(org)
+            return str(org)
+    fail(
+        "No organization selected. Pass --org, set LEMMA_ORG_ID, or target a pod "
+        "whose org can be resolved."
+    )
     raise AssertionError("unreachable")

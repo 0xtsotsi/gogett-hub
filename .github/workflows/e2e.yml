@@ -3,59 +3,94 @@ name: Backend E2E (mocked)
 # The fast mocked backend e2e suite — mock LLM (deterministic FunctionModel) +
 # in-process fake AgentBox, so it needs NO model API keys and NO Docker workspace
 # image (Postgres / Redis / SuperTokens come from testcontainers on the runner).
-# Runs the parallel API suite (excludes slow/worker/workspace/provider, which need
-# the real-worker runtime and are run separately in real mode).
+# Excludes slow/worker/workspace/provider/indexing tests (those need the
+# real-worker runtime or the Kreuzberg container and are run separately).
 #
-# It is intentionally NOT part of the per-commit CI (it spins up containers and
-# is slower). Run it once before merging a PR, two ways:
-#   1. Add the `run-e2e` label to the PR (remove + re-add to re-run), or
-#   2. Actions tab -> "Backend E2E (mocked)" -> Run workflow (pick the branch).
+# The suite is sharded across runners, each serial, so it finishes in ~3min and
+# is reliable (no within-runner container contention).
 #
-# To make a green e2e a hard merge requirement, add the
-# "lemma-backend e2e (mocked)" status check to the branch-protection rules.
+# Trigger model: runs automatically once the "CI" workflow (unit tests etc.)
+# SUCCEEDS for a PR — so the container-heavy e2e only spins up after the cheap
+# checks are green, roughly once per PR update. Also runnable on demand:
+# Actions -> "Backend E2E (mocked)" -> Run workflow.
+#
+# Not a required check yet. To make a green e2e a hard merge requirement later,
+# add the "lemma-backend e2e (*)" shard checks (or an aggregation job) to the
+# branch-protection rules — it's fast enough now to gate merges.
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [labeled]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
 permissions:
   contents: read
-  packages: read  # pull the Kreuzberg test image from ghcr.io
 
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  group: e2e-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend-e2e:
-    name: lemma-backend e2e (mocked)
-    # Manual dispatch, or when the `run-e2e` label is added to a PR.
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-e2e'
+    name: lemma-backend e2e (${{ matrix.suite.name }})
+    # Manual dispatch, or automatically after CI (unit tests etc.) passes on a PR.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
+    strategy:
+      # Run every shard even if one fails, so one red shard doesn't mask others.
+      fail-fast: false
+      matrix:
+        # The fast suite is sharded across runners, each serial (E2E_WORKERS=1):
+        # parallelism is across machines, not xdist workers within one machine —
+        # which sidesteps the shared-container contention that makes -n2 flaky.
+        # Each shard runs `test-e2e-shard` scoped by E2E_ARGS; the union of all
+        # shard args equals the whole fast suite, with `rest` a catch-all via
+        # --ignore so a new module's e2e tests are never silently skipped.
+        # Shards are balanced by test count (~50-75 each); wall-clock ≈ the
+        # slowest shard (~3min).
+        suite:
+          - name: surfaces
+            target: test-e2e-shard
+            args: app/modules/agent_surfaces/tests/e2e
+          - name: pod
+            target: test-e2e-shard
+            args: app/modules/pod/tests/e2e
+          - name: datastore
+            target: test-e2e-shard
+            args: app/modules/datastore/tests/e2e app/modules/apps/tests/e2e
+          - name: connectors
+            target: test-e2e-shard
+            args: app/modules/connectors/tests/e2e app/modules/schedule/tests/e2e
+          - name: rest
+            target: test-e2e-shard
+            args: >-
+              app/modules app/core
+              --ignore=app/modules/agent_surfaces/tests/e2e
+              --ignore=app/modules/pod/tests/e2e
+              --ignore=app/modules/datastore/tests/e2e
+              --ignore=app/modules/apps/tests/e2e
+              --ignore=app/modules/connectors/tests/e2e
+              --ignore=app/modules/schedule/tests/e2e
     defaults:
       run:
         working-directory: lemma-backend
     steps:
+      # On workflow_run, check out the PR head that CI validated (the event
+      # otherwise defaults to the repo's default branch).
       - uses: actions/checkout@v5
-      # The datastore/worker e2e fixtures pull ghcr.io/kreuzberg-dev/kreuzberg
-      # for document conversion; anonymous ghcr pulls are denied on the runner,
-      # so authenticate with the built-in token first.
-      - name: Log in to GHCR (Kreuzberg test image)
-        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      # Run serially (1 xdist worker): the suite shares a single Kreuzberg
-      # container + per-worker testcontainers, and parallel runs are
-      # contention-flaky (a different test fails each run). Serial is the
-      # reliable choice for a once-before-merge gate (~5 min); the tests all pass
-      # standalone and serially.
+      # Every shard runs serially (E2E_WORKERS=1) on its own runner; the shards
+      # run in parallel, so the gate's wall-clock is the slowest shard, not their
+      # sum. E2E_ARGS scopes each shard to its module paths.
       - name: E2E tests (mocked LLM + fake AgentBox)
-        run: make test-e2e-fast E2E_WORKERS=1
+        run: make ${{ matrix.suite.target }} E2E_ARGS="${{ matrix.suite.args }}" E2E_WORKERS=1

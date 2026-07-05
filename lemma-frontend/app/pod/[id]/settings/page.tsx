@@ -11,6 +11,7 @@ import { ProtectedRoute } from '@/components/auth/protected-route';
 import { resolveDefaultAgentRuntime } from '@/components/agents/agent-runtime-helpers';
 import { RuntimeModelPicker } from '@/components/lemma/assistant/model-picker';
 import { PodSettingsPanel, PodSettingsShell } from '@/components/pod/pod-settings-shell';
+import { PodBundleSettingsPanel } from '@/components/bundle/pod-bundle-settings';
 import { SettingsChoiceList, SettingsHelpText } from '@/components/settings/settings-kit';
 import {
     useAgentRuntimes,
@@ -109,6 +110,13 @@ function PodSettingsPageContent({ params }: { params: Promise<{ id: string }> })
                 podId={podId}
                 currentPolicy={pod?.config?.join_policy ?? PodJoinPolicy.INVITE_ONLY}
                 canUpdate={canUpdatePod}
+            />
+
+            <PodBundleSettingsPanel
+                podId={podId}
+                podName={pod?.name}
+                canUpdate={canUpdatePod}
+                recipes={pod?.config?.recipes ?? []}
             />
             </div>
         </PodSettingsShell>

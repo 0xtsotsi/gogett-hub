@@ -17,7 +17,7 @@ from app.modules.agent_surfaces.domain.models import (
 from app.modules.agent_surfaces.domain.surface_event_metadata import (
     GmailSurfaceEventMetadata,
 )
-from app.modules.agent_surfaces.platforms.attachment_limits import attachment_cap
+from app.modules.agent_surfaces.platforms.attachment_limits import inline_cap
 from app.modules.agent_surfaces.platforms.email_common import (
     append_attachment_links,
     coerce_display_resource_plans,
@@ -25,6 +25,7 @@ from app.modules.agent_surfaces.platforms.email_common import (
     render_email_content,
     reply_subject,
     resolve_outbound_email_attachments,
+    resolve_outbound_email_attachment_urls,
 )
 from app.modules.agent_surfaces.platforms.composio_email import (
     execute_composio_operation,
@@ -144,12 +145,53 @@ class GmailPlatformService:
                 error="The current Gmail message is missing a reply recipient email.",
             )
 
-        # Attachment paths resolve against the pod datastore (/me/...) or the
-        # workspace; small files are inlined, large files become download links.
+        # Composio's Gmail action attaches a file passed as a URL in its
+        # `attachment` field (single file), so datastore paths become signed URLs:
+        # the first is attached natively, the rest are appended as links.
+        if self._is_composio:
+            url_attachments, unresolved = await resolve_outbound_email_attachment_urls(
+                ctx.deps, request.attachment_paths
+            )
+            primary_url = url_attachments[0][1] if url_attachments else None
+            content = append_attachment_links(request.content, url_attachments[1:])
+            if unresolved:
+                content = (
+                    f"{content}\n\nCould not attach: {', '.join(unresolved)}"
+                    if content
+                    else f"Could not attach: {', '.join(unresolved)}"
+                )
+            try:
+                response = await self._send_email(
+                    recipient_email=metadata.reply_to_email,
+                    subject=request.subject or metadata.subject or "",
+                    thread_id=metadata.thread_id,
+                    in_reply_to=metadata.in_reply_to,
+                    references=list(metadata.references),
+                    content=content,
+                    content_type=request.content_type,
+                    attachments=[],
+                    attachment_url=primary_url,
+                )
+            except Exception as exc:
+                return GmailReplyEmailResult(
+                    success=False,
+                    error=f"Gmail reply failed: {exc}",
+                )
+            return GmailReplyEmailResult(
+                success=True,
+                message="Sent Gmail reply on the current email thread.",
+                thread_id=metadata.thread_id,
+                message_id=str((response or {}).get("id") or "").strip() or None,
+                attachment_count=1 if primary_url else 0,
+            )
+
+        # Native (non-Composio) path: attachment paths resolve against the pod
+        # datastore (/me/...) or the workspace; files at/below the inline cap are
+        # attached inline, larger ones become download links.
         attachments, attachment_links = await resolve_outbound_email_attachments(
             ctx.deps,
             request.attachment_paths,
-            inline_cap_bytes=attachment_cap("GMAIL"),
+            inline_cap_bytes=inline_cap("GMAIL"),
         )
         content = append_attachment_links(request.content, attachment_links)
 
@@ -170,21 +212,12 @@ class GmailPlatformService:
                 error=f"Gmail reply failed: {exc}",
             )
 
-        message = "Sent Gmail reply on the current email thread."
-        sent_attachment_count = len(attachments)
-        if self._is_composio and attachments:
-            sent_attachment_count = 0
-            message += (
-                " Attachments were not included — outbound attachments are not yet "
-                "supported for Composio-connected Gmail accounts."
-            )
-
         return GmailReplyEmailResult(
             success=True,
-            message=message,
+            message="Sent Gmail reply on the current email thread.",
             thread_id=metadata.thread_id,
             message_id=str((response or {}).get("id") or "").strip() or None,
-            attachment_count=sent_attachment_count,
+            attachment_count=len(attachments),
         )
 
     def _gmail_metadata(
@@ -272,6 +305,7 @@ class GmailPlatformService:
         content: str,
         content_type: str,
         attachments: list[tuple[str, bytes, str]],
+        attachment_url: str | None = None,
         display_resource_plans: list[SurfaceDisplayRenderPlan] | None = None,
     ) -> dict[str, Any]:
         plain_text, html_body = render_email_content(
@@ -281,8 +315,9 @@ class GmailPlatformService:
         )
 
         if self._is_composio:
-            # GMAIL_REPLY_TO_THREAD keeps the reply on-thread. Outbound
-            # attachments are deferred (the op takes a single attachment only).
+            # GMAIL_REPLY_TO_THREAD keeps the reply on-thread. Composio downloads
+            # a URL passed in `attachment` and attaches it (single file); the
+            # remaining files were folded into the body as links by the caller.
             if not thread_id:
                 raise ValueError(
                     "Gmail reply through Composio requires the source thread id."
@@ -294,6 +329,8 @@ class GmailPlatformService:
             }
             if recipient_email:
                 payload["recipient_email"] = recipient_email
+            if attachment_url:
+                payload["attachment"] = attachment_url
             data = await execute_composio_operation(
                 connector_id=_GMAIL_APP_ID,
                 operation_name="GMAIL_REPLY_TO_THREAD",

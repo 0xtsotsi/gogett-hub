@@ -13,6 +13,7 @@ from app.core.authorization.sql_actions import (
     allowed_actions_expr,
 )
 from app.modules.datastore.domain.datastore_entities import (
+    RESERVED_TABLE_PREFIX,
     DatastoreTableEntity,
     DatastoreTableSummaryEntity,
 )
@@ -32,6 +33,17 @@ def _table_actions_expr(ctx: Context):
         pod_id_col=DatastoreTable.pod_id,
         owner_user_id_col=DatastoreTable.user_id,
         visibility_col=DatastoreTable.visibility,
+    )
+
+
+def _not_reserved():
+    """Exclude system-managed ``reserved_*`` tables from user-facing listings.
+
+    ``autoescape`` treats the ``_`` in the prefix as a literal, not a LIKE
+    wildcard, so only real ``reserved_``-prefixed names are filtered.
+    """
+    return ~DatastoreTable.table_name.startswith(
+        RESERVED_TABLE_PREFIX, autoescape=True
     )
 
 
@@ -122,7 +134,10 @@ class DatastoreTableRepository(DatastoreRepositoryBase, DatastoreTableRepository
     async def list_by_datastore(
         self, pod_id: UUID, limit: int = 100, cursor: Optional[str] = None
     ) -> Tuple[Sequence[DatastoreTableEntity], Optional[str]]:
-        stmt = select(DatastoreTable).where(DatastoreTable.pod_id == pod_id)
+        stmt = select(DatastoreTable).where(
+            DatastoreTable.pod_id == pod_id,
+            _not_reserved(),
+        )
         if cursor:
             stmt = stmt.where(DatastoreTable.id > UUID(cursor))
         stmt = stmt.order_by(DatastoreTable.id).limit(limit + 1)
@@ -164,6 +179,7 @@ class DatastoreTableRepository(DatastoreRepositoryBase, DatastoreTableRepository
         actions = _table_actions_expr(ctx)
         stmt = select(DatastoreTable, actions).where(
             DatastoreTable.pod_id == pod_id,
+            _not_reserved(),
             allowed_actions_contains(actions, Permissions.DATASTORE_TABLE_READ),
         )
         if cursor:
@@ -188,6 +204,7 @@ class DatastoreTableRepository(DatastoreRepositoryBase, DatastoreTableRepository
         actions = _table_actions_expr(ctx)
         stmt = select(DatastoreTable, actions).where(
             DatastoreTable.pod_id == pod_id,
+            _not_reserved(),
             allowed_actions_contains(actions, Permissions.DATASTORE_TABLE_READ),
         )
         if cursor:

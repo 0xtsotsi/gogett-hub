@@ -1157,54 +1157,41 @@ function ScheduleRow({
     const scheduleDescription = workflowEventConfig?.connector_trigger_id
         ? `On ${workflowEventConfig.connector_trigger_id}${workflowEventConfig.connector_id ? ` from ${workflowEventConfig.connector_id}` : ''}`
         : describeScheduleConfig(schedule);
+    // Trigger type drives the glyph; target kind (workflow/agent) closes the flow line.
+    const triggerTone = schedule.schedule_type === ScheduleType.DATASTORE
+        ? 'data'
+        : schedule.schedule_type === ScheduleType.WEBHOOK
+            ? 'connectors'
+            : 'schedules';
+    const targetKindTone = kind === 'agent' ? 'agents' : 'workflows';
+    const tableDetail = configDetails.find((detail) => detail.label === 'Table');
+    const opsDetail = configDetails.find((detail) => detail.label === 'Ops');
     const hasMenuActions = canUpdate || canDelete;
     const scheduleShareUrl = typeof window === 'undefined'
         ? undefined
         : `${window.location.origin}${getScheduleHref(podId, schedule)}`;
 
     return (
-        <div className="resource-index-card group min-h-40 p-4">
-            <Link href={getScheduleHref(podId, schedule)} className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-3">
-                    <ProductIcon tone={kind === 'agent' ? 'agents' : 'workflows'} size="lg" />
+        <div className="resource-index-card group p-4">
+            <div className="flex items-start gap-3">
+                <Link href={getScheduleHref(podId, schedule)} className="flex min-w-0 flex-1 items-center gap-3">
+                    <ProductIcon tone={triggerTone} size="lg" />
+                    <p className="truncate font-display text-base font-semibold text-[var(--text-primary)]">{targetName}</p>
+                </Link>
+                <div className="flex shrink-0 flex-col items-end gap-2">
                     <span className={cn(
-                        'chip chip-sm',
-                        active ? 'state-badge-success' : 'chip-muted text-[var(--text-tertiary)]'
+                        'inline-flex items-center gap-1.5 text-xs font-medium',
+                        active ? 'text-[var(--state-success)]' : 'text-[var(--text-tertiary)]'
                     )}>
+                        <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
                         {active ? 'Active' : 'Paused'}
                     </span>
-                </div>
-
-                <div className="mt-3 min-w-0">
-                    <p className="truncate font-display text-base font-semibold text-[var(--text-primary)]">{targetName}</p>
-                    <p className="mt-1 line-clamp-2 min-h-10 text-xs leading-5 text-[var(--text-secondary)]">
-                        {scheduleDescription}
-                    </p>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                    <ResourceVisibilityBadge visibility={schedule.visibility} resourceLabel="schedules" hideWhenDefault />
-                    <ScheduleCardPill label={formatScheduleType(schedule.schedule_type)} />
-                    <ScheduleCardPill label={kind === 'agent' ? 'Agent' : 'Workflow'} />
-                    {configDetails.slice(0, 2).map((detail) => (
-                        <ScheduleCardPill key={`${detail.label}-${detail.value}`} label={`${detail.label}: ${detail.value}`} muted />
-                    ))}
-                </div>
-
-                <div className="mt-3 flex min-w-0 items-center justify-between gap-3 text-xs text-[var(--text-tertiary)]">
-                    {schedule.filter_instruction ? (
-                        <span className="min-w-0 truncate opacity-0 transition-opacity group-hover:opacity-100">
-                            Filter: {schedule.filter_instruction}
-                        </span>
-                    ) : (
-                        <span>{active ? 'Listening for work' : 'Paused by operator'}</span>
-                    )}
-                </div>
-            </Link>
-
-            {hasMenuActions ? (
-                <div className="mt-3 flex shrink-0 items-center justify-end opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                    <ResourceActionsMenu ariaLabel={`Open actions for schedule ${targetName}`} triggerClassName="h-7 w-7">
+                    {hasMenuActions ? (
+                        <ResourceActionsMenu
+                            ariaLabel={`Open actions for schedule ${targetName}`}
+                            align="end"
+                            triggerClassName="h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                        >
                         {canUpdate ? (
                             <ResourceShareButton
                                 value={schedule.visibility}
@@ -1248,19 +1235,34 @@ function ScheduleRow({
                             </DestructiveResourceActionItem>
                         ) : null}
                     </ResourceActionsMenu>
+                    ) : null}
                 </div>
-            ) : null}
+            </div>
+
+            <Link href={getScheduleHref(podId, schedule)} className="mt-3 block">
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm leading-5 text-[var(--text-secondary)]">
+                    {tableDetail ? (
+                        <>
+                            <code className="rounded border border-[var(--border-subtle)] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-xs text-[var(--text-primary)]">{tableDetail.value}</code>
+                            {opsDetail ? (
+                                <span className="text-xs text-[var(--text-tertiary)]">{opsDetail.value.toLowerCase()}</span>
+                            ) : null}
+                        </>
+                    ) : (
+                        <span className="min-w-0 truncate">{scheduleDescription}</span>
+                    )}
+                    <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[var(--text-tertiary)]" aria-hidden />
+                    <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
+                        <ProductIcon tone={targetKindTone} size="xs" />
+                        {kind === 'agent' ? 'agent' : 'workflow'}
+                    </span>
+                    <ResourceVisibilityBadge visibility={schedule.visibility} resourceLabel="schedules" hideWhenDefault />
+                </div>
+                {schedule.filter_instruction ? (
+                    <p className="mt-2 truncate text-xs text-[var(--text-tertiary)]">Filter: {schedule.filter_instruction}</p>
+                ) : null}
+            </Link>
         </div>
     );
 }
 
-function ScheduleCardPill({ label, muted }: { label: string; muted?: boolean }) {
-    return (
-        <span className={cn(
-            'chip chip-sm max-w-full truncate',
-            muted ? 'chip-muted text-[var(--text-tertiary)]' : 'state-badge-brand'
-        )}>
-            {label}
-        </span>
-    );
-}

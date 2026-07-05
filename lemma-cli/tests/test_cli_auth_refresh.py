@@ -8,14 +8,14 @@ from lemma_sdk.errors import LemmaAPIError
 
 def _state(config_path: Path, config: dict) -> cli_state.CliState:
     root_config = {
-        "active_server": "default",
-        "servers": {"default": config},
+        "active_server": "lemma-cloud",
+        "servers": {"lemma-cloud": config},
     }
     return cli_state.CliState(
         config_path=config_path,
         config=config,
         root_config=root_config,
-        server="default",
+        server="lemma-cloud",
         server_source="config",
         server_read_only=False,
         base_url="https://api.example.test",
@@ -46,7 +46,7 @@ def test_refresh_and_retry_reuses_tokens_rotated_by_another_process(
     }
     cli_state.save_config(
         config_path,
-        {"active_server": "default", "servers": {"default": fresh_config}},
+        {"active_server": "lemma-cloud", "servers": {"lemma-cloud": fresh_config}},
     )
     state = _state(config_path, stale_config)
     calls = {"fn": 0, "refresh": 0}
@@ -79,7 +79,7 @@ def test_refresh_and_retry_persists_rotated_refresh_token(tmp_path, monkeypatch)
     }
     cli_state.save_config(
         config_path,
-        {"active_server": "default", "servers": {"default": initial_config}},
+        {"active_server": "lemma-cloud", "servers": {"lemma-cloud": initial_config}},
     )
     state = _state(config_path, initial_config)
     calls = {"fn": 0}
@@ -105,7 +105,7 @@ def test_refresh_and_retry_persists_rotated_refresh_token(tmp_path, monkeypatch)
 
     assert cli_state.refresh_and_retry(state, fn) == "new-refresh"
     saved = cli_state.load_config(config_path)
-    saved_context = saved["servers"]["default"]
+    saved_context = saved["servers"]["lemma-cloud"]
     assert saved_context["auth"]["access_token"] == "new-access"
     assert saved_context["auth"]["refresh_token"] == "new-refresh"
     assert saved_context["refresh_token"] == "new-refresh"
@@ -125,7 +125,7 @@ def test_refresh_auth_session_can_be_used_before_long_lived_commands(
     }
     cli_state.save_config(
         config_path,
-        {"active_server": "default", "servers": {"default": initial_config}},
+        {"active_server": "lemma-cloud", "servers": {"lemma-cloud": initial_config}},
     )
     state = _state(config_path, initial_config)
 
@@ -144,6 +144,6 @@ def test_refresh_auth_session_can_be_used_before_long_lived_commands(
     assert cli_state.refresh_auth_session(state) is True
     assert cli_state.get_access_token_from_config(state.config) == "fresh-access"
     saved = cli_state.load_config(config_path)
-    saved_context = saved["servers"]["default"]
+    saved_context = saved["servers"]["lemma-cloud"]
     assert saved_context["auth"]["access_token"] == "fresh-access"
     assert saved_context["refresh_token"] == "fresh-refresh"

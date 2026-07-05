@@ -275,6 +275,23 @@ def create_pod(
     from ...cli_app.pod_bundle import import_pod_bundle
 
     pod_id = str(to_plain(result).get("id") or "")
+    # Bind the scaffolded bundle to the new pod on the active server so later
+    # `lemma` commands from that folder target it. Skipped under the env server.
+    if pod_id and not state.server_read_only:
+        from ..project_env import write_server_env
+
+        values = {"LEMMA_POD_ID": pod_id}
+        org_id = str(to_plain(result).get("organization_id") or "")
+        if org_id:
+            values["LEMMA_ORG_ID"] = org_id
+        try:
+            binding = write_server_env(target, state.server, values)
+            console.print(
+                f"[green]bound[/green] {target} -> pod on server "
+                f"'{state.server}' ([dim]{binding}[/dim])"
+            )
+        except OSError:
+            pass
     run_with_client(
         ctx,
         lambda client, s: import_pod_bundle(
@@ -522,7 +539,14 @@ def export_pod(
     with_data: bool = typer.Option(
         False,
         "--with-data",
-        help="Also export table rows to data.csv (up to 10k rows/table).",
+        help="Also export EVERY table's rows to data.csv (capped). Prefer "
+        "--data-table to seed just specific tables.",
+    ),
+    data_table: list[str] = typer.Option(
+        [],
+        "--data-table",
+        help="Export row data for this table only (repeat for multiple). Seeds "
+        "just these tables — the common case for shipping setup/config rows.",
     ),
     with_files: bool = typer.Option(
         False,
@@ -547,6 +571,7 @@ def export_pod(
             names=set(name) or None,
             exclude=excluded or None,
             with_data=with_data,
+            data_tables=set(data_table) or None,
             with_files=with_files,
         ),
     )

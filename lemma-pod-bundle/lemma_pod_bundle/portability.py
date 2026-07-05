@@ -22,6 +22,10 @@ _PLACEHOLDER_RE = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 # Fields whose values are non-portable ids, by variable type.
 _MEMBER_REF_FIELDS = frozenset({"assignee_pod_member_id"})
 _ACCOUNT_REF_FIELDS = frozenset({"account_id"})
+# An app's public slug is unique platform-wide, so it cannot be reused verbatim in
+# another pod; tokenize it into a variable (with the original as the default) that
+# the importer can override, and the applier makes unique on collision.
+_APP_SLUG_FIELDS = frozenset({"public_slug"})
 
 
 def _placeholder(name: str) -> str:
@@ -121,6 +125,22 @@ def _extract_portable_variables(bundle_root: Path) -> dict[str, Any]:
             {
                 "description": f"Connector account for the {owner} surface",
                 "platform": owner,
+            },
+        ),
+    )
+    rewrite(
+        "apps/*/*.json",
+        _APP_SLUG_FIELDS,
+        lambda owner, raw: register(
+            "app_slug",
+            raw,
+            f"{owner}_slug",
+            {
+                "description": (
+                    f"Public URL slug for app '{owner}' "
+                    "(unique platform-wide; a suffix is added on collision)"
+                ),
+                "default": raw,
             },
         ),
     )

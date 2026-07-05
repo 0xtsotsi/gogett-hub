@@ -88,12 +88,27 @@ class AccountEntity(Entity):
     organization_id: UUID = Field(..., description="ID of the organization scope")
     auth_config_id: UUID = Field(..., description="ID of the org auth config")
     connector_id: str = Field(..., description="ID of the connected connector")
+    is_default: bool = Field(
+        default=False,
+        description=(
+            "Whether this is the default account for (user, auth_config), used "
+            "when an account is resolved without an explicit account_id."
+        ),
+    )
     status: AccountStatus = Field(default=AccountStatus.CONNECTED)
     provider_account_id: Optional[str] = Field(
         None, description="Provider-side user/account identifier"
     )
 
     email: Optional[str] = Field(None, description="Email associated with the account")
+    display_name: Optional[str] = Field(
+        None,
+        description=(
+            "Human-friendly label for the account (e.g. a bot @username, mailbox "
+            "address, workspace, or phone) so a user can tell several accounts of "
+            "the same app apart. Derived at connect time."
+        ),
+    )
 
     credentials: Optional[CredentialTypes] = Field(
         None, description="Stored credentials"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from lemma_sdk.config import DEFAULT_AUTH_URL, DEFAULT_BASE_URL, load_config
@@ -26,10 +27,46 @@ def _state(output: str = "pretty") -> CliState:
 
 def test_fresh_config_seeds_and_selects_cloud_server(tmp_path):
     cfg = load_config(tmp_path / "does-not-exist.json")
-    assert cfg["active_server"] == "default"
-    default = cfg["servers"]["default"]
-    assert default["base_url"] == DEFAULT_BASE_URL == "https://api.lemma.work"
-    assert default["auth_url"] == DEFAULT_AUTH_URL == "https://lemma.work/auth"
+    assert cfg["active_server"] == "lemma-cloud"
+    cloud = cfg["servers"]["lemma-cloud"]
+    assert cloud["base_url"] == DEFAULT_BASE_URL == "https://api.lemma.work"
+    assert cloud["auth_url"] == DEFAULT_AUTH_URL == "https://lemma.work/auth"
+
+
+def test_legacy_default_server_migrates_to_lemma_cloud(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "active_server": "default",
+                "servers": {"default": {"base_url": "http://custom", "defaults": {"pod_id": "p"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_config(cfg)
+    assert loaded["active_server"] == "lemma-cloud"
+    assert "default" not in loaded["servers"]
+    # a user-customized URL is preserved verbatim under the new name
+    assert loaded["servers"]["lemma-cloud"]["base_url"] == "http://custom"
+    assert loaded["servers"]["lemma-cloud"]["defaults"]["pod_id"] == "p"
+
+
+def test_migration_skips_when_lemma_cloud_already_present(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "active_server": "default",
+                "servers": {"default": {"base_url": "d"}, "lemma-cloud": {"base_url": "c"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_config(cfg)
+    # never clobber an existing lemma-cloud; leave the legacy default in place
+    assert "default" in loaded["servers"]
+    assert loaded["servers"]["lemma-cloud"]["base_url"] == "c"
 
 
 def test_daemon_ws_url_scheme_derivation():

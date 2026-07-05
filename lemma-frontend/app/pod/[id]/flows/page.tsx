@@ -8,13 +8,17 @@ import {
     ChevronRight,
     Circle,
     Clock3,
+    Cog,
     Edit2,
     ListChecks,
     MoreHorizontal,
     Play,
     Plus,
+    Sparkles,
     Trash2,
+    UserRound,
     Zap,
+    type LucideIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -61,6 +65,43 @@ type Participant = {
     tone: ParticipantTone;
     label: string;
 };
+
+// Turns the cryptic "Fn S" footer legend into a legible, colored typed-step strip.
+const STEP_KIND_META: Record<ParticipantTone, { label: string; icon: LucideIcon; iconClassName: string }> = {
+    ai: { label: 'Agent', icon: Sparkles, iconClassName: 'text-[var(--state-success)]' },
+    function: { label: 'Function', icon: Zap, iconClassName: 'text-[var(--state-info)]' },
+    human: { label: 'Human', icon: UserRound, iconClassName: 'text-[var(--state-warning)]' },
+    system: { label: 'System', icon: Cog, iconClassName: 'text-[var(--text-tertiary)]' },
+};
+
+type FunctionGroup = { key: string; label: string; items: FunctionType[] };
+
+function sortFunctionsByName(items: FunctionType[]): FunctionType[] {
+    return [...items].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Cluster functions by their name prefix (get_, save_, record_ …) so a long flat
+// list stops being a wall. Prefixes with a single member fall into "Other".
+function groupFunctionsByPrefix(functions: FunctionType[]): FunctionGroup[] {
+    const byPrefix = new Map<string, FunctionType[]>();
+    for (const fn of functions) {
+        const prefix = fn.name.split('_')[0]?.toLowerCase() || fn.name.toLowerCase();
+        const bucket = byPrefix.get(prefix);
+        if (bucket) bucket.push(fn);
+        else byPrefix.set(prefix, [fn]);
+    }
+
+    const named: FunctionGroup[] = [];
+    const others: FunctionType[] = [];
+    for (const [prefix, items] of byPrefix) {
+        if (items.length >= 2) named.push({ key: prefix, label: `${prefix}_`, items: sortFunctionsByName(items) });
+        else others.push(...items);
+    }
+
+    named.sort((a, b) => b.items.length - a.items.length || a.key.localeCompare(b.key));
+    if (others.length > 0) named.push({ key: 'other', label: 'Other', items: sortFunctionsByName(others) });
+    return named;
+}
 
 type WorkflowView = 'workflows' | 'waiting' | 'running' | 'recent' | 'functions';
 type WorkflowSort = 'az' | 'recent';
@@ -226,6 +267,22 @@ export default function FlowsIndexPage({
     const filteredFunctions = useMemo(() => {
         return functions;
     }, [functions]);
+
+    const functionGroups = useMemo(() => groupFunctionsByPrefix(filteredFunctions), [filteredFunctions]);
+    const shouldGroupFunctions = functionGroups.filter((group) => group.key !== 'other').length >= 2;
+
+    const renderFunctionRow = (fn: FunctionType) => (
+        <FunctionRow
+            key={fn.id}
+            func={fn}
+            podId={podId}
+            usageCount={usageCountByFunctionName.get(fn.name) || 0}
+            canUpdate={resourceAllows(fn, 'function.update', canUpdateFunction)}
+            canExecute={resourceAllows(fn, 'function.execute', canExecuteFunction)}
+            canDelete={resourceAllows(fn, 'function.delete', canDeleteFunction)}
+            onDelete={setFunctionPendingDelete}
+        />
+    );
 
     const workflowPendingDeleteScheduleCount = workflowPendingDelete
         ? activeScheduleCountByWorkflowName.get(workflowPendingDelete.name) || 0
@@ -403,7 +460,6 @@ export default function FlowsIndexPage({
                                         podId={podId}
                                         runs={runsByWorkflowName.get(flow.name) || []}
                                         scheduleCount={activeScheduleCountByWorkflowName.get(flow.name) || 0}
-                                        functionNames={getFunctionNamesForFlow(flow)}
                                         canUpdate={resourceAllows(flow, 'workflow.update', canUpdateWorkflow)}
                                         canExecute={resourceAllows(flow, 'workflow.execute', canExecuteWorkflow)}
                                         canDelete={resourceAllows(flow, 'workflow.delete', canDeleteWorkflow)}
@@ -474,19 +530,19 @@ export default function FlowsIndexPage({
                         {activeView === 'functions' ? (
                             filteredFunctions.length === 0 ? (
                                 <QuietEmptyState icon={<Zap className="h-4 w-4" />}>No functions yet.</QuietEmptyState>
+                            ) : shouldGroupFunctions ? (
+                                functionGroups.flatMap((group) => [
+                                    <div
+                                        key={`fn-group-${group.key}`}
+                                        className="flex items-center gap-2 px-1 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-[var(--text-tertiary)]"
+                                    >
+                                        <span>{group.label}</span>
+                                        <span className="text-[var(--text-soft)]">{group.items.length}</span>
+                                    </div>,
+                                    ...group.items.map(renderFunctionRow),
+                                ])
                             ) : (
-                                filteredFunctions.map((fn) => (
-                                    <FunctionRow
-                                        key={fn.id}
-                                        func={fn}
-                                        podId={podId}
-                                        usageCount={usageCountByFunctionName.get(fn.name) || 0}
-                                        canUpdate={resourceAllows(fn, 'function.update', canUpdateFunction)}
-                                        canExecute={resourceAllows(fn, 'function.execute', canExecuteFunction)}
-                                        canDelete={resourceAllows(fn, 'function.delete', canDeleteFunction)}
-                                        onDelete={setFunctionPendingDelete}
-                                    />
-                                ))
+                                filteredFunctions.map(renderFunctionRow)
                             )
                         ) : null}
                     </section>
@@ -614,7 +670,6 @@ function WorkflowCard({
     podId,
     runs,
     scheduleCount,
-    functionNames,
     canUpdate,
     canExecute,
     canDelete,
@@ -624,18 +679,26 @@ function WorkflowCard({
     podId: string;
     runs: WorkflowRun[];
     scheduleCount: number;
-    functionNames: string[];
     canUpdate: boolean;
     canExecute: boolean;
     canDelete: boolean;
     onDelete: (flow: WorkflowType) => void;
 }) {
     const participants = getParticipants(flow);
+    const stepCount = flow.node_count ?? flow.nodes?.length ?? 0;
     const lastRun = runs[0];
     const lastRunTime = getReliableRunTimestamp(lastRun);
-    const recentRunLabel = lastRunTime ? `Last run ${formatRelativeTime(lastRunTime)}` : null;
-    const runCountLabel = runs.length > 0 ? `${runs.length} recent run${runs.length === 1 ? '' : 's'}` : `${functionNames.length} function${functionNames.length === 1 ? '' : 's'}`;
-    const participantLabel = participants.length > 0 ? participants.map((participant) => participant.label).join(' ') : 'No participants';
+    const lastStatus = normalizeRunStatus(lastRun?.status);
+    const healthColorClass = !lastRun
+        ? 'text-[var(--text-tertiary)]'
+        : FAILURE_STATUSES.has(lastStatus)
+            ? 'text-[var(--state-error)]'
+            : RUNNING_STATUSES.has(lastStatus)
+                ? 'text-[var(--state-warning)]'
+                : 'text-[var(--state-success)]';
+    const runsSummary = runs.length > 0
+        ? `${runs.length} recent run${runs.length === 1 ? '' : 's'}${lastRunTime ? ` · last ${formatRelativeTime(lastRunTime)}` : ''}`
+        : 'No runs yet';
     const hasMenuActions = canUpdate || canExecute || canDelete;
 
     return (
@@ -698,42 +761,44 @@ function WorkflowCard({
                     </p>
                 </div>
 
-                <div className="resource-step-strip mt-3">
-                    {Array.from({ length: Math.min(Math.max(flow.node_count ?? flow.nodes?.length ?? 1, 1), 6) }).map((_, index) => (
-                        <span
-                            key={`${flow.name}-step-${index}`}
-                            className="resource-step-segment"
-                        />
-                    ))}
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-1.5">
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs text-[var(--text-tertiary)]">{stepCount} step{stepCount === 1 ? '' : 's'}</span>
+                    {participants.map((participant) => {
+                        const meta = STEP_KIND_META[participant.tone];
+                        const Icon = meta.icon;
+                        return (
+                            <span
+                                key={participant.tone}
+                                className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-2)] px-1.5 py-0.5 text-xs text-[var(--text-secondary)]"
+                            >
+                                <Icon className={cn('h-3 w-3', meta.iconClassName)} aria-hidden />
+                                {meta.label}
+                            </span>
+                        );
+                    })}
                     <ResourceVisibilityBadge visibility={flow.visibility} resourceLabel="workflows" hideWhenDefault />
-                    <WorkflowCardPill label={`${flow.node_count ?? flow.nodes?.length ?? 0} steps`} />
-                    <WorkflowCardPill label={scheduleCount ? `${scheduleCount} schedule${scheduleCount === 1 ? '' : 's'}` : recentRunLabel || 'Draft'} muted={!scheduleCount && !recentRunLabel} />
-                    <WorkflowCardPill label={runCountLabel} />
                 </div>
 
-                <div className="mt-3 flex items-center justify-between text-xs text-[var(--text-tertiary)]">
-                    <span className="truncate">{participantLabel}</span>
-                    <span className="inline-flex items-center gap-1 font-medium text-[var(--text-secondary)] opacity-0 transition-gentle group-hover:translate-x-0.5 group-hover:opacity-100">
-                        Open
-                        <ChevronRight className="h-3.5 w-3.5" />
+                <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-tertiary)]">
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full bg-current', healthColorClass)} aria-hidden />
+                        <span className="truncate">{runsSummary}</span>
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-2">
+                        {scheduleCount > 0 ? (
+                            <span className="inline-flex items-center gap-1" title={`${scheduleCount} schedule${scheduleCount === 1 ? '' : 's'}`}>
+                                <Clock3 className="h-3.5 w-3.5" aria-hidden />
+                                {scheduleCount}
+                            </span>
+                        ) : null}
+                        <span className="inline-flex items-center gap-1 font-medium text-[var(--text-secondary)] opacity-0 transition-gentle group-hover:translate-x-0.5 group-hover:opacity-100">
+                            Open
+                            <ChevronRight className="h-3.5 w-3.5" />
+                        </span>
                     </span>
                 </div>
             </Link>
         </article>
-    );
-}
-
-function WorkflowCardPill({ label, muted }: { label: string; muted?: boolean }) {
-    return (
-        <span className={cn(
-            'chip chip-sm',
-            muted ? 'chip-muted text-[var(--text-tertiary)]' : 'state-badge-brand'
-        )}>
-            {label}
-        </span>
     );
 }
 
@@ -763,12 +828,12 @@ function FunctionRow({
             </span>
             <Link
                 href={`/pod/${podId}/functions/${encodeURIComponent(func.name)}`}
-                className="custom-focus-ring flex min-w-0 flex-1 items-baseline gap-2 rounded"
+                className="custom-focus-ring flex min-w-0 flex-1 items-baseline gap-2.5 rounded"
             >
-                <p className="truncate text-sm font-medium text-[var(--text-primary)]">{func.name}</p>
-                <p className="hidden truncate text-xs text-[var(--text-secondary)] md:block">
+                <span className="min-w-0 basis-[15rem] truncate font-mono text-sm text-[var(--text-primary)]">{func.name}</span>
+                <span className="hidden min-w-0 flex-1 truncate text-xs text-[var(--text-secondary)] md:block">
                     {func.description || 'No description yet'}
-                </p>
+                </span>
             </Link>
 
             {func.status && func.status !== 'READY' ? (
@@ -777,11 +842,15 @@ function FunctionRow({
                 </span>
             ) : null}
             <ResourceVisibilityBadge visibility={func.visibility} resourceLabel="functions" compact />
-            <span className="hidden shrink-0 text-xs text-[var(--text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline">
-                {usageCount > 0
-                    ? `Used in ${usageCount} workflow${usageCount > 1 ? 's' : ''}`
-                    : 'Not used yet'}
-            </span>
+            {usageCount > 0 ? (
+                <span
+                    className="hidden shrink-0 items-center gap-1.5 text-xs text-[var(--state-success)] sm:inline-flex"
+                    title={`Used in ${usageCount} workflow${usageCount === 1 ? '' : 's'}`}
+                >
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                    used
+                </span>
+            ) : null}
 
             <div className="flex shrink-0 items-center gap-1 opacity-0 transition-gentle group-hover:opacity-100">
                 {hasMenuActions ? (

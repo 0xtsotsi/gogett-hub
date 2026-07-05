@@ -112,6 +112,11 @@ class VariableSpec(BaseModel):
     description: str | None = None
     required: bool = False
     default: str | None = None
+    # For ``kind="account"`` surfaced connectors: the connector platform the
+    # account must belong to (e.g. "slack", "telegram"), so the importer UI can
+    # prompt for — and connect — the right connector. None for accounts with no
+    # platform context (e.g. a schedule's account) or non-account variables.
+    platform: str | None = None
 
 
 class ImportPlan(BaseModel):
@@ -196,7 +201,13 @@ class ImportState(_BundleJobState):
 class ExportState(_BundleJobState):
     export_id: UUID
     status: ExportStatus = ExportStatus.QUEUED
-    with_data: bool = True
+    with_data: bool = False
+    # Opt-in per-table seed selection: seed row data only for these table names.
+    # Independent of with_data (which seeds every table); the effective set is the
+    # union of the two.
+    data_tables: list[str] | None = None
+    # Opt-in: include the pod's file storage (folders + file bytes).
+    with_files: bool = False
     include: list[str] | None = None
     ttl_seconds: int | None = None
     staging_key: str | None = None

@@ -59,7 +59,19 @@ def test_kreuzberg_included_when_enabled(config, paths, manifest):
     store.set_value(config, "features.kreuzberg", "true")
     specs = build(config, paths, manifest)
     assert "kreuzberg" in [s.name for s in specs]
-    assert by_name(specs, "backend").env["KREUZBERG_URL"] == "http://kreuzberg:8000"
+    backend = by_name(specs, "backend")
+    assert backend.env["KREUZBERG_URL"] == "http://kreuzberg:8000"
+    assert backend.env["DOCUMENT_PROCESSOR"] == "kreuzberg"
+
+
+def test_document_processor_defaults_to_markitdown_without_kreuzberg(config, paths, manifest):
+    # Default install (kreuzberg disabled): no container, and the backend uses
+    # the in-process markitdown adapter with no Kreuzberg URL.
+    specs = build(config, paths, manifest)
+    assert "kreuzberg" not in [s.name for s in specs]
+    backend = by_name(specs, "backend")
+    assert backend.env["DOCUMENT_PROCESSOR"] == "markitdown"
+    assert backend.env["KREUZBERG_URL"] == ""
 
 
 def test_run_args_snapshot_db(config, paths, manifest):

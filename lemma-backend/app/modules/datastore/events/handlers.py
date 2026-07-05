@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from faststream import Depends, Logger
+from faststream import Logger
 from faststream.redis import RedisRouter
 
 from app.core.config import settings
@@ -13,12 +13,10 @@ from app.modules.datastore.config import datastore_settings
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import (
     SessionUnitOfWorkFactory,
-    UnitOfWorkFactory,
 )
 from app.core.infrastructure.events.stream_subscriber import redis_stream_sub
 from app.modules.datastore.api.dependencies import (
     build_file_service,
-    build_pod_member_sync_service,
 )
 from app.modules.datastore.domain.events import (
     DATASTORE_EVENTS_STREAM,
@@ -36,11 +34,6 @@ from app.modules.datastore.services.file_processing_service import (
 )
 from app.modules.datastore.services.file_recovery_service import (
     DatastoreFileRecoveryService,
-)
-from app.modules.pod.domain.events import (
-    PodEvents,
-    PodMemberAddedEvent,
-    PodMemberRemovedEvent,
 )
 from app.core.infrastructure.jobs.streaq_runtime import AppWorkerContext, streaq_cron, streaq_task, streaq_worker
 from app.core.log.log import get_logger
@@ -64,10 +57,6 @@ def _get_document_processing_semaphore() -> asyncio.Semaphore:
         _document_processing_semaphore_limit = limit
 
     return _document_processing_semaphore
-
-
-def provide_uow_factory() -> UnitOfWorkFactory:
-    return SessionUnitOfWorkFactory(async_session_maker)
 
 
 def _content_update_defer_until(occurred_at: datetime) -> datetime | None:
@@ -108,28 +97,6 @@ async def _enqueue_file_processing(
             "Skipped enqueue for %s because it was duplicate or not eligible",
             event.file_id,
         )
-
-
-@router.subscriber(stream=redis_stream_sub(PodEvents.STREAM))
-async def handle_pod_member_sync(
-    event: dict,
-    fs_logger: Logger,
-    uow_factory: UnitOfWorkFactory = Depends(provide_uow_factory),
-):
-    event_type = event.get("event_type")
-
-    if event_type == PodMemberAddedEvent.get_event_type():
-        parsed = PodMemberAddedEvent.model_validate(event)
-        async with uow_factory() as uow:
-            await build_pod_member_sync_service(uow).sync_member_added(parsed)
-        fs_logger.info("Synced pod.member.added for pod %s", parsed.pod_id)
-        return
-
-    if event_type == PodMemberRemovedEvent.get_event_type():
-        parsed = PodMemberRemovedEvent.model_validate(event)
-        async with uow_factory() as uow:
-            await build_pod_member_sync_service(uow).sync_member_removed(parsed)
-        fs_logger.info("Synced pod.member.removed for pod %s", parsed.pod_id)
 
 
 @router.subscriber(stream=redis_stream_sub(DATASTORE_EVENTS_STREAM))

@@ -88,6 +88,7 @@ async def handle_surface_webhook(
                 source=event.source,
                 payload=event.payload,
                 headers=event.headers or {},
+                receiver_surface_ids=event.receiver_surface_ids,
             )
 
         async with uow_factory() as uow:

@@ -111,7 +111,7 @@
 }
 
 .pod-home-work-section {
-  padding-top: var(--space-8);
+  padding-top: var(--space-4);
   border-top: 0 !important;
   box-shadow: none !important;
 }
@@ -131,9 +131,9 @@
 }
 
 .pod-home-work-title {
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-size: 1rem;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.4;
   letter-spacing: 0;
 }
@@ -180,7 +180,7 @@
 .pod-home-work-section-label {
   font-family: var(--font-mono-family);
   font-size: 0.656rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-tertiary);
@@ -363,4 +363,12 @@
 
 .pod-home-work-empty p + p {
   color: var(--text-muted);
+}
+
+/* Brand surface logos (Slack, Gmail, Telegram…) are drawn for light backgrounds.
+   Chip them on white in both light and dark mode so Gmail's baked-in white edge
+   reads as an intentional app tile instead of a stray box on a dark surface. */
+.surface-logo-chip {
+  background: #ffffff;
+  border: 0.5px solid color-mix(in srgb, var(--border-subtle) 55%, transparent);
 }

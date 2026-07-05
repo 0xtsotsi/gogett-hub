@@ -35,15 +35,14 @@ lemma servers list
 
 ## Cloud Setup
 
-Lemma Cloud is the default server:
+The CLI ships with a single server, **`lemma-cloud`**, already active:
 
 - API: `https://api.lemma.work`
 - Auth: `https://lemma.work/auth`
 
-Create or refresh the cloud server:
+So a fresh install just logs in:
 
 ```bash
-lemma servers cloud --use
 lemma auth login
 ```
 
@@ -102,6 +101,51 @@ Environment variables continue to work for humans, scripts, and agents:
 
 Command-line flags take precedence over environment variables.
 
+## Project folders (`.lemma.<server>.env`)
+
+Working across several pods — e.g. a coding agent (Claude Code, Codex) in a
+different repo per pod — no longer needs per-shell `export`s or mutating the global
+config. A project's **server and pod change together** (local stack vs. cloud), so
+the CLI reads a small family of files keyed by the active server (Vite's
+`.env.<mode>` model). `lemma app init` / `lemma pods create --with-starter` write
+them for you; you can also edit by hand:
+
+```sh
+# .lemma.env — base. Commit. Optionally sets the folder's default server.
+LEMMA_SERVER=local
+
+# .lemma.local.env — binding for the `local` server. Commit. NO secrets.
+LEMMA_POD_ID=pod_local_abc
+# LEMMA_ORG_ID=org_...        # optional — resolved from the pod if omitted
+
+# .lemma.lemma-cloud.env — binding for the `lemma-cloud` (cloud) server. Commit.
+LEMMA_POD_ID=pod_cloud_xyz
+```
+
+Now the same repo drives both targets:
+
+```bash
+lemma pods describe                    # uses .lemma.local.env (folder default server)
+lemma --server lemma-cloud apps deploy # uses .lemma.lemma-cloud.env
+```
+
+- The CLI loads the **nearest** anchor (`.lemma.env` or any `.lemma.<server>.env`)
+  walking up from the cwd (ceiling: the git repo root, else `$HOME`), so it works
+  from any subdirectory. The active server is resolved exactly as elsewhere: `--server`
+  → `LEMMA_SERVER` → the base file's `LEMMA_SERVER` → your config's `active_server`.
+- Personal per-machine overrides live in gitignored `.lemma.env.local` /
+  `.lemma.<server>.env.local`. Precedence (low→high): `.lemma.env` <
+  `.lemma.env.local` < `.lemma.<server>.env` < `.lemma.<server>.env.local` < real env
+  < `--flag`.
+- Only `LEMMA_*` keys are read; a real shell/agent env var always wins over the files.
+- Bind an unbound server with `lemma app init` / `lemma pods create --with-starter`;
+  otherwise a command that needs a pod fails with a clear
+  `No pod bound for server '<server>'` hint.
+- **Don't commit tokens.** Auth comes from your stored login (`lemma auth login`);
+  `LEMMA_TOKEN` is an agentbox concept. A real `LEMMA_TOKEN` in the environment makes
+  the CLI ignore the project files entirely.
+- `lemma config show` reports the resolved server and which files were applied.
+
 ## Terminal UI
 
 Open the TUI:
@@ -146,10 +190,9 @@ See `lemma-stack --help` and the `lemma-stack/` package for details.
 
 ## Common Workflow
 
-Cloud:
+Cloud (the shipped default — nothing to add):
 
 ```bash
-lemma servers cloud --use
 lemma auth login
 lemma orgs select --save-default
 lemma pods select --save-default

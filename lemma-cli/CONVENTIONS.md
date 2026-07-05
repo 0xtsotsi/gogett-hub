@@ -79,8 +79,17 @@ Every `delete` (and any other irreversible command) must call
   conversation_id}`).
 - The word for a stored backend connection is **server** (not context). The `env`
   server is synthesized from `LEMMA_*` env vars and is read-only.
-- Resolution priority for org/pod/conversation: CLI flag → `LEMMA_*` env var → stored
-  default.
+- Resolution priority for org/pod/conversation: CLI flag → `LEMMA_*` env var →
+  project `.lemma.<server>.env` → project `.lemma.env` → stored default.
+- A project folder binds itself with **`.lemma.<server>.env`** files (dotenv syntax,
+  committed, no secrets) keyed by the active server — so one repo can target a local
+  pod and a cloud pod (server + pod change together). A base `.lemma.env` sets the
+  folder's default `LEMMA_SERVER`; `.lemma.<server>.env` sets `LEMMA_POD_ID`. The CLI
+  discovers the nearest anchor walking up from the cwd (ceiling: git repo root, else
+  `$HOME`), resolves the active server, and applies the matching files' `LEMMA_*` keys
+  before resolving state. Gitignored `.lemma.env.local` / `.lemma.<server>.env.local`
+  override per-machine. Real process env always wins (a real `LEMMA_TOKEN` — e.g.
+  agentbox — skips the files entirely). `init` writes these. See `SETUP.md`.
 - `pods select` stores the pod **and** its org; `orgs select` stores the org and
   clears the pod (a pod belongs to one org).
 

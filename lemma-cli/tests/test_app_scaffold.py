@@ -167,6 +167,19 @@ def test_scaffold_app_writes_env_local(tmp_path):
     assert not (target / ".env.development.local").exists()
 
 
+def test_scaffold_app_client_reads_runtime_config(tmp_path):
+    # Portable apps: the client bakes no pod context — it reads the host-injected
+    # window.__LEMMA_CONFIG__ at runtime (VITE_* stays a dev-only fallback).
+    target = tmp_path / "app"
+    scaffold_app(_options(target))
+
+    client = (target / "src" / "lemma-client.ts").read_text(encoding="utf-8")
+    assert "new LemmaClient()" in client
+    assert "import.meta.env.VITE_LEMMA_POD_ID" not in client
+    # .env.local is still written so `vite dev` has a fallback.
+    assert (target / ".env.local").exists()
+
+
 def test_scaffold_app_proxy_keeps_real_api_url_in_env_local(tmp_path):
     # The proxy '/api' override must live in .env.development.local (dev only) so
     # `vite build` (deploy) still bakes the REAL API URL — otherwise a deployed

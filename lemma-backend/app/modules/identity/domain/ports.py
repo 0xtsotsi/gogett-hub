@@ -13,6 +13,7 @@ from app.modules.identity.domain.organization_entities import (
     OrganizationRole,
 )
 from app.modules.identity.domain.user_entities import UserEntity
+from app.modules.identity.domain.user_preferences import UserPreferences
 
 
 class UserRepositoryPort(Protocol):
@@ -23,6 +24,10 @@ class UserRepositoryPort(Protocol):
     async def get_by_email(self, email: str) -> Optional[UserEntity]: ...
 
     async def update(self, entity: UserEntity) -> UserEntity: ...
+
+    async def set_preferences(
+        self, user_id: UUID, preferences: UserPreferences
+    ) -> UserEntity: ...
 
     async def get_id_by_mobile_digits(self, digits: str) -> Optional[UUID]: ...
 

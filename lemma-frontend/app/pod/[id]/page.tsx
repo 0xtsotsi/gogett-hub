@@ -4,18 +4,15 @@ import { use, useEffect, useMemo, useRef, useState, type CSSProperties } from 'r
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, ArrowUp, ExternalLink, Loader2, MessageCircle, Plus, UserPlus, X } from 'lucide-react';
+import { ArrowRight, ArrowUp, Loader2, MessageCircle, Plus, UserPlus, X } from 'lucide-react';
 
 import { useAIAssistant } from '@/components/ai/ai-assistant-context';
 import { StepLoader } from '@/components/brand/loader';
 import { ProtectedRoute } from '@/components/auth/protected-route';
 import { FirstWinChecklist } from '@/components/education/first-win-checklist';
-import { ResourceIcon } from '@/components/shared/resource-icon';
-import { ProductIcon } from '@/components/pod/product-icon';
 import { resolveDefaultAgentRuntime } from '@/components/agents/agent-runtime-helpers';
 import { RuntimeModelPicker } from '@/components/lemma/assistant/model-picker';
 import { RecipeFeatureCard } from '@/components/recipes/recipe-card';
-import { useAppPages } from '@/lib/hooks/use-app';
 import { featuredRecipes } from '@/lib/recipes/recipes';
 import { useLaunchRecipe } from '@/lib/recipes/use-launch-recipe';
 import { useAgents } from '@/lib/hooks/use-agents';
@@ -26,7 +23,6 @@ import {
     useFlows,
     useWorkflowRunSnapshots,
 } from '@/lib/hooks/use-flows';
-import { getAppAccent } from '@/lib/app/app-accent';
 import { usePod } from '@/lib/hooks/use-pods';
 import { usePodAccess } from '@/lib/hooks/use-pod-access';
 import { usePodJoinRequests } from '@/lib/hooks/use-pod-join-requests';
@@ -519,7 +515,6 @@ function PodAgentWorkflowKanban({ podId }: { podId: string }) {
             ) : null}
             <div className="mt-10 w-full space-y-5">
                 <PodJoinRequestsHomePanel podId={podId} />
-                <PodAppsHomePanel podId={podId} />
                 <PodSurfacesHomePanel podId={podId} />
             {isLoading || hasKanbanItems ? (
                 <section className="pod-home-work-section">
@@ -581,82 +576,6 @@ function PodAgentWorkflowKanban({ podId }: { podId: string }) {
     );
 }
 
-function formatAppTitle(value: string | null | undefined) {
-    const cleaned = (value || '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!cleaned) return 'Untitled';
-    return cleaned.split(' ').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
-}
-
-function formatAppUrl(value: string | null | undefined) {
-    if (!value) return '';
-    return value.replace(/^https?:\/\//, '').replace(/\/$/, '');
-}
-
-function PodAppsHomePanel({ podId }: { podId: string }) {
-    const { pages, isLoading } = useAppPages(podId);
-
-    if (isLoading || pages.length === 0) return null;
-
-    const featured = pages.slice(0, 6);
-
-    return (
-        <section className="w-full">
-            <div className="flex items-center justify-between gap-4">
-                <h2 className="text-base font-medium text-[var(--text-primary)]">Your apps</h2>
-                <Link
-                    href={`/pod/${podId}/app/pages`}
-                    className="custom-focus-ring group/all inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
-                >
-                    All apps
-                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover/all:translate-x-0.5" />
-                </Link>
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {featured.map((page) => {
-                    const title = formatAppTitle(page.title || page.slug);
-                    const viewHref = `/pod/${podId}/app/view?page=${encodeURIComponent(page.slug)}`;
-                    const accent = getAppAccent(page.slug);
-
-                    return (
-                        <article key={page.slug} data-accent={accent} className="resource-index-card app-tile group">
-                            <div className="flex items-center gap-3">
-                                <Link href={viewHref} aria-label={`Open ${title}`} className="shrink-0">
-                                    <span className="app-icon flex h-10 w-10 items-center justify-center rounded-xl text-sm font-medium">
-                                        {page.icon || title.charAt(0)}
-                                    </span>
-                                </Link>
-                                <div className="min-w-0 flex-1">
-                                    <Link href={viewHref} className="block truncate text-sm font-medium text-[var(--text-primary)]">
-                                        {title}
-                                    </Link>
-                                    {page.url ? (
-                                        <p className="mt-0.5 truncate font-mono text-xs text-[var(--text-tertiary)]">
-                                            {formatAppUrl(page.url)}
-                                        </p>
-                                    ) : null}
-                                </div>
-                                {page.url ? (
-                                    <a
-                                        href={page.url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        aria-label="Open live app"
-                                        title="Open live app"
-                                        className="lemma-quiet-icon-button custom-focus-ring text-[var(--text-tertiary)]"
-                                    >
-                                        <ExternalLink className="h-3.5 w-3.5" />
-                                    </a>
-                                ) : null}
-                            </div>
-                        </article>
-                    );
-                })}
-            </div>
-        </section>
-    );
-}
-
 const SURFACE_META: Record<string, { label: string; logo: string }> = {
     SLACK: { label: 'Slack', logo: '/surfaces/slack.png' },
     TEAMS: { label: 'Teams', logo: '/surfaces/teams.png' },
@@ -700,23 +619,28 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
     if (surfaces.length === 0) {
         return (
             <section className="w-full">
-                <h2 className="text-base font-medium text-[var(--text-primary)]">Reachable at</h2>
-                <div className="mt-3 flex items-start gap-4 surface-panel-dashed px-5 py-5">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--delight-soft)] text-[var(--delight)]">
-                        <MessageCircle className="h-5 w-5" strokeWidth={1.8} />
+                <h2 className="text-base font-normal text-[var(--text-secondary)]">Surfaces</h2>
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <span className="flex items-center gap-1.5">
+                        {(['SLACK', 'GMAIL', 'TELEGRAM'] as const).map((key) => (
+                            <span
+                                key={key}
+                                className="surface-logo-chip flex h-7 w-7 items-center justify-center rounded-md"
+                            >
+                                <Image src={SURFACE_META[key].logo} alt={SURFACE_META[key].label} width={16} height={16} className="object-contain" />
+                            </span>
+                        ))}
                     </span>
-                    <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-[var(--text-primary)]">Let work reach this pod</p>
-                        <p className="mt-1 max-w-xl text-sm leading-6 text-[var(--text-secondary)]">
-                            Connect Slack, Gmail, Telegram and more — the pod picks up messages and an agent replies where your team already works.
-                        </p>
+                    <p className="text-sm leading-6 text-[var(--text-secondary)]">
+                        No surfaces yet —{' '}
                         <Link
                             href={surfacesHref}
-                            className="custom-focus-ring mt-3 inline-flex h-9 items-center justify-center gap-2 rounded-md border border-[color:var(--button-secondary-border)] bg-[var(--button-secondary-bg)] px-3 text-sm font-medium text-[var(--button-secondary-fg)] transition-colors hover:border-[var(--field-border-hover)] hover:bg-[var(--button-secondary-bg-hover)]"
+                            className="custom-focus-ring font-medium text-[var(--text-primary)] underline-offset-2 hover:underline"
                         >
-                            Connect a channel
-                        </Link>
-                    </div>
+                            connect a surface
+                        </Link>{' '}
+                        so this pod can answer messages where your team already works.
+                    </p>
                 </div>
             </section>
         );
@@ -728,55 +652,61 @@ function PodSurfacesHomePanel({ podId }: { podId: string }) {
 
     return (
         <section className="w-full">
-            <div className="flex items-center justify-between gap-4">
-                <h2 className="text-base font-medium text-[var(--text-primary)]">Reachable at</h2>
+            <div className="flex items-center justify-between gap-3">
+                <h2 className="text-base font-normal text-[var(--text-secondary)]">Surfaces</h2>
                 <Link
                     href={surfacesHref}
-                    className="custom-focus-ring group/all inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
+                    className="custom-focus-ring shrink-0 text-sm font-medium text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
                 >
-                    All channels
-                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover/all:translate-x-0.5" />
+                    Manage
                 </Link>
             </div>
-            <div className="mt-3 overflow-hidden surface-panel surface-panel-quiet">
+            <ul className="mt-2 flex flex-col gap-0.5">
                 {sorted.map((surface) => {
                     const platform = String(surface.platform || '').toUpperCase();
-                    const meta = SURFACE_META[platform] || { label: formatDisplayName(platform), logo: '' };
+                    const meta = SURFACE_META[platform];
+                    const label = meta?.label || formatDisplayName(platform);
                     const status = surfaceStatusView(surface.status);
                     const tone = SURFACE_STATUS_TONE[status.tone];
                     const address = surfaceAddress(surface);
                     const responder = surface.agent_name?.trim() || 'Pod default';
 
                     return (
-                        <Link
-                            key={surface.id}
-                            href={surfacesHref}
-                            className="group flex items-center gap-3 border-b border-[color:color-mix(in_srgb,var(--border-subtle)_55%,transparent)] px-4 py-3 transition-colors last:border-b-0 hover:bg-[var(--surface-2)]"
-                        >
-                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-2)]">
-                                {meta.logo ? (
-                                    <Image src={meta.logo} alt="" width={18} height={18} className="object-contain" />
-                                ) : (
-                                    <MessageCircle className="h-4 w-4 text-[var(--text-secondary)]" />
-                                )}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm text-[var(--text-primary)]">
-                                    <span className="font-medium">{meta.label}</span>
-                                    {address ? <span className="text-[var(--text-tertiary)]"> · {address}</span> : null}
-                                </p>
-                                <p className="mt-0.5 truncate text-xs text-[var(--text-secondary)]">
-                                    {responder} answers
-                                </p>
-                            </div>
-                            <span className={cn('inline-flex shrink-0 items-center gap-1.5 text-xs', tone.text)}>
-                                <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
-                                {status.label}
-                            </span>
-                        </Link>
+                        <li key={surface.id}>
+                            <Link
+                                href={surfacesHref}
+                                className="group flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[color:color-mix(in_srgb,var(--surface-2)_55%,transparent)]"
+                            >
+                                <span className={cn(
+                                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                                    meta?.logo
+                                        ? 'surface-logo-chip'
+                                        : 'border border-[color:color-mix(in_srgb,var(--border-subtle)_50%,transparent)] bg-[var(--surface-2)]'
+                                )}>
+                                    {meta?.logo ? (
+                                        <Image src={meta.logo} alt="" width={16} height={16} className="object-contain" />
+                                    ) : (
+                                        <MessageCircle className="h-4 w-4 text-[var(--text-secondary)]" />
+                                    )}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm text-[var(--text-primary)]">
+                                        <span className="font-normal">{label}</span>
+                                        {address ? <span className="text-[var(--text-tertiary)]"> · {address}</span> : null}
+                                    </p>
+                                    <p className="truncate text-xs text-[var(--text-secondary)]">
+                                        {responder} answers
+                                    </p>
+                                </div>
+                                <span className={cn('inline-flex shrink-0 items-center gap-1.5 text-xs', tone.text)}>
+                                    <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
+                                    {status.label}
+                                </span>
+                            </Link>
+                        </li>
                     );
                 })}
-            </div>
+            </ul>
         </section>
     );
 }
@@ -788,7 +718,7 @@ function PodRecipesHomePanel({ podId }: { podId: string }) {
     if (featured.length === 0) return null;
 
     return (
-        <section className="w-full py-4">
+        <section className="w-full">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div className="max-w-2xl">
                     <p className="type-eyebrow-mono">
@@ -828,44 +758,23 @@ function KanbanCard({ item }: { item: KanbanItem }) {
     return (
         <Link
             href={item.href}
-            className={cn(
-                'pod-home-work-card group block rounded-md px-2 py-3 transition-gentle'
-            )}
+            className="group flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-[color:color-mix(in_srgb,var(--surface-2)_50%,transparent)]"
         >
-            <div className="pod-home-work-card-content">
-                <span className="pod-home-work-row-icon">
-                    <ResourceIcon
-                        iconUrl={item.kind === 'agent' ? item.iconUrl : null}
-                        alt={`${item.title} icon`}
-                        label={item.title}
-                        fallback={<ProductIcon tone={item.kind === 'agent' ? 'agents' : 'workflows'} size="sm" />}
-                        className="pod-home-work-resource-icon"
-                        imageClassName="object-contain p-1"
-                    />
-                </span>
-                <div className="min-w-0">
-                    <div className="pod-home-work-card-title block truncate text-sm font-normal leading-snug text-[var(--text-primary)]">
-                        {item.title}
-                    </div>
-                    <div className="pod-home-work-card-detail mt-0.5 block truncate text-xs leading-5 text-[var(--text-tertiary)]">
-                        {item.detail}
-                    </div>
-                </div>
-                <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[var(--text-tertiary)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--text-primary)]" />
-            </div>
-            <StatusMarker status={item.status} tone={item.statusTone} />
+            <span
+                className={cn(
+                    'h-1.5 w-1.5 shrink-0 rounded-full',
+                    item.statusTone === 'live' && 'animate-pulse',
+                    kanbanDotClass(item.statusTone),
+                )}
+                aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 truncate text-sm text-[var(--text-primary)]">
+                {item.title}
+            </span>
+            <span className="max-w-[55%] shrink-0 truncate text-xs text-[var(--text-tertiary)]">
+                {item.detail}
+            </span>
         </Link>
-    );
-}
-
-function StatusMarker({ status, tone }: { status: string; tone: KanbanItem['statusTone'] }) {
-    if (tone !== 'live') return null;
-
-    return (
-        <span className={cn('pod-home-work-status', getStatusToneClass(tone))}>
-            <span className="h-1.5 w-1.5 rounded-full bg-current" />
-            {status}
-        </span>
     );
 }
 
@@ -920,12 +829,12 @@ function formatRelativeTime(value: string | null | undefined) {
     return `${diffDays}d ago`;
 }
 
-function getStatusToneClass(tone: KanbanItem['statusTone']) {
-    if (tone === 'danger') return 'text-[var(--state-error)]';
-    if (tone === 'warning') return 'text-[var(--delight)]';
-    if (tone === 'success') return 'text-[var(--state-success)]';
-    if (tone === 'live') return 'text-[var(--state-info)]';
-    return 'text-[var(--text-tertiary)]';
+function kanbanDotClass(tone: KanbanItem['statusTone']) {
+    if (tone === 'danger') return 'bg-[var(--state-error)]';
+    if (tone === 'warning') return 'bg-[var(--delight)]';
+    if (tone === 'success') return 'bg-[var(--state-success)]';
+    if (tone === 'live') return 'bg-[var(--state-info)]';
+    return 'bg-[var(--text-tertiary)]';
 }
 
 function formatDisplayName(value: string | null | undefined) {

@@ -1,0 +1,6 @@
+{
+  "name": "slack",
+  "platform": "SLACK",
+  "account_id": "${slack_account}",
+  "is_enabled": true
+}

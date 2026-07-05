@@ -77,3 +77,42 @@ async def test_redis_outage_degrades_to_miss_with_warning(monkeypatch, caplog):
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
     assert any("cache read failed" in m for m in warnings)
     assert any("cache write failed" in m for m in warnings)
+
+
+class _RecordingCache:
+    def __init__(self):
+        self.deleted_prefixes: list[str] = []
+        self.cleared = 0
+
+    async def delete_prefix(self, sub_prefix: str) -> None:
+        self.deleted_prefixes.append(sub_prefix)
+
+    async def clear_prefix(self) -> None:
+        self.cleared += 1
+
+
+@pytest.mark.asyncio
+async def test_invalidate_with_user_id_targets_only_that_principal(monkeypatch):
+    recorder = _RecordingCache()
+    monkeypatch.setattr(cache_module, "_get_role_cache", lambda: recorder)
+    user_id = uuid4()
+
+    await cache_module.invalidate_role_snapshot_cache(
+        organization_id=uuid4(), pod_id=uuid4(), user_id=user_id
+    )
+
+    assert recorder.deleted_prefixes == [f"{user_id}:"]
+    assert recorder.cleared == 0
+
+
+@pytest.mark.asyncio
+async def test_invalidate_without_user_id_clears_everything(monkeypatch):
+    recorder = _RecordingCache()
+    monkeypatch.setattr(cache_module, "_get_role_cache", lambda: recorder)
+
+    await cache_module.invalidate_role_snapshot_cache(
+        organization_id=uuid4(), pod_id=uuid4()
+    )
+
+    assert recorder.cleared == 1
+    assert recorder.deleted_prefixes == []

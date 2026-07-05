@@ -83,6 +83,17 @@ _ENSURED_ROLE_SCOPES: set[tuple[UUID, UUID | None]] = set()
 
 
 @dataclass(frozen=True, slots=True)
+class MemberAuthorizationTargets:
+    """Authorization data tied to an org member, captured before removal so the
+    (FK-less, non-cascading) role assignments/grants can be purged afterward."""
+
+    user_id: UUID | None
+    organization_member_id: UUID
+    # (pod_member_id, pod_id) for each pod membership under this org member.
+    pod_memberships: tuple[tuple[UUID, UUID], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RoleSummary:
     id: UUID
     organization_id: UUID
@@ -360,8 +371,17 @@ class AuthorizationDataService:
                 )
             )
         await self.session.flush()
+        # Targeted invalidation: an assignment change touches exactly one
+        # principal, so drop only that principal's snapshots rather than flushing
+        # every user's. Falls back to a full clear when the principal can't be
+        # mapped to its snapshot key (safe superset).
+        snapshot_principal_id = await self._resolve_snapshot_principal_id(
+            principal_type, principal_id
+        )
         await invalidate_role_snapshot_cache(
-            organization_id=organization_id, pod_id=pod_id
+            organization_id=organization_id,
+            pod_id=pod_id,
+            user_id=snapshot_principal_id,
         )
         return normalized
 
@@ -818,6 +838,112 @@ class AuthorizationDataService:
             role_names.add(role_name)
             if permission_id is not None:
                 permission_ids.add(permission_id)
+
+    async def _resolve_snapshot_principal_id(
+        self, principal_type: str, principal_id: UUID
+    ) -> UUID | None:
+        """Map a role-assignment principal to the id its role snapshot is cached
+        under (see ``cache._snapshot_suffix``), or ``None`` when it can't be
+        resolved so the caller falls back to a full-cache invalidation.
+
+        Workload snapshots are cached under the workload principal id itself;
+        org/pod member snapshots are cached under the human ``user_id``.
+        """
+        normalized = principal_type.upper()
+        if normalized in ("AGENT", "FUNCTION"):
+            return principal_id
+        if normalized == "ORG_MEMBER":
+            return (
+                await self.session.execute(
+                    select(OrganizationMember.user_id).where(
+                        OrganizationMember.id == principal_id
+                    )
+                )
+            ).scalar_one_or_none()
+        if normalized == "POD_MEMBER":
+            return (
+                await self.session.execute(
+                    select(OrganizationMember.user_id)
+                    .join(
+                        PodMember,
+                        PodMember.organization_member_id == OrganizationMember.id,
+                    )
+                    .where(PodMember.id == principal_id)
+                )
+            ).scalar_one_or_none()
+        return None
+
+    async def delete_principal_role_assignments(
+        self, *, principal_type: str, principal_id: UUID
+    ) -> None:
+        """Delete every role assignment held by a principal.
+
+        ``RoleAssignmentModel.principal_id`` is polymorphic and carries no FK, so
+        these rows do not cascade when the underlying member/workload is deleted.
+        Call this on removal to avoid orphaned assignments. Parallel to
+        ``delete_grantee_grants`` for resource grants.
+        """
+        await self.session.execute(
+            delete(RoleAssignmentModel).where(
+                RoleAssignmentModel.principal_type == principal_type,
+                RoleAssignmentModel.principal_id == principal_id,
+            )
+        )
+        await self.session.flush()
+
+    async def member_authorization_targets(
+        self, *, organization_member_id: UUID
+    ) -> "MemberAuthorizationTargets | None":
+        """Snapshot the authorization data tied to an org member before it is
+        removed: the human ``user_id`` and the pod memberships that will
+        cascade-delete with it (their role assignments/grants do not cascade).
+
+        Returns ``None`` when the org member does not exist. Read-only, so it is
+        safe to call before the removal is authorized.
+        """
+        row = (
+            await self.session.execute(
+                select(OrganizationMember.user_id).where(
+                    OrganizationMember.id == organization_member_id
+                )
+            )
+        ).first()
+        if row is None:
+            return None
+        pod_rows = (
+            await self.session.execute(
+                select(PodMember.id, PodMember.pod_id).where(
+                    PodMember.organization_member_id == organization_member_id
+                )
+            )
+        ).all()
+        return MemberAuthorizationTargets(
+            user_id=row[0],
+            organization_member_id=organization_member_id,
+            pod_memberships=tuple((r[0], r[1]) for r in pod_rows),
+        )
+
+    async def purge_member_authorization(
+        self, targets: "MemberAuthorizationTargets"
+    ) -> None:
+        """Delete the role assignments + resource grants for a removed org member
+        and its (cascade-deleted) pod memberships, then invalidate the removed
+        user's cached role snapshots so access is revoked on the next request."""
+        for pod_member_id, pod_id in targets.pod_memberships:
+            await self.delete_principal_role_assignments(
+                principal_type="POD_MEMBER", principal_id=pod_member_id
+            )
+            await delete_grantee_grants(
+                self.session,
+                pod_id=pod_id,
+                grantee_type="POD_MEMBER",
+                grantee_id=pod_member_id,
+            )
+        await self.delete_principal_role_assignments(
+            principal_type="ORG_MEMBER",
+            principal_id=targets.organization_member_id,
+        )
+        await invalidate_role_snapshot_cache(user_id=targets.user_id)
 
 
 class Authorizer:

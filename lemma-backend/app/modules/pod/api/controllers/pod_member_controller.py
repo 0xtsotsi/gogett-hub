@@ -33,6 +33,7 @@ _PodMemberManageDep = require_action(Permissions.POD_MEMBER_MANAGE, pod_from_pat
     summary="Add Pod Member",
     description="Add a member to a pod",
     response_model=PodMemberResponse,
+    dependencies=[_PodMemberManageDep],
 )
 async def add_member(
     pod_id: UUID,

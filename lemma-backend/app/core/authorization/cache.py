@@ -151,19 +151,29 @@ async def invalidate_role_snapshot_cache(
     pod_id: UUID | None = None,
     user_id: UUID | None = None,
 ) -> None:
-    """Drop cached role snapshots after a grant/role mutation.
+    """Drop cached role snapshots after a grant/role/membership mutation.
 
-    Clears the whole snapshot cache (a safe superset of the
-    organization/pod/user scope): role mutations are infrequent admin operations,
-    and over-clearing only forces a DB re-derivation on the next access — never
-    stale authorization. The scope args are accepted for call-site clarity.
+    When ``user_id`` is given, only that principal's snapshots are dropped — the
+    snapshot key is prefixed by the principal id (``{user_id}:{org}:{pod}``), so
+    a prefix delete removes every org/pod snapshot for that one principal without
+    flushing everyone. ``user_id`` here is the snapshot-key principal: a human
+    user id, or — for workload snapshots — the agent/function principal id.
+
+    Without ``user_id`` the whole snapshot cache is cleared (a safe superset) —
+    the right scope for role-definition changes that affect many principals at
+    once. Over-clearing only forces a DB re-derivation on next access, never
+    stale authorization. The ``organization_id``/``pod_id`` args are accepted for
+    call-site clarity.
     """
-    _ = (organization_id, pod_id, user_id)
+    _ = (organization_id, pod_id)
     cache = _get_role_cache()
     if cache is None:
         return
     try:
-        await cache.clear_prefix()
+        if user_id is not None:
+            await cache.delete_prefix(f"{user_id}:")
+        else:
+            await cache.clear_prefix()
     except Exception:
         logger.warning(
             "Role-snapshot cache invalidation failed; stale snapshots persist "

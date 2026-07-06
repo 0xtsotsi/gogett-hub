@@ -302,11 +302,13 @@ class PodMemberService:
                     "Only org owners or pod admins can remove members"
                 )
 
+        removed_user_id: UUID | None = None
         try:
             org_member_to_remove = await self.organization_repository.get_member_by_id(
                 pod_member.organization_member_id
             )
             if org_member_to_remove:
+                removed_user_id = org_member_to_remove.user_id
                 pod_member.mark_removed(user_id=org_member_to_remove.user_id)
         except Exception as e:
             logger.warning(f"Failed to fetch user info for event emission: {e}")
@@ -314,6 +316,16 @@ class PodMemberService:
         deleted = await self.pod_member_repository.delete_entity(pod_member)
         if not deleted:
             raise PodMemberNotFoundError()
+
+        # Revoke the removed member's cached authorization immediately (and clean
+        # up their role assignments / grants). Without this, a cached role
+        # snapshot would keep granting pod access until its TTL elapses.
+        if self.pod_role_service is not None:
+            await self.pod_role_service.revoke_member_authorization(
+                pod_id=pod_member.pod_id,
+                pod_member_id=pod_member.id,
+                user_id=removed_user_id,
+            )
 
         return True
 

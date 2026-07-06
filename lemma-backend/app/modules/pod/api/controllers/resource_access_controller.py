@@ -18,6 +18,7 @@ from app.core.authorization.grants import (
     validate_pod_resource_grant_permissions,
 )
 from app.core.authorization.models import RoleModel
+from app.core.authorization.permissions import Permissions
 from app.core.authorization.resource_actions import RESOURCE_ACTIONS
 from app.core.authorization.resource_names import resolve_resource_id_by_name
 from app.core.authorization.service import AuthorizationDataService
@@ -50,7 +51,7 @@ class _GrantInput:
     response_model=ResourceAccessResponse,
     status_code=status.HTTP_200_OK,
     operation_id="pod.resource_access.get",
-    dependencies=[require_action("pod.role.manage")],
+    dependencies=[require_action(Permissions.POD_ROLE_MANAGE)],
 )
 async def get_resource_access(
     pod_id: UUID,
@@ -89,7 +90,7 @@ async def get_resource_access(
     response_model=ResourceAccessResponse,
     status_code=status.HTTP_200_OK,
     operation_id="pod.resource_access.grant.replace",
-    dependencies=[require_action("pod.role.manage")],
+    dependencies=[require_action(Permissions.POD_ROLE_MANAGE)],
 )
 async def replace_resource_access_grant(
     pod_id: UUID,
@@ -158,7 +159,7 @@ async def replace_resource_access_grant(
     response_model=ResourceAccessResponse,
     status_code=status.HTTP_200_OK,
     operation_id="pod.resource_access.grant.delete",
-    dependencies=[require_action("pod.role.manage")],
+    dependencies=[require_action(Permissions.POD_ROLE_MANAGE)],
 )
 async def delete_resource_access_grant(
     pod_id: UUID,

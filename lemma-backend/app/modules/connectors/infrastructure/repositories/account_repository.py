@@ -130,6 +130,8 @@ class AccountRepository(
     async def get_by_user_org_and_app(
         self, user_id: UUID, organization_id: UUID, connector_id: str
     ) -> Optional[AccountEntity]:
+        """Org-scoped counterpart of :meth:`get_by_user_and_app` — the user's
+        default (or oldest) account for a connector within one organization."""
         stmt = (
             select(Account)
             .where(
@@ -137,6 +139,7 @@ class AccountRepository(
                 Account.organization_id == organization_id,
                 Account.connector_id == connector_id,
             )
+            .order_by(Account.is_default.desc(), Account.created_at)
             .options(selectinload(Account.connector))
         )
         result = await self.session.execute(stmt)
@@ -150,6 +153,24 @@ class AccountRepository(
         stmt = (
             select(Account)
             .where(Account.user_id == user_id, Account.auth_config_id == auth_config_id)
+            .order_by(Account.is_default.desc(), Account.created_at)
+            .options(selectinload(Account.connector))
+        )
+        result = await self.session.execute(stmt)
+        instance = result.scalars().first()
+        return self._to_entity(instance) if instance else None
+
+    async def get_by_user_org_and_auth_config(
+        self, user_id: UUID, organization_id: UUID, auth_config_id: UUID
+    ) -> Optional[AccountEntity]:
+        """Org-scoped counterpart of :meth:`get_by_user_and_auth_config`."""
+        stmt = (
+            select(Account)
+            .where(
+                Account.user_id == user_id,
+                Account.organization_id == organization_id,
+                Account.auth_config_id == auth_config_id,
+            )
             .order_by(Account.is_default.desc(), Account.created_at)
             .options(selectinload(Account.connector))
         )

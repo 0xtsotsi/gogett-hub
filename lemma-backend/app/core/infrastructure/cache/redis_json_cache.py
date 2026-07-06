@@ -60,11 +60,15 @@ class RedisJsonCache(Generic[T]):
         redis = await self._get_redis()
         await redis.delete(self.build_key(suffix))
 
-    async def clear_prefix(self) -> None:
-        """Delete every key under this cache's prefix (SCAN + DEL). Used by
-        invalidation hooks and test isolation; O(matched keys)."""
+    async def delete_prefix(self, sub_prefix: str) -> None:
+        """Delete every key under ``{key_prefix}:{sub_prefix}*`` (SCAN + DEL).
+
+        Narrower than :meth:`clear_prefix`: lets an invalidation target a single
+        logical group (e.g. all of one principal's role snapshots across orgs and
+        pods) instead of flushing the whole cache. O(matched keys).
+        """
         redis = await self._get_redis()
-        pattern = f"{self._key_prefix}:*"
+        pattern = f"{self._key_prefix}:{sub_prefix}*"
         cursor = 0
         while True:
             cursor, keys = await redis.scan(cursor, match=pattern, count=256)
@@ -72,6 +76,11 @@ class RedisJsonCache(Generic[T]):
                 await redis.delete(*keys)
             if cursor == 0:
                 break
+
+    async def clear_prefix(self) -> None:
+        """Delete every key under this cache's prefix (SCAN + DEL). Used by
+        invalidation hooks and test isolation; O(matched keys)."""
+        await self.delete_prefix("")
 
     async def close(self) -> None:
         if self._redis is None:

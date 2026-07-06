@@ -7,9 +7,11 @@ from supertokens_python.recipe.session.exceptions import TryRefreshTokenError
 from app.core.authorization.current import set_current_context
 from app.core.config import settings
 from app.core.authorization.delegation import (
+    CLAIM_ACTOR_ID,
     DelegationClaimsError,
     parse_delegation_claims,
 )
+from app.core.authorization.delegation_revocation import is_delegation_revoked
 from app.core.log.log import get_logger
 from app.modules.identity.domain.user_entities import AuthUserEntity
 
@@ -124,7 +126,34 @@ async def verify_auth(connection: HTTPConnection):
                         },
                     ) from exc
 
+                if delegation_claims is not None and await is_delegation_revoked(
+                    actor_id=delegation_claims.actor_id
+                ):
+                    # The workload this token delegates for lost its authority
+                    # (e.g. the agent/function was deleted). Reject before it
+                    # expires on its own.
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "DELEGATION_REVOKED",
+                            "message": "Delegated workload has been revoked.",
+                        },
+                    )
+
                 connection.state.delegation_claims = delegation_claims
+            elif payload.get("isImpersonation") is True or payload.get(CLAIM_ACTOR_ID):
+                # Delegation is disabled, but a delegated/impersonation token
+                # (minted with isImpersonation + delegation claims) carries the
+                # workload's authority. Without the delegation layer to clamp it,
+                # honoring it would silently promote it to a full user session, so
+                # reject it — disabling the flag must fail safe, not escalate.
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "IMPERSONATION_NOT_ALLOWED",
+                        "message": "Delegated tokens are disabled.",
+                    },
+                )
 
     except TryRefreshTokenError:
         # This exception is raised when the access token has expired.

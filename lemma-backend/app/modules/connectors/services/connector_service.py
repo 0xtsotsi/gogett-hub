@@ -285,6 +285,14 @@ class ConnectorService:
                 )
                 continue
             profile = self._profile_to_dict(result)
+            # Composio wraps every tool execution result in
+            # {"data": ..., "successful": ..., "error": ...} (composio.tools.execute's
+            # ToolExecutionResponse); the toolkit's actual fields (email, name, ...)
+            # live one level down in `data`, not at the top level.
+            if isinstance(profile, dict) and provider.upper() == AuthProvider.COMPOSIO.value:
+                unwrapped = profile.get("data")
+                if isinstance(unwrapped, dict):
+                    profile = unwrapped
             if profile:
                 return profile
         return None

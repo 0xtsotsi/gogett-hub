@@ -910,7 +910,13 @@ def _profile_operation(
 
 async def test_handle_oauth_callback_populates_email_via_profile_operation():
     """Email is filled from a provider-agnostic get-profile operation, so a
-    Composio Outlook account gets its `mail`/`userPrincipalName` populated."""
+    Composio Outlook account gets its `mail`/`userPrincipalName` populated.
+
+    The mocked gateway result is wrapped in Composio's real envelope
+    (composio.tools.execute's ToolExecutionResponse: {data, error, successful})
+    rather than a flat dict, so this actually exercises the unwrapping in
+    _fetch_account_profile instead of accidentally passing regardless of it.
+    """
     user_id = uuid4()
     auth_config = _composio_auth_config("outlook")
     connect_request = ConnectRequestEntity(
@@ -931,9 +937,13 @@ async def test_handle_oauth_callback_populates_email_via_profile_operation():
 
     operation_gateway = AsyncMock()
     operation_gateway.execute_operation.return_value = {
-        "displayName": "Test User",
-        "mail": "user@lemma.work",
-        "userPrincipalName": "user@lemma.work",
+        "data": {
+            "displayName": "Test User",
+            "mail": "user@lemma.work",
+            "userPrincipalName": "user@lemma.work",
+        },
+        "error": None,
+        "successful": True,
     }
     operation_repository = AsyncMock()
     operation_repository.get_by_connector_provider_and_name.return_value = (
@@ -991,6 +1001,75 @@ async def test_fetch_account_profile_skips_when_gateway_absent():
         _connector("outlook"), "COMPOSIO", OAuthCredentials(access_token="tok")
     )
     assert result is None
+
+
+async def test_fetch_account_profile_unwraps_composio_data_envelope():
+    """Every composio.tools.execute() result is wrapped in
+    {"data": ..., "error": ..., "successful": ...} -- the toolkit's actual
+    fields live under `data`, not at the top level. Without unwrapping this,
+    email/identity extraction would never find anything for any Composio app."""
+    connector = ConnectorEntity(
+        id="asana",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="asana",
+                profile_operation_names=["ASANA_GET_CURRENT_USER"],
+            ),
+        ],
+    )
+    operation_repository = AsyncMock()
+    operation_repository.get_by_connector_provider_and_name.return_value = (
+        _profile_operation("asana", "ASANA_GET_CURRENT_USER")
+    )
+    operation_gateway = AsyncMock()
+    operation_gateway.execute_operation.return_value = {
+        "data": {"email": "pm@acme.test", "name": "Project Manager"},
+        "error": None,
+        "successful": True,
+    }
+
+    service = _service(
+        operation_gateway=operation_gateway,
+        operation_repository=operation_repository,
+    )
+    result = await service._fetch_account_profile(
+        connector, "COMPOSIO", OAuthCredentials(access_token="tok")
+    )
+
+    assert result == {"email": "pm@acme.test", "name": "Project Manager"}
+
+
+async def test_fetch_account_profile_does_not_unwrap_for_lemma_provider():
+    """Native (Lemma) operation results are never Composio-wrapped -- a
+    coincidental top-level "data" key must be left alone."""
+    connector = ConnectorEntity(
+        id="gmail",
+        provider_capabilities=[
+            LemmaProviderCapability(profile_operation_names=["get_profile"]),
+        ],
+    )
+    operation_repository = AsyncMock()
+    operation_repository.get_by_connector_provider_and_name.return_value = (
+        _profile_operation("gmail", "get_profile")
+    )
+    operation_gateway = AsyncMock()
+    operation_gateway.execute_operation.return_value = {
+        "email_address": "user@gmail.com",
+        "data": "not an envelope",
+    }
+
+    service = _service(
+        operation_gateway=operation_gateway,
+        operation_repository=operation_repository,
+    )
+    result = await service._fetch_account_profile(
+        connector, "LEMMA", OAuthCredentials(access_token="tok")
+    )
+
+    assert result == {
+        "email_address": "user@gmail.com",
+        "data": "not an envelope",
+    }
 
 
 async def test_fetch_account_profile_skips_when_provider_unsupported():

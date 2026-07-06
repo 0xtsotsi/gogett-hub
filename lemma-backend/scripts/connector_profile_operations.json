@@ -10,10 +10,10 @@
     "COMPOSIO": ["ASANA_GET_CURRENT_USER"]
   },
   "notion": {
-    "COMPOSIO": ["NOTION_RETRIEVE_YOUR_TOKEN_S_BOT_USER"]
+    "COMPOSIO": ["NOTION_GET_ABOUT_ME"]
   },
   "hubspot": {
-    "COMPOSIO": ["HUBSPOT_GET_MY_HUBSPOT_ACCOUNT_DETAILS"]
+    "COMPOSIO": ["HUBSPOT_GET_ACCOUNT_INFO"]
   },
   "linear": {
     "COMPOSIO": ["LINEAR_GET_CURRENT_USER"]
@@ -23,8 +23,5 @@
   },
   "discord": {
     "COMPOSIO": ["DISCORD_GET_MY_USER"]
-  },
-  "zendesk": {
-    "COMPOSIO": ["ZENDESK_SHOW_CURRENT_USER"]
   }
 }

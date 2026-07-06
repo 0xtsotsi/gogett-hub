@@ -79,8 +79,10 @@ async def get_org_context(
     user: CurrentUser,
     uow: UoWDep,
 ) -> Context:
-    raw_org_id = request.path_params.get("org_id") or request.query_params.get(
-        "organization_id"
+    raw_org_id = (
+        request.path_params.get("org_id")
+        or request.path_params.get("organization_id")
+        or request.query_params.get("organization_id")
     )
     if raw_org_id is None:
         raise HTTPException(

@@ -297,6 +297,64 @@ async def test_create_account_composio_api_key_connects_via_provider():
     uow.commit.assert_awaited_once()
 
 
+async def test_create_account_enriches_identity_via_profile_operation():
+    """Credential-managed accounts (e.g. a Notion integration token) get the
+    same profile-operation enrichment OAuth accounts do -- best-effort, via
+    the catalog-curated profile_operation_names on the capability."""
+    user_id = uuid4()
+    app = ConnectorEntity(
+        id="notion",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="notion",
+                auth_scheme=AuthScheme.API_KEY,
+                profile_operation_names=["NOTION_RETRIEVE_YOUR_TOKEN_S_BOT_USER"],
+            )
+        ],
+    )
+    auth_config = _composio_auth_config("notion")
+    stored = ComposioCredentials(connection_id="ca_notion")
+
+    auth_provider = AsyncMock()
+    auth_provider.connect_with_credentials.return_value = stored
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    operation_repository = AsyncMock()
+    operation_repository.get_by_connector_provider_and_name.return_value = (
+        _profile_operation("notion", "NOTION_RETRIEVE_YOUR_TOKEN_S_BOT_USER")
+    )
+    operation_gateway = AsyncMock()
+    operation_gateway.execute_operation.return_value = {
+        "email": "eng@acme.test",
+        "name": "Acme Engineering",
+    }
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
+    account_repo.create.side_effect = lambda entity: entity
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=app)),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        auth_provider_registry=registry,
+        operation_gateway=operation_gateway,
+        operation_repository=operation_repository,
+    )
+
+    account = await service.create_account(
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        credentials={"integration_token": "secret"},
+    )
+
+    assert account.email == "eng@acme.test"
+    operation_gateway.execute_operation.assert_awaited_once()
+
+
 async def test_create_account_allows_multiple_and_sets_default():
     """Multiple credential-managed accounts are allowed; the first one
     connected is the default, later ones are not."""
@@ -893,7 +951,10 @@ async def test_handle_oauth_callback_populates_email_via_profile_operation():
     outlook_app = ConnectorEntity(
         id="outlook",
         provider_capabilities=[
-            ComposioProviderCapability(toolkit_slug="outlook"),
+            ComposioProviderCapability(
+                toolkit_slug="outlook",
+                profile_operation_names=["OUTLOOK_GET_PROFILE"],
+            ),
         ],
     )
     service = _service(
@@ -924,12 +985,54 @@ async def test_handle_oauth_callback_populates_email_via_profile_operation():
     assert execute_kwargs["third_party_credentials"]["connection_id"] == "ca_123"
 
 
-async def test_fetch_account_email_profile_skips_when_gateway_absent():
+async def test_fetch_account_profile_skips_when_gateway_absent():
     service = _service()
-    result = await service._fetch_account_email_profile(
-        "outlook", "COMPOSIO", OAuthCredentials(access_token="tok")
+    result = await service._fetch_account_profile(
+        _connector("outlook"), "COMPOSIO", OAuthCredentials(access_token="tok")
     )
     assert result is None
+
+
+async def test_fetch_account_profile_skips_when_provider_unsupported():
+    """capability_for raises for a provider the connector doesn't support --
+    must be swallowed, not propagated, since this is a best-effort lookup."""
+    service = _service(
+        operation_gateway=AsyncMock(), operation_repository=AsyncMock()
+    )
+    result = await service._fetch_account_profile(
+        _connector("slack"), "COMPOSIO", OAuthCredentials(access_token="tok")
+    )
+    assert result is None
+
+
+async def test_fetch_account_profile_tries_catalog_operation_names_in_order():
+    connector = ConnectorEntity(
+        id="asana",
+        provider_capabilities=[
+            ComposioProviderCapability(
+                toolkit_slug="asana",
+                profile_operation_names=["ASANA_MISSING_OP", "ASANA_GET_CURRENT_USER"],
+            ),
+        ],
+    )
+    operation_repository = AsyncMock()
+    operation_repository.get_by_connector_provider_and_name.side_effect = [
+        None,
+        _profile_operation("asana", "ASANA_GET_CURRENT_USER"),
+    ]
+    operation_gateway = AsyncMock()
+    operation_gateway.execute_operation.return_value = {"email": "pm@acme.test"}
+
+    service = _service(
+        operation_gateway=operation_gateway,
+        operation_repository=operation_repository,
+    )
+    result = await service._fetch_account_profile(
+        connector, "COMPOSIO", OAuthCredentials(access_token="tok")
+    )
+
+    assert result == {"email": "pm@acme.test"}
+    assert operation_repository.get_by_connector_provider_and_name.await_count == 2
 
 
 async def test_handle_oauth_callback_surfaces_upstream_error_details():

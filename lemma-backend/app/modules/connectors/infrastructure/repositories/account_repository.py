@@ -2,13 +2,17 @@ from typing import Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.domain.message_bus import MessageBus
 from app.core.infrastructure.db.repository import SqlAlchemyRepository
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.modules.connectors.domain.account import AccountEntity
-from app.modules.connectors.domain.errors import AccountNotFoundError
+from app.modules.connectors.domain.errors import (
+    AccountAlreadyConnectedError,
+    AccountNotFoundError,
+)
 from app.modules.connectors.domain.ports import AccountRepositoryPort, SecretEncryptionPort
 from app.modules.connectors.infrastructure.models import Account
 
@@ -48,6 +52,24 @@ class AccountRepository(
         )
         return self.model_cls(**data)
 
+    def _reraise_as_conflict_if_duplicate_identity(
+        self, exc: IntegrityError, connector_id: str
+    ) -> None:
+        """Translate a uq_accounts_provider_identity violation into a clean
+        409, rather than letting the raw IntegrityError propagate.
+
+        App-level dedup (``_reject_if_identity_already_connected`` in
+        ConnectorService) already rejects the common case before either
+        create/update runs, but that check-then-act has a TOCTOU gap under
+        concurrency (e.g. two near-simultaneous OAuth callbacks for the same
+        identity) -- this is the backstop at the DB boundary. Re-raises
+        unrelated IntegrityErrors untouched (the same table also has a
+        uq_accounts_default_per_auth_config constraint).
+        """
+        if "uq_accounts_provider_identity" in str(exc.orig):
+            raise AccountAlreadyConnectedError(connector_id) from exc
+        raise exc
+
     def _to_entity(self, instance: Account) -> AccountEntity:
         data = {
             "id": instance.id,
@@ -74,7 +96,10 @@ class AccountRepository(
         """Create new account with eager loaded connector."""
         instance = self._to_model(entity)
         self.session.add(instance)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            self._reraise_as_conflict_if_duplicate_identity(exc, entity.connector_id)
         await self.session.refresh(instance, attribute_names=["connector"])
         return self._to_entity(instance)
 
@@ -99,7 +124,10 @@ class AccountRepository(
         instance.display_name = entity.display_name
         instance.status = entity.status.value if hasattr(entity.status, "value") else str(entity.status)
 
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            self._reraise_as_conflict_if_duplicate_identity(exc, entity.connector_id)
         return self._to_entity(instance)
 
     async def get(self, id: UUID) -> Optional[AccountEntity]:

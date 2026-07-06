@@ -215,6 +215,45 @@ def _load_lemma_apps_config() -> list[dict]:
         return json.load(f)
 
 
+# Curated map of connector_id -> {provider: [operation names]} for the
+# operation to call right after connecting an account to fetch its own
+# profile (email/name/workspace) -- so display_name resolution doesn't
+# depend solely on whatever the OAuth token-exchange response happens to
+# carry. Human-curated rather than auto-detected: Composio's operation
+# naming is not standardized across toolkits (GMAIL_GET_PROFILE vs
+# DISCORD_GET_MY_USER vs a generic about_get), so guessing by name alone
+# risks silently picking the wrong operation. Candidates are tried in order
+# by the service layer; a connector/provider with no entry here simply gets
+# no profile-operation enrichment (falls back to raw OAuth-response data).
+CONNECTOR_PROFILE_OPERATIONS_PATH = (
+    Path(__file__).parent / "connector_profile_operations.json"
+)
+
+
+def _load_connector_profile_operations() -> dict[str, dict[str, list[str]]]:
+    """Load the curated connector_id -> {provider: [operation names]} map."""
+    if not CONNECTOR_PROFILE_OPERATIONS_PATH.exists():
+        logger.warning(
+            "Connector profile operations config not found at %s",
+            CONNECTOR_PROFILE_OPERATIONS_PATH,
+        )
+        return {}
+    with open(CONNECTOR_PROFILE_OPERATIONS_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _profile_operation_names(
+    profile_operations: dict[str, dict[str, list[str]]],
+    connector_id: str,
+    provider: AuthProvider,
+) -> list[str] | None:
+    """Look up curated profile-operation candidates for a connector+provider."""
+    by_provider = profile_operations.get(_normalize_connector_id(connector_id))
+    if not by_provider:
+        return None
+    return by_provider.get(provider.value) or None
+
+
 def _build_operation_search_document(
     *,
     public_name: str,
@@ -479,13 +518,18 @@ def _merge_provider_capabilities(
 def _native_package_provider_capability(
     connector_id: str,
     existing: ConnectorEntity | None,
+    *,
+    profile_operation_names: list[str] | None = None,
 ) -> LemmaProviderCapability:
     auth_method = _infer_native_auth_method(connector_id, existing)
     if existing:
         try:
             capability = existing.capability_for(AuthProvider.LEMMA)
             if isinstance(capability, LemmaProviderCapability):
-                updates: dict[str, object] = {"auth_scheme": auth_method}
+                updates: dict[str, object] = {
+                    "auth_scheme": auth_method,
+                    "profile_operation_names": profile_operation_names,
+                }
                 if capability.auth_config_schema is None:
                     updates["auth_config_schema"] = _default_auth_config_schema(
                         auth_method
@@ -494,7 +538,9 @@ def _native_package_provider_capability(
         except ValueError:
             pass
 
-    return _lemma_provider_capability(auth_method=auth_method)
+    return _lemma_provider_capability(
+        auth_method=auth_method, profile_operation_names=profile_operation_names
+    )
 
 
 def _default_auth_config_schema(auth_method: AuthMethod) -> dict:
@@ -525,6 +571,7 @@ def _lemma_provider_capability(
     auth_config_schema: dict | None = None,
     credential_schema: dict | None = None,
     system_oauth: dict | None = None,
+    profile_operation_names: list[str] | None = None,
 ) -> LemmaProviderCapability:
     system_default_available = (
         auth_method != AuthMethod.OAUTH2 or _system_oauth_available(system_oauth)
@@ -543,6 +590,7 @@ def _lemma_provider_capability(
         else None,
         supports_org_custom_oauth=auth_method == AuthMethod.OAUTH2,
         system_default_available=system_default_available,
+        profile_operation_names=profile_operation_names,
     )
 
 
@@ -551,6 +599,7 @@ def _composio_provider_capability(
     auth_method: AuthMethod,
     toolkit_slug: str,
     auth_config_schema: dict | None = None,
+    profile_operation_names: list[str] | None = None,
 ) -> ComposioProviderCapability:
     return ComposioProviderCapability(
         auth_scheme=auth_method,
@@ -558,6 +607,7 @@ def _composio_provider_capability(
         auth_config_schema=auth_config_schema,
         system_default_available=True,
         supports_org_custom_auth_config=False,
+        profile_operation_names=profile_operation_names,
     )
 
 
@@ -942,6 +992,8 @@ async def _sync_native_catalog(
     total_operations = 0
     total_triggers = 0
 
+    profile_operations = _load_connector_profile_operations()
+
     # First sync Lemma-managed apps from JSON config (Slack, Jira, Confluence)
     lemma_apps = _load_lemma_apps_config()
     normalized_app_filters = (
@@ -975,6 +1027,9 @@ async def _sync_native_catalog(
                     auth_config_schema=app_config.get("auth_config_schema"),
                     credential_schema=app_config.get("credential_schema"),
                     system_oauth=app_config.get("system_oauth"),
+                    profile_operation_names=_profile_operation_names(
+                        profile_operations, connector_id, AuthProvider.LEMMA
+                    ),
                 ),
             ),
             agent_instruction=app_config.get("agent_instruction")
@@ -1060,7 +1115,13 @@ async def _sync_native_catalog(
             icon=existing.icon if existing else None,
             provider_capabilities=_merge_provider_capabilities(
                 existing,
-                _native_package_provider_capability(connector_id, existing),
+                _native_package_provider_capability(
+                    connector_id,
+                    existing,
+                    profile_operation_names=_profile_operation_names(
+                        profile_operations, connector_id, AuthProvider.LEMMA
+                    ),
+                ),
             ),
             agent_instruction=existing.agent_instruction if existing else None,
             is_active=True,
@@ -1201,15 +1262,24 @@ async def _sync_single_composio_toolkit(
     composio_auth_config_schema = _composio_credential_schema(
         toolkit_detail, composio_auth_method
     )
+    profile_operations = _load_connector_profile_operations()
     lemma_capability = None
     if supports_native:
+        lemma_profile_operation_names = _profile_operation_names(
+            profile_operations, connector_id, AuthProvider.LEMMA
+        )
         try:
             lemma_capability = existing.capability_for(AuthProvider.LEMMA) if existing else None
         except ValueError:
             lemma_capability = None
-        if lemma_capability is None:
+        if lemma_capability is not None:
+            lemma_capability = lemma_capability.model_copy(
+                update={"profile_operation_names": lemma_profile_operation_names}
+            )
+        else:
             lemma_capability = _lemma_provider_capability(
                 auth_method=_infer_native_auth_method(connector_id, existing),
+                profile_operation_names=lemma_profile_operation_names,
             )
 
     entity = ConnectorEntity(
@@ -1235,6 +1305,9 @@ async def _sync_single_composio_toolkit(
                 auth_method=composio_auth_method,
                 toolkit_slug=toolkit_item.slug,
                 auth_config_schema=composio_auth_config_schema,
+                profile_operation_names=_profile_operation_names(
+                    profile_operations, connector_id, AuthProvider.COMPOSIO
+                ),
             ),
             lemma_capability,
         ),

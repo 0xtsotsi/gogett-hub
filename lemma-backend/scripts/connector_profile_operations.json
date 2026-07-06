@@ -1,0 +1,30 @@
+{
+  "gmail": {
+    "LEMMA": ["get_profile"],
+    "COMPOSIO": ["GMAIL_GET_PROFILE", "get_profile"]
+  },
+  "outlook": {
+    "COMPOSIO": ["OUTLOOK_GET_PROFILE"]
+  },
+  "asana": {
+    "COMPOSIO": ["ASANA_GET_CURRENT_USER"]
+  },
+  "notion": {
+    "COMPOSIO": ["NOTION_RETRIEVE_YOUR_TOKEN_S_BOT_USER"]
+  },
+  "hubspot": {
+    "COMPOSIO": ["HUBSPOT_GET_MY_HUBSPOT_ACCOUNT_DETAILS"]
+  },
+  "linear": {
+    "COMPOSIO": ["LINEAR_GET_CURRENT_USER"]
+  },
+  "github": {
+    "COMPOSIO": ["GITHUB_GET_THE_AUTHENTICATED_USER"]
+  },
+  "discord": {
+    "COMPOSIO": ["DISCORD_GET_MY_USER"]
+  },
+  "zendesk": {
+    "COMPOSIO": ["ZENDESK_SHOW_CURRENT_USER"]
+  }
+}

@@ -29,6 +29,7 @@ _NAME_TO_MODULE = {
     "BoundPods": "pods",
     "PodSchedules": "schedules",
     "PodSurfaces": "surfaces",
+    "UserSurfaces": "surfaces",
     "Tools": "tools",
     "User": "users",
     "PodWorkflows": "workflows",
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
     from .pods import BoundPods
     from .runtime import BoundOrgRuntime, Runtime
     from .schedules import PodSchedules
-    from .surfaces import PodSurfaces
+    from .surfaces import PodSurfaces, UserSurfaces
     from .tools import Tools
     from .users import User
     from .workflows import PodWorkflows
@@ -83,6 +84,7 @@ __all__ = [
     "PodRecords",
     "PodSchedules",
     "PodSurfaces",
+    "UserSurfaces",
     "PodTables",
     "PodWorkflows",
     "Table",

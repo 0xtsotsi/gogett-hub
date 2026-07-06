@@ -24,6 +24,20 @@ class ScheduleDeleted(ScheduleEvent):
     event_type: str = "schedule.deleted"
 
 
+class ScheduleDeactivated(ScheduleEvent):
+    """A schedule was auto-deactivated by the failure circuit breaker.
+
+    Emitted when a schedule hits the consecutive-failure threshold and is set
+    inactive. Consumed today to notify the creator; the event is the extension
+    point for future reactions (in-app notification, admin alerting) without
+    changing the breaker.
+    """
+
+    event_type: str = "schedule.deactivated"
+    consecutive_failures: int
+    reason: str = "consecutive_failures"
+
+
 class ScheduleFired(ScheduleEvent):
     """Event emitted when any schedule source fires.
 
@@ -49,4 +63,4 @@ class ScheduleEvents:
     # from being dropped when a consumer's group was lost (flush/failover) and is
     # otherwise only recreated later at "$". The workflow pod consumes via this
     # group; the surface subscriber reads group-less (fan-out) and needs none.
-    CONSUMER_GROUPS = ("workflow-schedule-events",)
+    CONSUMER_GROUPS = ("workflow-schedule-events", "schedule-notifications")

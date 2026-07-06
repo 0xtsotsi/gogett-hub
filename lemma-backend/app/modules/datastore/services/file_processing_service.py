@@ -436,7 +436,14 @@ class DatastoreFileProcessingService:
             "search_metadata": search_metadata,
         }
 
-        for image in extraction.images:
+        # Drain the list rather than iterating it: each image's ``content`` bytes
+        # can be large (base64-decoded figures from a scanned doc), and holding the
+        # whole list resident until this method returns is the biggest avoidable
+        # chunk of steady-state memory during ingestion. Popping each image before
+        # uploading lets the GC reclaim its bytes as soon as the upload completes,
+        # so only one image's bytes are held at a time instead of all of them.
+        while extraction.images:
+            image = extraction.images.pop(0)
             await self.storage.upload_file(
                 build_datastore_child_artifact_key(
                     self.pod_id,

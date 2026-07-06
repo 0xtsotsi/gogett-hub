@@ -16,7 +16,7 @@ from app.modules.schedule.scheduler.api.schemas import (
     JobListResponse,
     JobStatusResponse,
 )
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 from app.core.log.log import get_logger
 
 from app.modules.schedule.domain.interfaces import SchedulerService
@@ -171,11 +171,17 @@ class SchedulerAPIClient(SchedulerService):
         Returns:
             Response JSON data
         """
+        headers: dict[str, str] = {}
+        token = reveal_secret(settings.scheduler_internal_token)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         try:
             async with session.request(
                 method=method,
                 url=url,
                 json=json_data,
+                headers=headers or None,
             ) as response:
                 response.raise_for_status()
 

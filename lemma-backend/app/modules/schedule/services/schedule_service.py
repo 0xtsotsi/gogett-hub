@@ -449,6 +449,16 @@ class ScheduleService:
                     )
         updated = await self.schedule_repository.update(schedule_id, **update_data)
 
+        if updated and update_data.get("is_active") is True:
+            # Reactivating a schedule clears its circuit-breaker failure streak so
+            # a re-enabled schedule starts fresh instead of tripping again on the
+            # next failure.
+            from app.modules.schedule.services.schedule_fire_store import (
+                get_schedule_fire_store,
+            )
+
+            await get_schedule_fire_store().reset_failures(schedule_id=schedule_id)
+
         if updated and updated.schedule_type == ScheduleType.TIME:
             if "config" in update_data or "is_active" in update_data:
                 if updated.is_active:

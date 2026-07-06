@@ -475,6 +475,27 @@ class Settings(BaseSettings):
     scheduler_api_url: str = Field(
         default="http://localhost:8711", description="Scheduler API URL"
     )
+    schedule_max_consecutive_failures: int = Field(
+        default=5,
+        description=(
+            "Circuit breaker: after this many consecutive failed fires, a schedule "
+            "is auto-deactivated (is_active=False) so it stops firing and filling "
+            "the DB with failing runs, and a ScheduleDeactivated event is emitted "
+            "(notifies the creator). A successful fire resets the count. Env: "
+            "``SCHEDULE_MAX_CONSECUTIVE_FAILURES``."
+        ),
+    )
+    scheduler_internal_token: Optional[SecretStr] = Field(
+        default=None,
+        description=(
+            "Shared secret for service-to-service auth on the scheduler sidecar's "
+            "/scheduler/jobs API. The backend sends it as a bearer token and the "
+            "sidecar requires it. When unset (e.g. local single-process dev where "
+            "nothing else can reach the router) the sidecar does not enforce auth. "
+            "Set it in every deployment where the sidecar runs as its own reachable "
+            "service. Env: ``SCHEDULER_INTERNAL_TOKEN``."
+        ),
+    )
     supertokens_core_url: str = Field(
         default="http://localhost:3567", description="Supertokens core URL"
     )

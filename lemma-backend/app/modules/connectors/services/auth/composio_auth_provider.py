@@ -142,9 +142,23 @@ class ComposioAuthProvider(AuthProviderInterface):
         state = getattr(connection_account, "state", None)
         value = getattr(state, "val", None)
         model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            return model_dump(mode="json", by_alias=True, exclude_none=True)
-        return None
+        data = (
+            model_dump(mode="json", by_alias=True, exclude_none=True)
+            if callable(model_dump)
+            else {}
+        )
+        # word_id/alias live on the connected account itself, not state.val, and
+        # are the only toolkit-agnostic identity signal Composio gives us: a
+        # user-set alias, else a stable auto-generated label ("gmail_red-castle")
+        # meant for exactly this — telling multiple accounts of the same app
+        # apart when the toolkit's own fields (below) don't surface an email.
+        alias = getattr(connection_account, "alias", None)
+        word_id = getattr(connection_account, "word_id", None)
+        if alias:
+            data["alias"] = alias
+        if word_id:
+            data["word_id"] = word_id
+        return data or None
 
     def _composio_auth_scheme(self, connector: ConnectorEntity) -> AuthScheme:
         try:

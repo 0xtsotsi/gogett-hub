@@ -582,6 +582,133 @@ async def test_sync_composio_catalog_uses_lemma_auth_provider_for_native_auth_ap
 
 
 @pytest.mark.asyncio
+async def test_sync_composio_catalog_applies_curated_profile_operation_names():
+    """A connector with a curated entry in the profile-operations override
+    gets it threaded onto its ComposioProviderCapability during sync."""
+    connector_repository = SimpleNamespace(get=AsyncMock(return_value=None))
+    operation_repository = SimpleNamespace()
+    trigger_repository = SimpleNamespace()
+
+    toolkit_item = _toolkit("testapp", name="TestApp")
+    composio = SimpleNamespace(
+        toolkits=SimpleNamespace(get=MagicMock(return_value=_toolkit_detail()))
+    )
+
+    with (
+        patch.dict(os.environ, {"COMPOSIO_API_KEY": "test-api-key"}, clear=False),
+        patch.object(importer, "Composio", return_value=composio),
+        patch.object(importer, "_list_composio_toolkits", return_value=[toolkit_item]),
+        patch.object(importer, "_paginate_tools", return_value=iter([])),
+        patch.object(importer, "_paginate_triggers", return_value=iter([])),
+        patch.object(
+            importer,
+            "_load_connector_profile_operations",
+            return_value={"testapp": {"COMPOSIO": ["TESTAPP_GET_CURRENT_USER"]}},
+        ),
+        patch.object(importer, "_upsert_connector", AsyncMock()) as upsert_connector,
+        patch.object(importer, "_upsert_operation", AsyncMock()),
+        patch.object(importer, "_upsert_trigger", AsyncMock()),
+    ):
+        await importer._sync_composio_catalog(
+            connector_repository,
+            operation_repository,
+            trigger_repository,
+            app_filters={"testapp"},
+            managed_by="composio",
+            page_size=100,
+            max_composio_apps=10,
+        )
+
+    entity = upsert_connector.await_args.args[1]
+    capability = _capability(entity, AuthProvider.COMPOSIO)
+    assert capability.profile_operation_names == ["TESTAPP_GET_CURRENT_USER"]
+
+
+@pytest.mark.asyncio
+async def test_sync_composio_catalog_leaves_profile_operation_names_none_without_override():
+    """No regression for the ~50 apps with no curated entry yet: the field
+    stays None, identical to today's behavior before this feature existed."""
+    connector_repository = SimpleNamespace(get=AsyncMock(return_value=None))
+    operation_repository = SimpleNamespace()
+    trigger_repository = SimpleNamespace()
+
+    toolkit_item = _toolkit("uncurated_app", name="Uncurated App")
+    composio = SimpleNamespace(
+        toolkits=SimpleNamespace(get=MagicMock(return_value=_toolkit_detail()))
+    )
+
+    with (
+        patch.dict(os.environ, {"COMPOSIO_API_KEY": "test-api-key"}, clear=False),
+        patch.object(importer, "Composio", return_value=composio),
+        patch.object(importer, "_list_composio_toolkits", return_value=[toolkit_item]),
+        patch.object(importer, "_paginate_tools", return_value=iter([])),
+        patch.object(importer, "_paginate_triggers", return_value=iter([])),
+        patch.object(importer, "_load_connector_profile_operations", return_value={}),
+        patch.object(importer, "_upsert_connector", AsyncMock()) as upsert_connector,
+        patch.object(importer, "_upsert_operation", AsyncMock()),
+        patch.object(importer, "_upsert_trigger", AsyncMock()),
+    ):
+        await importer._sync_composio_catalog(
+            connector_repository,
+            operation_repository,
+            trigger_repository,
+            app_filters={"uncurated_app"},
+            managed_by="composio",
+            page_size=100,
+            max_composio_apps=10,
+        )
+
+    entity = upsert_connector.await_args.args[1]
+    capability = _capability(entity, AuthProvider.COMPOSIO)
+    assert capability.profile_operation_names is None
+
+
+@pytest.mark.asyncio
+async def test_sync_native_catalog_applies_curated_profile_operation_names():
+    """JSON-config Lemma apps (Slack, Jira, Confluence, ...) also get curated
+    profile operations threaded onto their LemmaProviderCapability."""
+    connector_repository = SimpleNamespace(get=AsyncMock(return_value=None))
+    operation_repository = SimpleNamespace()
+    trigger_repository = SimpleNamespace()
+    schema_compiler = SimpleNamespace(
+        to_json_schema=MagicMock(return_value={"type": "object"})
+    )
+
+    with (
+        patch.object(
+            importer,
+            "_load_lemma_apps_config",
+            return_value=[
+                {
+                    "name": "testapp",
+                    "title": "TestApp",
+                    "description": "TestApp connector",
+                    "auth_method": "OAUTH2",
+                    "triggers": [],
+                }
+            ],
+        ),
+        patch.object(
+            importer,
+            "_load_connector_profile_operations",
+            return_value={"testapp": {"LEMMA": ["get_profile"]}},
+        ),
+        patch.object(importer, "_upsert_connector", AsyncMock()) as upsert_connector,
+    ):
+        await importer._sync_native_catalog(
+            connector_repository,
+            operation_repository,
+            trigger_repository,
+            app_filters={"testapp"},
+            schema_compiler=schema_compiler,
+        )
+
+    entity = upsert_connector.await_args.args[1]
+    capability = _capability(entity, AuthProvider.LEMMA)
+    assert capability.profile_operation_names == ["get_profile"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("toolkit_slug", "expected_app_id"),
     [

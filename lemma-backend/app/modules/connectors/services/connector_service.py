@@ -63,15 +63,6 @@ from app.core.log.log import get_logger
 
 logger = get_logger(__name__)
 
-# Provider-agnostic profile operations that expose the account holder's email.
-# The operation repository resolves each candidate against the account's
-# provider, so only the matching one (e.g. composio GMAIL_GET_PROFILE vs native
-# get_profile) actually runs. Order is preference, not provider.
-_EMAIL_PROFILE_OPERATIONS: dict[str, tuple[str, ...]] = {
-    "gmail": ("GMAIL_GET_PROFILE", "get_profile"),
-    "outlook": ("OUTLOOK_GET_PROFILE",),
-}
-
 
 class ConnectorService:
     """Service for connector application/account OAuth flows."""
@@ -252,18 +243,24 @@ class ConnectorService:
             current = current.get(part)
         return current if isinstance(current, str) else None
 
-    async def _fetch_account_email_profile(
+    async def _fetch_account_profile(
         self,
-        connector_id: str,
+        connector: ConnectorEntity,
         provider: str,
         credentials: OAuthCredentials,
     ) -> dict | None:
-        """Fetch the account holder's profile via the provider's get-profile
-        operation, so the email is populated the same way for both Lemma-native
-        and Composio accounts (Gmail, Outlook, ...)."""
+        """Fetch the account holder's own profile via the catalog-curated
+        profile operation(s) for this connector+provider, so identity fields
+        (email, name, workspace, ...) are populated the same way for any app
+        the catalog has a profile operation for, not just a hardcoded few."""
         if self.operation_gateway is None or self.operation_repository is None:
             return None
-        for operation_name in _EMAIL_PROFILE_OPERATIONS.get(connector_id, ()):
+        connector_id = connector.id
+        try:
+            capability = connector.capability_for(provider)
+        except ValueError:
+            return None
+        for operation_name in capability.profile_operation_names or ():
             operation = (
                 await self.operation_repository.get_by_connector_provider_and_name(
                     connector_id, provider, operation_name
@@ -288,6 +285,14 @@ class ConnectorService:
                 )
                 continue
             profile = self._profile_to_dict(result)
+            # Composio wraps every tool execution result in
+            # {"data": ..., "successful": ..., "error": ...} (composio.tools.execute's
+            # ToolExecutionResponse); the toolkit's actual fields (email, name, ...)
+            # live one level down in `data`, not at the top level.
+            if isinstance(profile, dict) and provider.upper() == AuthProvider.COMPOSIO.value:
+                unwrapped = profile.get("data")
+                if isinstance(unwrapped, dict):
+                    profile = unwrapped
             if profile:
                 return profile
         return None
@@ -864,11 +869,21 @@ class ConnectorService:
             credentials=credentials,
         )
 
+        # Best-effort: fetch the account holder's own profile via the
+        # catalog-curated profile operation for this connector+provider (if
+        # any), so credential-managed accounts (e.g. a Notion integration
+        # token) get the same identity enrichment OAuth accounts do. A
+        # missing/failing operation just leaves profile=None; identity
+        # resolution falls back to whatever the credentials carry.
+        profile = await self._fetch_account_profile(
+            connector, provider.value, stored_credentials
+        )
+
         # Derive a stable identity + human-friendly label from the connected
         # credentials so the account is distinguishable and duplicates can be
         # rejected. A client-supplied provider_account_id/email takes precedence.
         identity = await resolve_account_identity(
-            connector_id=connector.id, credentials=stored_credentials
+            connector_id=connector.id, credentials=stored_credentials, profile=profile
         )
         provider_account_id = provider_account_id or identity.provider_account_id
         email = email or identity.email
@@ -980,8 +995,8 @@ class ConnectorService:
         provider_account_id = provider_account_id or self._extract_provider_account_id_from_profile(
             connector.id, native_profile
         )
-        email_profile = await self._fetch_account_email_profile(
-            connector.id,
+        email_profile = await self._fetch_account_profile(
+            connector,
             self._provider_value(auth_config),
             credentials,
         )
@@ -992,12 +1007,15 @@ class ConnectorService:
         )
 
         # Human-friendly label for the account list (team name / mailbox / …),
-        # falling back to the email when the app has no better label.
+        # falling back to the email when the app has no better label. Prefer
+        # the catalog-driven profile (works for any app with a profile
+        # operation configured) over the Lemma-native one (Gmail/Drive/Slack
+        # only) since only one of the two is ever populated for a given app.
         display_name = (
             await resolve_account_identity(
                 connector_id=connector.id,
                 credentials=credentials,
-                profile=native_profile,
+                profile=email_profile or native_profile,
             )
         ).display_name or email
 

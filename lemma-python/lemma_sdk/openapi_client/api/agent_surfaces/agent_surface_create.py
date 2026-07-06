@@ -9,22 +9,29 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.agent_surface_response import AgentSurfaceResponse
 from ...models.error_response import ErrorResponse
+from ...models.surface_create_request import SurfaceCreateRequest
 from ...types import Response
 
 
 def _get_kwargs(
     pod_id: UUID,
-    surface_name: str,
+    *,
+    body: SurfaceCreateRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/pods/{pod_id}/surfaces/{surface_name}".format(
+        "method": "post",
+        "url": "/pods/{pod_id}/surfaces".format(
             pod_id=quote(str(pod_id), safe=""),
-            surface_name=quote(str(surface_name), safe=""),
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -60,15 +67,27 @@ def _build_response(
 
 def sync_detailed(
     pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
+    body: SurfaceCreateRequest,
 ) -> Response[AgentSurfaceResponse | ErrorResponse]:
-    """Get Surface
+    """Create Surface
+
+     Create a surface. ``name`` defaults to the lowercased platform — pass an
+    explicit name to create a second surface of the same platform (e.g. a
+    second bot routed to a different agent).
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        body (SurfaceCreateRequest): Body for `POST /pods/{pod_id}/surfaces` — creates one
+            surface.
+
+            A pod may have several surfaces of the same ``platform`` (different
+            bots/accounts, each routed to its own agent); ``name`` is the stable,
+            pod-unique identifier used to address it afterward. When omitted, it
+            defaults to the lowercased platform (so the common single-surface-per-
+            platform case needs no name at all) — pick an explicit name to create a
+            second surface of the same platform.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -80,7 +99,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
-        surface_name=surface_name,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -92,15 +111,27 @@ def sync_detailed(
 
 def sync(
     pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
+    body: SurfaceCreateRequest,
 ) -> AgentSurfaceResponse | ErrorResponse | None:
-    """Get Surface
+    """Create Surface
+
+     Create a surface. ``name`` defaults to the lowercased platform — pass an
+    explicit name to create a second surface of the same platform (e.g. a
+    second bot routed to a different agent).
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        body (SurfaceCreateRequest): Body for `POST /pods/{pod_id}/surfaces` — creates one
+            surface.
+
+            A pod may have several surfaces of the same ``platform`` (different
+            bots/accounts, each routed to its own agent); ``name`` is the stable,
+            pod-unique identifier used to address it afterward. When omitted, it
+            defaults to the lowercased platform (so the common single-surface-per-
+            platform case needs no name at all) — pick an explicit name to create a
+            second surface of the same platform.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -112,22 +143,34 @@ def sync(
 
     return sync_detailed(
         pod_id=pod_id,
-        surface_name=surface_name,
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
     pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
+    body: SurfaceCreateRequest,
 ) -> Response[AgentSurfaceResponse | ErrorResponse]:
-    """Get Surface
+    """Create Surface
+
+     Create a surface. ``name`` defaults to the lowercased platform — pass an
+    explicit name to create a second surface of the same platform (e.g. a
+    second bot routed to a different agent).
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        body (SurfaceCreateRequest): Body for `POST /pods/{pod_id}/surfaces` — creates one
+            surface.
+
+            A pod may have several surfaces of the same ``platform`` (different
+            bots/accounts, each routed to its own agent); ``name`` is the stable,
+            pod-unique identifier used to address it afterward. When omitted, it
+            defaults to the lowercased platform (so the common single-surface-per-
+            platform case needs no name at all) — pick an explicit name to create a
+            second surface of the same platform.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -139,7 +182,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
-        surface_name=surface_name,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -149,15 +192,27 @@ async def asyncio_detailed(
 
 async def asyncio(
     pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
+    body: SurfaceCreateRequest,
 ) -> AgentSurfaceResponse | ErrorResponse | None:
-    """Get Surface
+    """Create Surface
+
+     Create a surface. ``name`` defaults to the lowercased platform — pass an
+    explicit name to create a second surface of the same platform (e.g. a
+    second bot routed to a different agent).
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        body (SurfaceCreateRequest): Body for `POST /pods/{pod_id}/surfaces` — creates one
+            surface.
+
+            A pod may have several surfaces of the same ``platform`` (different
+            bots/accounts, each routed to its own agent); ``name`` is the stable,
+            pod-unique identifier used to address it afterward. When omitted, it
+            defaults to the lowercased platform (so the common single-surface-per-
+            platform case needs no name at all) — pick an explicit name to create a
+            second surface of the same platform.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -170,7 +225,7 @@ async def asyncio(
     return (
         await asyncio_detailed(
             pod_id=pod_id,
-            surface_name=surface_name,
             client=client,
+            body=body,
         )
     ).parsed

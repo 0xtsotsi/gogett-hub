@@ -7,32 +7,41 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.agent_surface_response import AgentSurfaceResponse
 from ...models.error_response import ErrorResponse
-from ...models.surface_setup_response import SurfaceSetupResponse
+from ...models.surface_update_request import SurfaceUpdateRequest
 from ...types import Response
 
 
 def _get_kwargs(
     pod_id: UUID,
     surface_name: str,
+    *,
+    body: SurfaceUpdateRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/pods/{pod_id}/surfaces/{surface_name}/setup".format(
+        "method": "patch",
+        "url": "/pods/{pod_id}/surfaces/{surface_name}".format(
             pod_id=quote(str(pod_id), safe=""),
             surface_name=quote(str(surface_name), safe=""),
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorResponse | SurfaceSetupResponse | None:
+) -> AgentSurfaceResponse | ErrorResponse | None:
     if response.status_code == 200:
-        response_200 = SurfaceSetupResponse.from_dict(response.json())
+        response_200 = AgentSurfaceResponse.from_dict(response.json())
 
         return response_200
 
@@ -49,7 +58,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
+) -> Response[AgentSurfaceResponse | ErrorResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,28 +72,34 @@ def sync_detailed(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+    body: SurfaceUpdateRequest,
+) -> Response[AgentSurfaceResponse | ErrorResponse]:
+    """Update Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Partially update a surface. Only fields present in the request are
+    applied; the surface's platform and name are immutable.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceUpdateRequest): Body for `PATCH /pods/{pod_id}/surfaces/{surface_name}`.
+
+            Partial update (merge semantics): only fields present in the request are
+            applied. The surface's ``platform`` and ``name`` are immutable — delete and
+            recreate to change either.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[AgentSurfaceResponse | ErrorResponse]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
         surface_name=surface_name,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -99,29 +114,35 @@ def sync(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+    body: SurfaceUpdateRequest,
+) -> AgentSurfaceResponse | ErrorResponse | None:
+    """Update Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Partially update a surface. Only fields present in the request are
+    applied; the surface's platform and name are immutable.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceUpdateRequest): Body for `PATCH /pods/{pod_id}/surfaces/{surface_name}`.
+
+            Partial update (merge semantics): only fields present in the request are
+            applied. The surface's ``platform`` and ``name`` are immutable — delete and
+            recreate to change either.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        AgentSurfaceResponse | ErrorResponse
     """
 
     return sync_detailed(
         pod_id=pod_id,
         surface_name=surface_name,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -130,28 +151,34 @@ async def asyncio_detailed(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+    body: SurfaceUpdateRequest,
+) -> Response[AgentSurfaceResponse | ErrorResponse]:
+    """Update Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Partially update a surface. Only fields present in the request are
+    applied; the surface's platform and name are immutable.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceUpdateRequest): Body for `PATCH /pods/{pod_id}/surfaces/{surface_name}`.
+
+            Partial update (merge semantics): only fields present in the request are
+            applied. The surface's ``platform`` and ``name`` are immutable — delete and
+            recreate to change either.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[AgentSurfaceResponse | ErrorResponse]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
         surface_name=surface_name,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -164,23 +191,28 @@ async def asyncio(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+    body: SurfaceUpdateRequest,
+) -> AgentSurfaceResponse | ErrorResponse | None:
+    """Update Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Partially update a surface. Only fields present in the request are
+    applied; the surface's platform and name are immutable.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceUpdateRequest): Body for `PATCH /pods/{pod_id}/surfaces/{surface_name}`.
+
+            Partial update (merge semantics): only fields present in the request are
+            applied. The surface's ``platform`` and ``name`` are immutable — delete and
+            recreate to change either.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        AgentSurfaceResponse | ErrorResponse
     """
 
     return (
@@ -188,5 +220,6 @@ async def asyncio(
             pod_id=pod_id,
             surface_name=surface_name,
             client=client,
+            body=body,
         )
     ).parsed

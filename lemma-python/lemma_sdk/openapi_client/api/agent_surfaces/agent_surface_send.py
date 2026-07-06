@@ -8,31 +8,40 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.surface_setup_response import SurfaceSetupResponse
+from ...models.surface_send_request import SurfaceSendRequest
+from ...models.surface_send_response import SurfaceSendResponse
 from ...types import Response
 
 
 def _get_kwargs(
     pod_id: UUID,
     surface_name: str,
+    *,
+    body: SurfaceSendRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/pods/{pod_id}/surfaces/{surface_name}/setup".format(
+        "method": "post",
+        "url": "/pods/{pod_id}/surfaces/{surface_name}/send".format(
             pod_id=quote(str(pod_id), safe=""),
             surface_name=quote(str(surface_name), safe=""),
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorResponse | SurfaceSetupResponse | None:
+) -> ErrorResponse | SurfaceSendResponse | None:
     if response.status_code == 200:
-        response_200 = SurfaceSetupResponse.from_dict(response.json())
+        response_200 = SurfaceSendResponse.from_dict(response.json())
 
         return response_200
 
@@ -49,7 +58,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
+) -> Response[ErrorResponse | SurfaceSendResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,28 +72,33 @@ def sync_detailed(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+    body: SurfaceSendRequest,
+) -> Response[ErrorResponse | SurfaceSendResponse]:
+    """Send Surface Message
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Proactively send a message to a pod member on this surface.
+
+    Powers notifications from functions/workflows. Reuses the member's existing
+    thread on the surface (bots can't cold-DM), so a 404 means the member has no
+    reachable conversation here yet.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceSendRequest): Send a proactive message to a pod member on this surface.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[ErrorResponse | SurfaceSendResponse]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
         surface_name=surface_name,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -99,29 +113,34 @@ def sync(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+    body: SurfaceSendRequest,
+) -> ErrorResponse | SurfaceSendResponse | None:
+    """Send Surface Message
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Proactively send a message to a pod member on this surface.
+
+    Powers notifications from functions/workflows. Reuses the member's existing
+    thread on the surface (bots can't cold-DM), so a 404 means the member has no
+    reachable conversation here yet.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceSendRequest): Send a proactive message to a pod member on this surface.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        ErrorResponse | SurfaceSendResponse
     """
 
     return sync_detailed(
         pod_id=pod_id,
         surface_name=surface_name,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -130,28 +149,33 @@ async def asyncio_detailed(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+    body: SurfaceSendRequest,
+) -> Response[ErrorResponse | SurfaceSendResponse]:
+    """Send Surface Message
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Proactively send a message to a pod member on this surface.
+
+    Powers notifications from functions/workflows. Reuses the member's existing
+    thread on the surface (bots can't cold-DM), so a 404 means the member has no
+    reachable conversation here yet.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceSendRequest): Send a proactive message to a pod member on this surface.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[ErrorResponse | SurfaceSendResponse]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
         surface_name=surface_name,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -164,23 +188,27 @@ async def asyncio(
     surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+    body: SurfaceSendRequest,
+) -> ErrorResponse | SurfaceSendResponse | None:
+    """Send Surface Message
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Proactively send a message to a pod member on this surface.
+
+    Powers notifications from functions/workflows. Reuses the member's existing
+    thread on the surface (bots can't cold-DM), so a 404 means the member has no
+    reachable conversation here yet.
 
     Args:
         pod_id (UUID):
         surface_name (str):
+        body (SurfaceSendRequest): Send a proactive message to a pod member on this surface.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        ErrorResponse | SurfaceSendResponse
     """
 
     return (
@@ -188,5 +216,6 @@ async def asyncio(
             pod_id=pod_id,
             surface_name=surface_name,
             client=client,
+            body=body,
         )
     ).parsed

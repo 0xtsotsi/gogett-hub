@@ -1,38 +1,40 @@
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import quote
-from uuid import UUID
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.surface_setup_response import SurfaceSetupResponse
+from ...models.set_default_surface_request import SetDefaultSurfaceRequest
+from ...models.user_surfaces_response import UserSurfacesResponse
 from ...types import Response
 
 
 def _get_kwargs(
-    pod_id: UUID,
-    surface_name: str,
+    *,
+    body: SetDefaultSurfaceRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/pods/{pod_id}/surfaces/{surface_name}/setup".format(
-            pod_id=quote(str(pod_id), safe=""),
-            surface_name=quote(str(surface_name), safe=""),
-        ),
+        "method": "put",
+        "url": "/surfaces/me/default",
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorResponse | SurfaceSetupResponse | None:
+) -> ErrorResponse | UserSurfacesResponse | None:
     if response.status_code == 200:
-        response_200 = SurfaceSetupResponse.from_dict(response.json())
+        response_200 = UserSurfacesResponse.from_dict(response.json())
 
         return response_200
 
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
+) -> Response[ErrorResponse | UserSurfacesResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -59,32 +61,29 @@ def _build_response(
 
 
 def sync_detailed(
-    pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+    body: SetDefaultSurfaceRequest,
+) -> Response[ErrorResponse | UserSurfacesResponse]:
+    """Set My Default Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Choose which surface answers the current user for a platform when several
+    could (e.g. a shared system bot spanning pods in different orgs).
 
     Args:
-        pod_id (UUID):
-        surface_name (str):
+        body (SetDefaultSurfaceRequest): Pick which surface answers this user for ``platform``
+            when several could.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[ErrorResponse | UserSurfacesResponse]
     """
 
     kwargs = _get_kwargs(
-        pod_id=pod_id,
-        surface_name=surface_name,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -95,63 +94,57 @@ def sync_detailed(
 
 
 def sync(
-    pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+    body: SetDefaultSurfaceRequest,
+) -> ErrorResponse | UserSurfacesResponse | None:
+    """Set My Default Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Choose which surface answers the current user for a platform when several
+    could (e.g. a shared system bot spanning pods in different orgs).
 
     Args:
-        pod_id (UUID):
-        surface_name (str):
+        body (SetDefaultSurfaceRequest): Pick which surface answers this user for ``platform``
+            when several could.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        ErrorResponse | UserSurfacesResponse
     """
 
     return sync_detailed(
-        pod_id=pod_id,
-        surface_name=surface_name,
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
-    pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+    body: SetDefaultSurfaceRequest,
+) -> Response[ErrorResponse | UserSurfacesResponse]:
+    """Set My Default Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Choose which surface answers the current user for a platform when several
+    could (e.g. a shared system bot spanning pods in different orgs).
 
     Args:
-        pod_id (UUID):
-        surface_name (str):
+        body (SetDefaultSurfaceRequest): Pick which surface answers this user for ``platform``
+            when several could.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[ErrorResponse | UserSurfacesResponse]
     """
 
     kwargs = _get_kwargs(
-        pod_id=pod_id,
-        surface_name=surface_name,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -160,33 +153,30 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    pod_id: UUID,
-    surface_name: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+    body: SetDefaultSurfaceRequest,
+) -> ErrorResponse | UserSurfacesResponse | None:
+    """Set My Default Surface
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     Choose which surface answers the current user for a platform when several
+    could (e.g. a shared system bot spanning pods in different orgs).
 
     Args:
-        pod_id (UUID):
-        surface_name (str):
+        body (SetDefaultSurfaceRequest): Pick which surface answers this user for ``platform``
+            when several could.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        ErrorResponse | UserSurfacesResponse
     """
 
     return (
         await asyncio_detailed(
-            pod_id=pod_id,
-            surface_name=surface_name,
             client=client,
+            body=body,
         )
     ).parsed

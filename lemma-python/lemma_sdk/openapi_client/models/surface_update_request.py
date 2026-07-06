@@ -13,31 +13,30 @@ if TYPE_CHECKING:
     from ..models.surface_behavior_config_input import SurfaceBehaviorConfigInput
 
 
-T = TypeVar("T", bound="SurfaceUpsertRequest")
+T = TypeVar("T", bound="SurfaceUpdateRequest")
 
 
 @_attrs_define
-class SurfaceUpsertRequest:
-    """The single create-or-update body for `PUT /surfaces/{platform}`.
+class SurfaceUpdateRequest:
+    """Body for `PATCH /pods/{pod_id}/surfaces/{surface_name}`.
 
-    A surface is uniquely identified by `pod_id + platform`, so this one
-    request handles both creation and partial update. Only the fields present
-    in the request are applied on update (merge semantics); `is_enabled`
-    defaults to True on create and is only changed on update when sent.
+    Partial update (merge semantics): only fields present in the request are
+    applied. The surface's ``platform`` and ``name`` are immutable — delete and
+    recreate to change either.
 
         Attributes:
             account_id (None | Unset | UUID):
             config (SurfaceBehaviorConfigInput | Unset):
-            credential_mode (SurfaceCredentialMode | Unset):
+            credential_mode (None | SurfaceCredentialMode | Unset):
             default_agent_name (None | str | Unset):
-            is_enabled (bool | Unset):  Default: True.
+            is_enabled (bool | None | Unset):
     """
 
     account_id: None | Unset | UUID = UNSET
     config: SurfaceBehaviorConfigInput | Unset = UNSET
-    credential_mode: SurfaceCredentialMode | Unset = UNSET
+    credential_mode: None | SurfaceCredentialMode | Unset = UNSET
     default_agent_name: None | str | Unset = UNSET
-    is_enabled: bool | Unset = True
+    is_enabled: bool | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         account_id: None | str | Unset
@@ -52,9 +51,13 @@ class SurfaceUpsertRequest:
         if not isinstance(self.config, Unset):
             config = self.config.to_dict()
 
-        credential_mode: str | Unset = UNSET
-        if not isinstance(self.credential_mode, Unset):
+        credential_mode: None | str | Unset
+        if isinstance(self.credential_mode, Unset):
+            credential_mode = UNSET
+        elif isinstance(self.credential_mode, SurfaceCredentialMode):
             credential_mode = self.credential_mode.value
+        else:
+            credential_mode = self.credential_mode
 
         default_agent_name: None | str | Unset
         if isinstance(self.default_agent_name, Unset):
@@ -62,7 +65,11 @@ class SurfaceUpsertRequest:
         else:
             default_agent_name = self.default_agent_name
 
-        is_enabled = self.is_enabled
+        is_enabled: bool | None | Unset
+        if isinstance(self.is_enabled, Unset):
+            is_enabled = UNSET
+        else:
+            is_enabled = self.is_enabled
 
         field_dict: dict[str, Any] = {}
 
@@ -110,12 +117,24 @@ class SurfaceUpsertRequest:
         else:
             config = SurfaceBehaviorConfigInput.from_dict(_config)
 
-        _credential_mode = d.pop("credential_mode", UNSET)
-        credential_mode: SurfaceCredentialMode | Unset
-        if isinstance(_credential_mode, Unset):
-            credential_mode = UNSET
-        else:
-            credential_mode = SurfaceCredentialMode(_credential_mode)
+        def _parse_credential_mode(
+            data: object,
+        ) -> None | SurfaceCredentialMode | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                credential_mode_type_0 = SurfaceCredentialMode(data)
+
+                return credential_mode_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | SurfaceCredentialMode | Unset, data)
+
+        credential_mode = _parse_credential_mode(d.pop("credential_mode", UNSET))
 
         def _parse_default_agent_name(data: object) -> None | str | Unset:
             if data is None:
@@ -128,9 +147,16 @@ class SurfaceUpsertRequest:
             d.pop("default_agent_name", UNSET)
         )
 
-        is_enabled = d.pop("is_enabled", UNSET)
+        def _parse_is_enabled(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
 
-        surface_upsert_request = cls(
+        is_enabled = _parse_is_enabled(d.pop("is_enabled", UNSET))
+
+        surface_update_request = cls(
             account_id=account_id,
             config=config,
             credential_mode=credential_mode,
@@ -138,4 +164,4 @@ class SurfaceUpsertRequest:
             is_enabled=is_enabled,
         )
 
-        return surface_upsert_request
+        return surface_update_request

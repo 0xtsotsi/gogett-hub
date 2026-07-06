@@ -19,6 +19,8 @@ class VariableSpecResponse:
         name (str):
         default (None | str | Unset):
         description (None | str | Unset):
+        platform (None | str | Unset): For a connector account variable, the platform the account must belong to (e.g.
+            'slack'), so the importer can connect the right connector. Null for non-connector variables.
         required (bool | Unset):  Default: False.
     """
 
@@ -26,6 +28,7 @@ class VariableSpecResponse:
     name: str
     default: None | str | Unset = UNSET
     description: None | str | Unset = UNSET
+    platform: None | str | Unset = UNSET
     required: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -46,6 +49,12 @@ class VariableSpecResponse:
         else:
             description = self.description
 
+        platform: None | str | Unset
+        if isinstance(self.platform, Unset):
+            platform = UNSET
+        else:
+            platform = self.platform
+
         required = self.required
 
         field_dict: dict[str, Any] = {}
@@ -60,6 +69,8 @@ class VariableSpecResponse:
             field_dict["default"] = default
         if description is not UNSET:
             field_dict["description"] = description
+        if platform is not UNSET:
+            field_dict["platform"] = platform
         if required is not UNSET:
             field_dict["required"] = required
 
@@ -90,6 +101,15 @@ class VariableSpecResponse:
 
         description = _parse_description(d.pop("description", UNSET))
 
+        def _parse_platform(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        platform = _parse_platform(d.pop("platform", UNSET))
+
         required = d.pop("required", UNSET)
 
         variable_spec_response = cls(
@@ -97,6 +117,7 @@ class VariableSpecResponse:
             name=name,
             default=default,
             description=description,
+            platform=platform,
             required=required,
         )
 

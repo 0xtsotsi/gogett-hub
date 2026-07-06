@@ -8,20 +8,20 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.surface_setup_response import SurfaceSetupResponse
+from ...models.surface_platform_setup_guide import SurfacePlatformSetupGuide
 from ...types import Response
 
 
 def _get_kwargs(
     pod_id: UUID,
-    surface_name: str,
+    platform: str,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "get",
-        "url": "/pods/{pod_id}/surfaces/{surface_name}/setup".format(
+        "url": "/pods/{pod_id}/surface-setup/{platform}".format(
             pod_id=quote(str(pod_id), safe=""),
-            surface_name=quote(str(surface_name), safe=""),
+            platform=quote(str(platform), safe=""),
         ),
     }
 
@@ -30,9 +30,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorResponse | SurfaceSetupResponse | None:
+) -> ErrorResponse | SurfacePlatformSetupGuide | None:
     if response.status_code == 200:
-        response_200 = SurfaceSetupResponse.from_dict(response.json())
+        response_200 = SurfacePlatformSetupGuide.from_dict(response.json())
 
         return response_200
 
@@ -49,7 +49,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
+) -> Response[ErrorResponse | SurfacePlatformSetupGuide]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,31 +60,30 @@ def _build_response(
 
 def sync_detailed(
     pod_id: UUID,
-    surface_name: str,
+    platform: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+) -> Response[ErrorResponse | SurfacePlatformSetupGuide]:
+    """Get Surface Setup Guide
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     The static pre-creation checklist for a platform (env/OAuth
+    prerequisites) — works before any surface of this platform exists.
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        platform (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[ErrorResponse | SurfacePlatformSetupGuide]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
-        surface_name=surface_name,
+        platform=platform,
     )
 
     response = client.get_httpx_client().request(
@@ -96,62 +95,60 @@ def sync_detailed(
 
 def sync(
     pod_id: UUID,
-    surface_name: str,
+    platform: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+) -> ErrorResponse | SurfacePlatformSetupGuide | None:
+    """Get Surface Setup Guide
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     The static pre-creation checklist for a platform (env/OAuth
+    prerequisites) — works before any surface of this platform exists.
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        platform (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        ErrorResponse | SurfacePlatformSetupGuide
     """
 
     return sync_detailed(
         pod_id=pod_id,
-        surface_name=surface_name,
+        platform=platform,
         client=client,
     ).parsed
 
 
 async def asyncio_detailed(
     pod_id: UUID,
-    surface_name: str,
+    platform: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | SurfaceSetupResponse]:
-    """Get Surface Setup
+) -> Response[ErrorResponse | SurfacePlatformSetupGuide]:
+    """Get Surface Setup Guide
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     The static pre-creation checklist for a platform (env/OAuth
+    prerequisites) — works before any surface of this platform exists.
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        platform (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | SurfaceSetupResponse]
+        Response[ErrorResponse | SurfacePlatformSetupGuide]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
-        surface_name=surface_name,
+        platform=platform,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -161,32 +158,31 @@ async def asyncio_detailed(
 
 async def asyncio(
     pod_id: UUID,
-    surface_name: str,
+    platform: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | SurfaceSetupResponse | None:
-    """Get Surface Setup
+) -> ErrorResponse | SurfacePlatformSetupGuide | None:
+    """Get Surface Setup Guide
 
-     Live setup state for an existing surface: static platform checklist plus
-    webhook URL and admin-consent status. For the pre-creation checklist (before
-    any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     The static pre-creation checklist for a platform (env/OAuth
+    prerequisites) — works before any surface of this platform exists.
 
     Args:
         pod_id (UUID):
-        surface_name (str):
+        platform (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | SurfaceSetupResponse
+        ErrorResponse | SurfacePlatformSetupGuide
     """
 
     return (
         await asyncio_detailed(
             pod_id=pod_id,
-            surface_name=surface_name,
+            platform=platform,
             client=client,
         )
     ).parsed

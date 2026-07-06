@@ -1555,3 +1555,91 @@ def test_latest_user_prompt_includes_metadata_state_without_changing_content():
     assert "UI state:" in user_prompt
     assert '"screen": "pod_runs"' in user_prompt
     assert message.text == "What should I do next?"
+
+
+def _tool_call_message(
+    *,
+    conversation_id: UUID,
+    sequence: int,
+    tool_name: str = "ask_user",
+    tool_call_id: str = "call-1",
+    tool_args: dict | None = None,
+) -> Message:
+    return Message(
+        conversation_id=conversation_id,
+        sequence=sequence,
+        agent_run_id=uuid4(),
+        role=MessageRole.ASSISTANT.value,
+        kind=MessageKind.TOOL_CALL,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_args=tool_args or {"questions": []},
+        metadata={"tool_name": tool_name},
+    )
+
+
+def _tool_return_message(
+    *,
+    conversation_id: UUID,
+    sequence: int,
+    tool_name: str = "ask_user",
+    tool_call_id: str = "call-1",
+    tool_result: dict | None = None,
+) -> Message:
+    return Message(
+        conversation_id=conversation_id,
+        sequence=sequence,
+        agent_run_id=uuid4(),
+        role=MessageRole.TOOL.value,
+        kind=MessageKind.TOOL_RETURN,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_result=tool_result or {"success": True},
+    )
+
+
+def test_pausing_tool_call_without_matching_return_is_dropped_from_history():
+    """A left-unresolved ask_user/request_approval call must not reach the
+    model as a dangling ToolCallPart — pydantic-ai requires every tool call to
+    have a matching return in the same request. Without a synthesized return
+    (see ConversationService._supersede_stale_pending_interactions), the
+    harness intentionally drops the orphaned call rather than sending an
+    invalid request; this test locks in that fallback behavior."""
+    conversation_id = uuid4()
+    orphaned_call = _tool_call_message(
+        conversation_id=conversation_id, sequence=0, tool_call_id="orphan-1"
+    )
+
+    history, _ = PydanticAIHarness()._history_and_prompt([orphaned_call])
+
+    assert history == []
+
+
+def test_pausing_tool_call_with_synthesized_return_is_paired_in_history():
+    """Once a return exists for a pausing call (whether from a real user
+    decision or an auto-deny superseding it), history reconstruction pairs the
+    call with its return like any other tool round-trip — nothing is dropped
+    and the model sees exactly what happened."""
+    conversation_id = uuid4()
+    call = _tool_call_message(
+        conversation_id=conversation_id, sequence=0, tool_call_id="resolved-1"
+    )
+    tool_return = _tool_return_message(
+        conversation_id=conversation_id,
+        sequence=1,
+        tool_call_id="resolved-1",
+        tool_result={
+            "success": False,
+            "message": "User dismissed the questions without answering.",
+        },
+    )
+
+    history, _ = PydanticAIHarness()._history_and_prompt([call, tool_return])
+
+    assert len(history) == 2
+    response_message, request_message = history
+    assert len(response_message.parts) == 1
+    assert response_message.parts[0].tool_call_id == "resolved-1"
+    assert len(request_message.parts) == 1
+    assert request_message.parts[0].tool_call_id == "resolved-1"
+    assert request_message.parts[0].content["success"] is False

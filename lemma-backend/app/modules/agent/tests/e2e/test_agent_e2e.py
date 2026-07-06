@@ -79,12 +79,17 @@ async def _seed_paused_interaction(
     *,
     tool_name: str,
     tool_args: dict,
+    agent_runtime: dict | None = None,
 ):
     """Create pod/agent/conversation and a paused ``tool_name`` call.
 
     Mirrors the post-pause state: the harness persisted the interaction tool call
-    and the run finished COMPLETED with the conversation in WAITING.
+    and the run finished COMPLETED with the conversation in WAITING. Pass
+    ``agent_runtime`` (e.g. an org-scoped e2e profile) for tests that actually
+    drive the resumed run through a real harness/worker — the default
+    ``system:lemma`` profile needs a real provider key to even resolve.
     """
+    resolved_agent_runtime = agent_runtime or DEFAULT_AGENT_RUNTIME
     pod_id = await _create_test_pod(authenticated_client, fixed_test_org)
     create_agent = await authenticated_client.post(
         f"/pods/{pod_id}/agents",
@@ -92,7 +97,7 @@ async def _seed_paused_interaction(
             "name": "Interaction Agent",
             "instruction": "Ask the user when needed.",
             "toolsets": ["USER_INTERACTION"],
-            "agent_runtime": DEFAULT_AGENT_RUNTIME,
+            "agent_runtime": resolved_agent_runtime,
         },
     )
     assert create_agent.status_code == 201, create_agent.text
@@ -110,7 +115,7 @@ async def _seed_paused_interaction(
         paused_run = await repo.create_agent_run(
             conversation_id=conversation_id,
             agent_id=UUID(agent["id"]),
-            agent_runtime=AgentRuntimeConfig(profile_id="system:lemma"),
+            agent_runtime=AgentRuntimeConfig(**resolved_agent_runtime),
             metadata={"source": "approval_e2e"},
         )
         await repo.append_message(
@@ -271,6 +276,45 @@ async def _collect_sse_lines(line_iterator) -> list[dict]:
             if payload["type"] in {"completed", "stopped", "error"}:
                 break
     return events
+
+
+async def _create_mock_safe_runtime(db_session, fixed_test_org) -> dict:
+    """An org-scoped runtime profile that needs no real provider key.
+
+    Unlike ``system:lemma`` (which requires a real LEMMA_OPENAI_API_KEY/
+    LEMMA_ANTHROPIC_API_KEY just to resolve, even in mock LLM mode — the key
+    check happens before the mock swap), a DB-stored org profile resolves from
+    its own row. Its (fake) credentials are never actually used: e2e mock mode
+    swaps the model itself inside the harness. Use this for tests that drive a
+    real run (worker or in-process) rather than only inspecting DB state.
+    """
+    profile = AgentRuntimeProfileModel(
+        organization_id=UUID(fixed_test_org["id"]),
+        scope="ORGANIZATION",
+        kind="MODEL_PROVIDER",
+        protocol="OPENAI_COMPATIBLE",
+        name=f"Mock-safe runtime {uuid4().hex[:8]}",
+        default_model_name="mock-safe-model",
+        model_catalog=[
+            {
+                "name": "mock-safe-model",
+                "display_name": "Mock-safe Model",
+                "provider_model_name": "provider/mock-safe-model",
+                "capabilities": ["TEXT", "TOOLS"],
+                "default_model_settings": {},
+                "metadata": {},
+            }
+        ],
+        config={"base_url": "https://mock-safe-provider.test/v1"},
+        credentials={"api_key": "mock-safe-secret"},
+        status="ACTIVE",
+        profile_metadata={"source": "e2e"},
+    )
+    db_session.add(profile)
+    await db_session.flush()
+    profile_id = str(profile.id)
+    await db_session.commit()
+    return {"profile_id": profile_id, "model_name": "mock-safe-model"}
 
 
 async def _post_sse(client, url: str, payload: dict) -> list[dict]:
@@ -1140,6 +1184,282 @@ class TestPodAgentLifecycle:
             f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
         )
         assert approvals_done.json()["items"] == []
+
+    async def test_new_message_while_ask_user_pending_denies_it_and_starts_fresh_run(
+        self,
+        authenticated_client,
+        fixed_test_org,
+        db_session,
+        worker,
+    ):
+        """Regression: the composer stays enabled while a conversation is
+        WAITING on ask_user (typing past the card is allowed), and sending a
+        plain message must not silently orphan the pending question. Without
+        superseding it first, the new run's history rebuild finds no return
+        for the old call and drops it (PydanticAIHarness._build_tool_batch),
+        permanently losing the model's memory of asking and leaving the
+        approvals list stuck forever. The fix auto-denies it as superseded
+        before the new run starts."""
+        _ = worker
+        mock_safe_runtime = await _create_mock_safe_runtime(db_session, fixed_test_org)
+        pod_id, conversation_id, _agent, paused_run, approval_id = (
+            await _seed_paused_interaction(
+                authenticated_client,
+                fixed_test_org,
+                tool_name="ask_user",
+                tool_args={
+                    "questions": [
+                        {
+                            "question": "Which auth method?",
+                            "header": "Auth",
+                            "options": [{"label": "OAuth"}, {"label": "API key"}],
+                        }
+                    ]
+                },
+                agent_runtime=mock_safe_runtime,
+            )
+        )
+
+        events = await _post_sse(
+            authenticated_client,
+            f"/pods/{pod_id}/conversations/{conversation_id}/messages",
+            {"content": "Actually, never mind — let's talk about something else."},
+        )
+        _assert_completed_without_error(events)
+
+        messages = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+        )
+        assert messages.status_code == 200, messages.text
+        items = messages.json()["items"]
+
+        # The stale ask_user call is auto-denied as superseded, not dropped.
+        tool_return = next(
+            item
+            for item in items
+            if item["kind"] == "TOOL_RETURN" and item["tool_call_id"] == approval_id
+        )
+        assert tool_return["agent_run_id"] == str(paused_run.id)
+        assert tool_return["tool_result"]["success"] is False
+
+        # The approvals list clears instead of showing "needs approval" forever.
+        approvals_after = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
+        )
+        assert approvals_after.json()["items"] == []
+
+        # The new message ran under a genuinely NEW run, not the paused one.
+        new_user_message = next(
+            item
+            for item in items
+            if item["kind"] == "TEXT"
+            and item["role"] == "user"
+            and "never mind" in (item["text"] or "")
+        )
+        assert new_user_message["agent_run_id"] != str(paused_run.id)
+
+        # A late manual decision on the now-superseded call self-heals
+        # idempotently (reports the stored DENY) instead of erroring or
+        # re-running anything.
+        duplicate = await authenticated_client.post(
+            f"/pods/{pod_id}/conversations/{conversation_id}"
+            f"/approvals/{approval_id}/decision",
+            json={
+                "decision": "APPROVE_ONCE",
+                "response": {"answers": {"Auth": "OAuth"}},
+            },
+        )
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["status"] == "reconciled"
+        assert duplicate.json()["decision"] == "DENY"
+
+    async def test_new_message_while_request_approval_pending_denies_without_executing(
+        self,
+        authenticated_client,
+        fixed_test_org,
+        db_session,
+        worker,
+        monkeypatch,
+    ):
+        """Same regression for request_approval: superseding it must DENY, never
+        auto-approve — this is a safety fallback synthesizing a response on the
+        user's behalf, so the wrapped (possibly destructive) tool must never run
+        just because the user moved on to a new message."""
+        _ = worker
+        executed: list[str] = []
+
+        async def fail_if_executed(self, *, conversation, user_id, agent_run_id, tool_name, args):
+            del self, conversation, user_id, agent_run_id, args
+            executed.append(tool_name)
+            return {"ok": True, "value": {"stdout": "deleted", "success": True}}
+
+        monkeypatch.setattr(
+            ConversationService,
+            "_execute_approved_tool_as_user",
+            fail_if_executed,
+        )
+
+        mock_safe_runtime = await _create_mock_safe_runtime(db_session, fixed_test_org)
+        pod_id, conversation_id, _agent, paused_run, approval_id = (
+            await _seed_paused_interaction(
+                authenticated_client,
+                fixed_test_org,
+                tool_name="request_approval",
+                tool_args={
+                    "tool_name": "exec_command",
+                    "args": {"cmd": "lemma pods delete --all"},
+                    "title": "Delete all pods?",
+                    "reason": "Confirm destructive cleanup.",
+                },
+                agent_runtime=mock_safe_runtime,
+            )
+        )
+
+        events = await _post_sse(
+            authenticated_client,
+            f"/pods/{pod_id}/conversations/{conversation_id}/messages",
+            {"content": "Hold off on that, let's do something else instead."},
+        )
+        _assert_completed_without_error(events)
+
+        # The wrapped destructive tool must never run just because the user
+        # moved on without deciding.
+        assert executed == []
+
+        messages = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+        )
+        assert messages.status_code == 200, messages.text
+        items = messages.json()["items"]
+        tool_return = next(
+            item
+            for item in items
+            if item["kind"] == "TOOL_RETURN" and item["tool_call_id"] == approval_id
+        )
+        assert tool_return["agent_run_id"] == str(paused_run.id)
+        assert tool_return["tool_result"]["success"] is False
+        assert tool_return["tool_result"]["executed"] is False
+        assert tool_return["tool_result"]["decision"] == AgentRunApprovalDecision.DENY.value
+
+        approvals_after = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
+        )
+        assert approvals_after.json()["items"] == []
+
+    @pytest.mark.real_llm
+    @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
+    async def test_real_agent_ask_user_then_new_message_denies_and_replies_for_real(
+        self,
+        authenticated_client,
+        fixed_test_org,
+        worker,
+    ):
+        """End-to-end with a REAL model and REAL submit flow (no seeded/mocked
+        pause): the agent genuinely decides to call ask_user, the run genuinely
+        pauses, and a real subsequent /messages call — sent instead of an answer
+        — must supersede (deny) the pause and still get a real reply, rather
+        than orphaning the tool call or failing the run."""
+        _ = worker
+        pod_id = await _create_test_pod(authenticated_client, fixed_test_org)
+        create_agent = await authenticated_client.post(
+            f"/pods/{pod_id}/agents",
+            json={
+                "name": "Real Ask User Agent",
+                "instruction": (
+                    "When the user wants to set up a notification preference, you "
+                    "MUST call the ask_user tool with exactly one question, header "
+                    "'Channel', asking which notification channel they prefer, with "
+                    "options 'Email' and 'SMS'. Do not answer in plain text; use the "
+                    "tool. For a simple arithmetic question like 'what is 2 + 2', "
+                    "NEVER call any tool — just answer with the number directly and "
+                    "briefly. Never call ask_user more than once in a conversation."
+                ),
+                "toolsets": ["USER_INTERACTION"],
+                "agent_runtime": DEFAULT_AGENT_RUNTIME,
+            },
+        )
+        assert create_agent.status_code == 201, create_agent.text
+        agent = create_agent.json()
+
+        create_conversation = await authenticated_client.post(
+            f"/pods/{pod_id}/conversations",
+            json={
+                "agent_name": agent["name"],
+                "title": "Real ask_user pause",
+                "type": "CHAT",
+            },
+        )
+        assert create_conversation.status_code == 201, create_conversation.text
+        conversation_id = create_conversation.json()["id"]
+        messages_url = f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+
+        first_events = await _post_sse(
+            authenticated_client,
+            messages_url,
+            {"content": "I want to set up notifications."},
+        )
+        waiting = [event for event in first_events if event["type"] == "status"]
+        conversation = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}"
+        )
+        assert conversation.status_code == 200, conversation.text
+        assert conversation.json()["status"] == ConversationStatus.WAITING.value, (
+            first_events,
+            waiting,
+        )
+
+        approvals = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
+        )
+        assert approvals.status_code == 200, approvals.text
+        pending = approvals.json()["items"]
+        assert len(pending) == 1, pending
+        approval_id = pending[0]["tool_call_id"]
+        assert pending[0]["tool_name"] == "ask_user"
+
+        # Instead of answering, send a genuinely new message through the real
+        # /messages endpoint (real worker, real model for the follow-up reply).
+        second_events = await _post_sse(
+            authenticated_client,
+            messages_url,
+            {"content": "Actually never mind, just tell me: what is 2 + 2?"},
+        )
+        _assert_completed_without_error(second_events)
+
+        messages = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+        )
+        assert messages.status_code == 200, messages.text
+        items = messages.json()["items"]
+
+        tool_return = next(
+            item
+            for item in items
+            if item["kind"] == "TOOL_RETURN" and item["tool_call_id"] == approval_id
+        )
+        assert tool_return["tool_result"]["success"] is False
+
+        # The original stale call is resolved (no longer "needs approval").
+        # Don't assert the approvals list is globally empty: the fix's job is
+        # only to supersede the STALE call, not to stop the model from
+        # genuinely asking something new in its reply to the follow-up.
+        approvals_after = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
+        )
+        pending_ids_after = {
+            item["tool_call_id"] for item in approvals_after.json()["items"]
+        }
+        assert approval_id not in pending_ids_after
+
+        # The follow-up genuinely ran under a NEW run, not the paused one.
+        new_run_ids = {
+            item["agent_run_id"]
+            for item in items
+            if item["kind"] == "TEXT"
+            and item["role"] == "user"
+            and "2 + 2" in (item["text"] or "")
+        }
+        assert new_run_ids and tool_return["agent_run_id"] not in new_run_ids
 
     @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)
     async def test_stopping_streaming_agent_run_does_not_wedge_worker(

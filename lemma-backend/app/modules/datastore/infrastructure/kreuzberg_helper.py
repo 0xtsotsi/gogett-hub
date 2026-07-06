@@ -14,6 +14,9 @@ import aiohttp
 import anyio
 
 from app.modules.datastore.config import datastore_settings
+from app.modules.datastore.infrastructure.kreuzberg_circuit import (
+    get_kreuzberg_circuit,
+)
 from app.modules.datastore.infrastructure.pdf_renderer import get_pdf_text_sample
 from app.core.log.log import get_logger
 
@@ -26,13 +29,14 @@ logger = get_logger(__name__)
 # outright (which would mark the file FAILED and wait on the recovery cron).
 # HTTP 4xx/5xx responses are NOT retried here; those are handled by the
 # config-fallback layer.
-# Defaults: 6 attempts with 1.0s base ⇒ backoff 1+2+4+8+16 = 31s of waiting
-# (total = base*(2^(attempts-1)-1)), enough to ride out a Kreuzberg restart or a
-# scale-from-zero cold start rather than failing the extraction outright (which
-# would mark the file FAILED and wait on the recovery cron). Both are overridable
-# via datastore_settings (read at call time) so a backend with longer cold starts
-# can wait longer.
-_TRANSIENT_RETRY_ATTEMPTS = 6
+# These module constants are only a FALLBACK for a misconfiguration (setting <= 0);
+# the real values come from datastore_settings (read at call time). Defaults: 3
+# attempts with 1.0s base ⇒ backoff 1+2 = 3s of waiting (total =
+# base*(2^(attempts-1)-1)). A short connect timeout (kreuzberg_connect_timeout_
+# seconds) keeps each attempt cheap when the extractor is down, and the circuit
+# breaker short-circuits sustained outages, so a small attempt count no longer
+# risks failing files on a brief blip.
+_TRANSIENT_RETRY_ATTEMPTS = 3
 _TRANSIENT_RETRY_BASE_DELAY_SECONDS = 1.0
 
 
@@ -197,8 +201,14 @@ class KreuzbergHelper:
         self.base_url = (
             datastore_settings.kreuzberg_url.rstrip("/") if datastore_settings.kreuzberg_url else None
         )
+        # A long `total` covers a connected-but-slow OCR of a large PDF, but
+        # `connect`/`sock_connect` make a DOWN endpoint fail within seconds
+        # instead of hanging to the full total (which was the 180s-per-attempt
+        # stall that pinned worker slots during a Kreuzberg outage).
         self.request_timeout = aiohttp.ClientTimeout(
-            total=datastore_settings.kreuzberg_request_timeout_seconds
+            total=datastore_settings.kreuzberg_request_timeout_seconds,
+            connect=datastore_settings.kreuzberg_connect_timeout_seconds,
+            sock_connect=datastore_settings.kreuzberg_connect_timeout_seconds,
         )
 
     async def process_file(
@@ -544,6 +554,10 @@ class KreuzbergHelper:
             or _TRANSIENT_RETRY_BASE_DELAY_SECONDS
         )
 
+        # Fail fast when the extractor is already known-down (see kreuzberg_circuit).
+        circuit = get_kreuzberg_circuit()
+        circuit.raise_if_open()
+
         for attempt in range(max_attempts):
             try:
                 async with session.post(
@@ -552,6 +566,8 @@ class KreuzbergHelper:
                     params={"output_format": "markdown"},
                 ) as response:
                     await self._raise_for_status(response)
+                    # A completed HTTP round-trip means the extractor is reachable.
+                    circuit.record_success()
                     data = await response.json()
                     if isinstance(data, list) and data:
                         return KreuzbergExtractionResult(data[0])
@@ -559,8 +575,9 @@ class KreuzbergHelper:
                         "Unexpected response from Kreuzberg extract endpoint"
                     )
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError, TimeoutError) as exc:
-                # Transient: the service was briefly unreachable. Retry the same
-                # request with backoff before giving up.
+                # Transient: the service was briefly unreachable. Count it toward
+                # the circuit breaker and retry with backoff before giving up.
+                circuit.record_failure()
                 if attempt < max_attempts - 1:
                     delay = base_delay * (2**attempt)
                     logger.warning(

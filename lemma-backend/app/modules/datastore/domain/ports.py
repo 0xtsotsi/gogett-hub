@@ -123,7 +123,15 @@ class DatastoreFileRepositoryPort(Protocol):
         pending_cutoff: datetime,
         processing_cutoff: datetime,
         failed_cutoff: datetime | None = None,
-        max_attempts: int = 5,
+        max_attempts: int = 3,
+    ) -> Sequence[DatastoreFileEntity]: ...
+
+    async def list_exhausted_recovery_candidates(
+        self,
+        *,
+        processing_cutoff: datetime,
+        failed_cutoff: datetime | None = None,
+        max_attempts: int = 3,
     ) -> Sequence[DatastoreFileEntity]: ...
 
     async def bulk_update_status(
@@ -132,6 +140,15 @@ class DatastoreFileRepositoryPort(Protocol):
         file_ids: Sequence[UUID],
         status: FileStatus,
     ) -> int: ...
+
+    async def bulk_mark_failed_permanent(
+        self,
+        *,
+        file_ids: Sequence[UUID],
+        error: str,
+    ) -> int: ...
+
+    async def mark_failed_permanent(self, file_id: UUID, *, error: str) -> bool: ...
 
 
 class DatastoreSchemaPort(Protocol):

@@ -7,10 +7,22 @@ import aiohttp
 import pytest
 
 from app.modules.datastore.infrastructure import kreuzberg_helper as kreuzberg_module
+from app.modules.datastore.infrastructure.kreuzberg_circuit import (
+    reset_kreuzberg_circuit,
+)
 from app.modules.datastore.infrastructure.kreuzberg_helper import (
     KreuzbergExtractionResult,
     KreuzbergHelper,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit():
+    """The Kreuzberg circuit breaker is a process-wide singleton; reset it around
+    every test so failures recorded by one test can't open it for the next."""
+    reset_kreuzberg_circuit()
+    yield
+    reset_kreuzberg_circuit()
 
 
 class _FakeSession:
@@ -410,5 +422,8 @@ async def test_extract_raises_after_exhausting_transient_retries(monkeypatch):
             config=None,
         )
 
-    assert session.post.attempts == kreuzberg_module._TRANSIENT_RETRY_ATTEMPTS
-    assert len(sleeps) == kreuzberg_module._TRANSIENT_RETRY_ATTEMPTS - 1
+    expected_attempts = (
+        kreuzberg_module.datastore_settings.kreuzberg_transient_retry_attempts
+    )
+    assert session.post.attempts == expected_attempts
+    assert len(sleeps) == expected_attempts - 1

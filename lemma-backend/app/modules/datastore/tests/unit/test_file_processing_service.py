@@ -619,3 +619,40 @@ async def test_process_file_async_marks_failed_in_own_uow_on_error():
     # get_model + claim + mark_failed, all closed.
     assert factory.opened == 3
     assert factory.active == 0
+
+
+@pytest.mark.asyncio
+async def test_process_file_async_terminally_fails_oversize_file():
+    """A file larger than the size cap is FAILED_PERMANENT without being claimed
+    or downloaded, so it never enters the processing/recovery loop or holds
+    memory."""
+    file_id = uuid4()
+    file_model = SimpleNamespace(
+        id=file_id,
+        kind="FILE",
+        status="PENDING",
+        search_enabled=True,
+        name="huge.pdf",
+        path="/manuals/huge.pdf",
+        mime_type="application/pdf",
+        file_metadata={},
+        size_bytes=10**12,  # 1 TB, far over the 100 MB default cap
+    )
+
+    # get_model + mark_failed_permanent — no claim, no extraction.
+    factory = _RecordingUowFactory(
+        results=[_ScalarResult(file_model), _ExecuteResult()]
+    )
+    service = _build_service(factory)
+
+    await service.process_file_async(file_id)
+
+    service.storage.download_file.assert_not_awaited()
+    service.document_processor.extract.assert_not_awaited()
+    # Only get_model + the terminal-fail UoW were opened.
+    assert factory.opened == 2
+    assert factory.active == 0
+    # The terminal-fail statement carried FAILED_PERMANENT.
+    terminal_stmt = factory.sessions[-1].execute.await_args.args[0]
+    compiled = str(terminal_stmt.compile().params)
+    assert "FAILED_PERMANENT" in compiled

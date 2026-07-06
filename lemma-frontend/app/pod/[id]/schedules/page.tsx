@@ -34,6 +34,7 @@ import { usePod } from '@/lib/hooks/use-pods';
 import { usePodAccess } from '@/lib/hooks/use-pod-access';
 import { resourceAllows } from '@/lib/authz/resource-actions';
 import { cn } from '@/lib/utils';
+import { formatAgentName } from '@/lib/utils/agents';
 import { describeCron, describeScheduleConfig, formatScheduleType, getScheduleConfigDetails, getScheduleTargetKind, getScheduleTargetName } from '@/lib/utils/schedules';
 import { ScheduleType, type Account, type CreateScheduleRequest, type Schedule, type Workflow as LemmaWorkflow } from '@/lib/types';
 
@@ -171,7 +172,7 @@ function getAccountLabel(account: Account): string {
 }
 
 function formatTargetLabel(value: string) {
-    return value || 'Untitled';
+    return value ? formatAgentName(value) : 'Untitled';
 }
 
 function getScheduleEmptyCopy(filter: ScheduleFilter): { title: string; description: string } {
@@ -581,7 +582,7 @@ export default function PodSchedulesPage({
                                             <SelectContent>
                                                 {(targetKind === 'workflow' ? workflows : agents).map((item) => (
                                                     <SelectItem key={item.name} value={item.name}>
-                                                        {item.name}
+                                                        {formatAgentName(item.name)}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -950,8 +951,8 @@ export default function PodSchedulesPage({
                     if (!open) setSchedulePendingDelete(null);
                 }}
                 title="Delete schedule"
-                description={`Delete schedule for ${schedulePendingDelete ? getScheduleTargetName(schedulePendingDelete) : 'this target'}?`}
-                resourceName={schedulePendingDelete ? getScheduleTargetName(schedulePendingDelete) : 'schedule'}
+                description={`Delete schedule for ${schedulePendingDelete ? formatAgentName(getScheduleTargetName(schedulePendingDelete)) : 'this target'}?`}
+                resourceName={schedulePendingDelete ? formatAgentName(getScheduleTargetName(schedulePendingDelete)) : 'schedule'}
                 confirmationText=""
                 consequences={[
                     'This stops future automatic runs for the selected workflow or agent.',
@@ -1146,7 +1147,7 @@ function ScheduleRow({
     onShareVisibilityChange: (visibility: ResourceVisibilityValue) => Promise<void>;
 }) {
     const kind = getScheduleTargetKind(schedule);
-    const targetName = getScheduleTargetName(schedule);
+    const targetName = formatAgentName(getScheduleTargetName(schedule));
     const active = schedule.is_active !== false;
     const workflowEventConfig = schedule.schedule_type === ScheduleType.WEBHOOK ? getEventConfig(workflow) : null;
     const configDetails = [

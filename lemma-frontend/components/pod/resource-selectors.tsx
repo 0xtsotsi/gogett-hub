@@ -10,6 +10,7 @@ import { usePod } from '@/lib/hooks/use-pods';
 import { useTables } from '@/lib/hooks/use-datastores';
 import { ConnectorAccessConfig, ConnectorMode, Table, TableAccessMode } from '@/lib/types';
 import { getLemmaClient } from '@/lib/sdk/lemma-client';
+import { formatAgentName } from '@/lib/utils/agents';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -516,7 +517,7 @@ export function AgentsSelector({
     const { data: agentsData } = useAgents(podId);
     const options = (agentsData?.items || []).map((agent) => ({
         id: agent.name,
-        label: agent.name,
+        label: formatAgentName(agent.name),
     }));
 
     return (

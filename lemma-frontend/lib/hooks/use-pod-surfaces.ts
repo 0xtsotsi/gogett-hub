@@ -53,6 +53,9 @@ export const usePodSurfaces = (podId: string | undefined) => {
             return (response.items || []) as AssistantSurface[];
         },
         enabled: !!podId,
+        // Shared across the surfaces page, pod home, and agent detail; a short
+        // stale window avoids refetching the same pod-wide list on every mount.
+        staleTime: 60_000,
     });
 };
 

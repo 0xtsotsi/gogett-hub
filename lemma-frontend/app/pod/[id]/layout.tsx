@@ -782,6 +782,19 @@ function PodAssistantScope({
 }) {
     const [shouldLoadPodContext, setShouldLoadPodContext] = useState(false);
     const { context: loadedPodContext } = usePodContext(pod.id, { enabled: shouldLoadPodContext });
+    const pathname = usePathname();
+    const searchParams = useSearchParams();
+    // A conversation route may name the agent it targets via `?agent=`, so the
+    // "message this agent" composer starts a chat scoped to that agent rather than
+    // the pod default. Only applies on conversation routes; absent elsewhere.
+    const scopedAgentName = useMemo(() => {
+        if (!/\/conversations(?:\/|$)/.test(pathname)) return null;
+        return searchParams.get("agent");
+    }, [pathname, searchParams]);
+    const conversationScopeOverride = useMemo(
+        () => (scopedAgentName ? { agentName: scopedAgentName } : undefined),
+        [scopedAgentName],
+    );
     const fallbackPodContext = useMemo<PodContext>(() => ({
         pod: pod as Pod,
         agents: [],
@@ -796,6 +809,7 @@ function PodAssistantScope({
         <AIAssistantProvider
             podContext={loadedPodContext ?? fallbackPodContext}
             enabled
+            conversationScopeOverride={conversationScopeOverride}
             onOpenAssistant={() => setShouldLoadPodContext(true)}
         >
             {children}

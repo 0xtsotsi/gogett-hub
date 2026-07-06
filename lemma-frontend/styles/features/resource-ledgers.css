@@ -232,16 +232,18 @@
 .app-tile[data-accent="success"] { --app-accent: var(--state-success); }
 .app-tile[data-accent="delight"] { --app-accent: var(--delight); }
 
-/* Faint accent wash across the whole card so tiles stay visually distinct
-   without a large cover hero. */
+/* Accent glow across the whole card, center to outwards, so tiles stay
+   visually distinct without a large cover hero. */
 .resource-index-card.app-tile {
-  background: color-mix(in srgb, var(--app-accent) 6%, var(--surface-1));
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--app-accent) 12%, var(--surface-1)) 0%,
+    var(--surface-1) 100%
+  );
 }
 
 .app-icon {
-  background: color-mix(in srgb, var(--app-accent) 22%, var(--surface-1));
   color: color-mix(in srgb, var(--app-accent) 72%, var(--text-primary));
-  border: 0.5px solid color-mix(in srgb, var(--app-accent) 28%, var(--border-subtle));
 }
 
 /* Recipes — accent tiles + preview strips. Accents derive from semantic tokens

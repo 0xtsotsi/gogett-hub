@@ -40,6 +40,7 @@ import { usePodAccess } from '@/lib/hooks/use-pod-access';
 import { usePod } from '@/lib/hooks/use-pods';
 import { AGENT_MASCOTS } from '@/lib/data/agent-mascots';
 import { cn } from '@/lib/utils';
+import { formatAgentName } from '@/lib/utils/agents';
 import { Agent, TableAccessMode, ToolSet } from '@/lib/types';
 
 type SchemaProperty = Record<string, unknown>;
@@ -417,7 +418,7 @@ export default function NewAgentPage({
                                     <ResourceVisibilitySelect
                                         value={draftAgent.visibility}
                                         resourceLabel="agents"
-                                        resourceName={draftAgent.name || 'New agent'}
+                                        resourceName={draftAgent.name ? formatAgentName(draftAgent.name) : 'New agent'}
                                         onChange={(visibility) => updateDraft({ visibility })}
                                     />
                                 </div>
@@ -771,7 +772,7 @@ function LaunchReview({
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
                     <ResourceIcon
                         iconUrl={iconUrl}
-                        alt={`${displayName} profile picture`}
+                        alt={`${formatAgentName(displayName)} profile picture`}
                         label={displayName}
                         imageClassName="object-contain p-1"
                         className="h-20 w-20 shrink-0 !border-0 !bg-transparent"
@@ -780,7 +781,7 @@ function LaunchReview({
                     <div className="min-w-0 flex-1">
                         <p className="section-label">Agent</p>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <h3 className="truncate text-2xl font-medium text-[var(--text-primary)]">{displayName}</h3>
+                            <h3 className="truncate text-2xl font-medium text-[var(--text-primary)]">{formatAgentName(displayName)}</h3>
                             {!hasName ? (
                                 <span className="state-badge-error rounded-md px-2 py-0.5 text-xs font-medium">
                                     Name missing

@@ -1113,6 +1113,14 @@ class ConnectorService:
             raise AccountNotFoundError(str(account_id))
         return account
 
+    async def get_account_provider(self, account: AccountEntity) -> str | None:
+        """The auth provider (``LEMMA``/``COMPOSIO``) backing an account's auth
+        config — exposed on the account response so API consumers (e.g. the CLI
+        assembling a portable pod bundle) can resolve connector + provider from
+        one account lookup instead of a second one keyed by auth config name."""
+        auth_config = await self.auth_config_repository.get(account.auth_config_id)
+        return auth_config.provider.value if auth_config is not None else None
+
     async def get_account_credentials(
         self,
         account_id: UUID,

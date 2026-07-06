@@ -66,8 +66,12 @@ export interface VariableSpec {
     description: string | null;
     required: boolean;
     default: string | null;
-    /** For `account`-kind variables: the connector platform, e.g. "slack". */
-    platform?: string | null;
+    /** For `account`-kind variables: the connector, e.g. "slack". */
+    connector?: string | null;
+    /** For `account`-kind variables: the auth provider ("LEMMA" or "COMPOSIO")
+     * backing the connector, so the picker can select/create the right kind
+     * of account instead of any account for that connector. */
+    provider?: string | null;
 }
 
 export interface ImportPlan {

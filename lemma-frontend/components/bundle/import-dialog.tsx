@@ -601,13 +601,14 @@ export function ImportDialog({
                                         const setValue = (val: string) =>
                                             setVariables((prev) => ({ ...prev, [v.name]: val }));
 
-                                        if (v.kind === 'account' && v.platform) {
+                                        if (v.kind === 'account' && v.connector) {
                                             return (
                                                 <AccountVariableField
                                                     key={v.name}
                                                     organizationId={organizationId}
                                                     podId={targetPodId}
-                                                    platform={v.platform}
+                                                    connectorId={v.connector}
+                                                    provider={v.provider}
                                                     label={v.name}
                                                     description={v.description}
                                                     required={v.required}

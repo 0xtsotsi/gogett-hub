@@ -508,6 +508,102 @@ async def test_request_approval_pauses_the_run():
 
 
 @pytest.mark.asyncio
+async def test_request_approval_auto_executes_on_exact_session_match(monkeypatch):
+    """A request_approval call identical to one already approved for session
+    runs immediately with no pause, executing the wrapped tool as the user."""
+    from app.core.authorization import session_approvals
+    from app.modules.agent.tools.approval.executor import ApprovalExecutor
+
+    async def fake_has_session_approval(**kwargs):
+        return True
+
+    captured: dict[str, object] = {}
+
+    async def fake_execute_as_user(self, *, deps, tool_name, args):
+        captured["tool_name"] = tool_name
+        captured["args"] = args
+        return {"stdout": "hi", "success": True}
+
+    monkeypatch.setattr(
+        session_approvals, "has_session_approval", fake_has_session_approval
+    )
+    monkeypatch.setattr(ApprovalExecutor, "execute_as_user", fake_execute_as_user)
+
+    ctx = _approval_ctx("approval-repeat")
+    ctx.deps.workload_id = uuid4()
+
+    result = await request_approval(
+        ctx,  # type: ignore[arg-type]
+        tool_name="exec_command",
+        args={"cmd": "ls"},
+        title="List files?",
+    )
+
+    assert result.success is True
+    assert result.executed is True
+    assert result.decision == "APPROVE_FOR_SESSION"
+    assert result.result == {"stdout": "hi", "success": True}
+    assert captured["tool_name"] == "exec_command"
+    assert captured["args"] == {"cmd": "ls"}
+
+
+@pytest.mark.asyncio
+async def test_request_approval_falls_through_to_pause_without_exact_match(monkeypatch):
+    """No prior exact-match approval for this call -> normal pause, unchanged."""
+    from app.core.authorization import session_approvals
+
+    async def fake_has_session_approval(**kwargs):
+        return False
+
+    monkeypatch.setattr(
+        session_approvals, "has_session_approval", fake_has_session_approval
+    )
+
+    ctx = _approval_ctx("approval-fresh")
+    ctx.deps.workload_id = uuid4()
+    with pytest.raises(AgentInputRequired):
+        await request_approval(
+            ctx,  # type: ignore[arg-type]
+            tool_name="exec_command",
+            args={"cmd": "ls"},
+            title="List files?",
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_approval_auto_execute_failure_reports_error(monkeypatch):
+    """If the auto-executed tool itself fails, that's reported back — never a
+    silent success and never a fall-through to re-pausing."""
+    from app.core.authorization import session_approvals
+    from app.modules.agent.tools.approval.executor import ApprovalExecutor
+
+    async def fake_has_session_approval(**kwargs):
+        return True
+
+    async def fake_execute_as_user(self, *, deps, tool_name, args):
+        raise RuntimeError("workspace unreachable")
+
+    monkeypatch.setattr(
+        session_approvals, "has_session_approval", fake_has_session_approval
+    )
+    monkeypatch.setattr(ApprovalExecutor, "execute_as_user", fake_execute_as_user)
+
+    ctx = _approval_ctx("approval-repeat-fails")
+    ctx.deps.workload_id = uuid4()
+
+    result = await request_approval(
+        ctx,  # type: ignore[arg-type]
+        tool_name="exec_command",
+        args={"cmd": "ls"},
+        title="List files?",
+    )
+
+    assert result.success is False
+    assert result.executed is False
+    assert "workspace unreachable" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_interaction_tools_guide_instead_of_pausing_on_daemon_harness():
     """On daemon/MCP runs (no pause signal) the tools never raise or block; they
     return guidance so the model falls back to a conversational ask."""

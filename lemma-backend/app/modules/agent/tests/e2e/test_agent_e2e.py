@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -43,6 +44,11 @@ from app.modules.agent.infrastructure.models import AgentRuntimeProfileModel
 from app.modules.agent.infrastructure.repositories import ConversationRepository
 from app.modules.agent.services.agent_runner_service import AgentRunnerService
 from app.modules.agent.services.conversation_service import ConversationService
+from app.modules.agent.tools.approval.executor import ApprovalExecutor
+from app.modules.agent.tools.tool_errors import AgentInputRequired
+from app.modules.agent.tools.user_interaction.pydantic_adapter import (
+    request_approval as request_approval_tool,
+)
 from app.modules.agent.tests.e2e.system_lemma_helpers import (
     SYSTEM_LEMMA_SKIP_REASON,
     system_lemma_available,
@@ -1345,6 +1351,112 @@ class TestPodAgentLifecycle:
             f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
         )
         assert approvals_after.json()["items"] == []
+
+    async def test_request_approval_exact_repeat_auto_executes_without_repausing(
+        self,
+        authenticated_client,
+        fixed_test_org,
+        fixed_test_user,
+        db_session,
+        monkeypatch,
+    ):
+        """APPROVE_FOR_SESSION on a request_approval-wrapped exec_command call
+        gives exact-repeat reuse: exec_command has no structured permission_id
+        to unlock as a category (see _record_session_approvals), so the ONLY
+        session-approval reuse it can get is the literal same call again. A
+        later request_approval with the exact same tool_name+args must run
+        immediately with no pause; a different command must still re-prompt —
+        proving there's no prefix/pattern matching that a shell command could
+        exploit with `;`/`&&`/`|` to smuggle extra commands past an approval."""
+        executed_calls: list[dict] = []
+
+        async def fake_execute_as_user(self, *, deps, tool_name, args):
+            executed_calls.append({"tool_name": tool_name, "args": args})
+            return {"stdout": "ok", "success": True}
+
+        monkeypatch.setattr(
+            ApprovalExecutor, "execute_as_user", fake_execute_as_user
+        )
+
+        approved_args = {"cmd": "echo hi"}
+        mock_safe_runtime = await _create_mock_safe_runtime(db_session, fixed_test_org)
+        pod_id, conversation_id, _agent, paused_run, approval_id = (
+            await _seed_paused_interaction(
+                authenticated_client,
+                fixed_test_org,
+                tool_name="request_approval",
+                tool_args={
+                    "tool_name": "exec_command",
+                    "args": approved_args,
+                    "title": "Run echo?",
+                    "reason": "Sanity check.",
+                },
+                agent_runtime=mock_safe_runtime,
+            )
+        )
+
+        decision = await authenticated_client.post(
+            f"/pods/{pod_id}/conversations/{conversation_id}"
+            f"/approvals/{approval_id}/decision",
+            json={"decision": "APPROVE_FOR_SESSION", "response": {}},
+        )
+        assert decision.status_code == 200, decision.text
+        # The initial approval already ran the command once, for real (mocked).
+        assert executed_calls == [{"tool_name": "exec_command", "args": approved_args}]
+
+        from app.modules.agent.api.controllers.conversation_controller import (
+            _build_conversation_service,
+        )
+
+        async with create_uow_from_session_maker(async_session_maker) as uow:
+            conversation = await ConversationRepository(uow).get_conversation(
+                conversation_id
+            )
+            service = _build_conversation_service(uow)
+            live_deps = await service._build_resume_context(
+                conversation=conversation,
+                user_id=UUID(fixed_test_user["id"]),
+                agent_run_id=paused_run.id,
+            )
+        # _build_resume_context defaults supports_pause_signal to False (it
+        # only needs to run the approved tool); request_approval needs it True
+        # to behave as it would in a live LEMMA-harness run.
+        live_deps = live_deps.model_copy(update={"supports_pause_signal": True})
+
+        # A later request_approval call with the EXACT same tool_name+args
+        # auto-executes — no pause, no new pending approval.
+        repeat_ctx = SimpleNamespace(deps=live_deps, tool_call_id="repeat-call-1")
+        repeated = await request_approval_tool(
+            repeat_ctx,  # type: ignore[arg-type]
+            tool_name="exec_command",
+            args=approved_args,
+            title="Run echo again?",
+        )
+        assert repeated.success is True
+        assert repeated.executed is True
+        assert repeated.decision == AgentRunApprovalDecision.APPROVE_FOR_SESSION.value
+        assert executed_calls == [
+            {"tool_name": "exec_command", "args": approved_args},
+            {"tool_name": "exec_command", "args": approved_args},
+        ]
+        approvals_after_repeat = await authenticated_client.get(
+            f"/pods/{pod_id}/conversations/{conversation_id}/approvals"
+        )
+        assert approvals_after_repeat.json()["items"] == []
+
+        # A DIFFERENT command (not just a different label) must still pause —
+        # exact match only, never a prefix/category match.
+        different_args = {"cmd": "echo bye"}
+        different_ctx = SimpleNamespace(deps=live_deps, tool_call_id="repeat-call-2")
+        with pytest.raises(AgentInputRequired):
+            await request_approval_tool(
+                different_ctx,  # type: ignore[arg-type]
+                tool_name="exec_command",
+                args=different_args,
+                title="Run something else?",
+            )
+        # Never ran — the new command genuinely needed a fresh decision.
+        assert len(executed_calls) == 2
 
     @pytest.mark.real_llm
     @pytest.mark.skipif(not system_lemma_available(), reason=SYSTEM_LEMMA_SKIP_REASON)

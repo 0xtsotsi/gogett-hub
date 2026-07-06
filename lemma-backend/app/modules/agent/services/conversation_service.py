@@ -822,20 +822,46 @@ class ConversationService:
         tool_args: dict[str, object],
         user_id: UUID,
     ) -> None:
-        """Persist APPROVE_FOR_SESSION as per-permission session approvals.
+        """Persist APPROVE_FOR_SESSION as per-permission session approvals, plus
+        an exact-match approval for the wrapped call itself.
 
         Keyed to (conversation, workload actor, permission) — the same key the
-        authorizer checks. Without permission ids in the request_approval args
-        this quietly degrades to APPROVE_ONCE behavior (the wrapped tool still
-        runs once as the user; the next attempt re-prompts).
+        authorizer checks (for `permission_ids`) or `request_approval` itself
+        checks before pausing again (for the exact-command key). Structured
+        actions (pod/table/folder/... delete) carry `permission_ids` copied from
+        the denied tool result, unlocking the whole action TYPE for the rest of
+        the conversation. Tools with no structured permission — exec_command,
+        execute_python, anything not gated by the authorizer — have no category
+        to unlock, so they get only the exact-command key: approving one call
+        lets the agent repeat that LITERAL call again without re-prompting, but
+        a different command still re-prompts (see
+        session_approvals.exact_command_permission_id for why anything looser,
+        e.g. a prefix match, would be a shell-injection vector).
         """
         from app.core.authorization.delegation import DEFAULT_POD_AGENT_ID
-        from app.core.authorization.session_approvals import record_session_approval
+        from app.core.authorization.session_approvals import (
+            exact_command_permission_id,
+            record_session_approval,
+        )
+
+        workload_actor_id = f"agent:{conversation.agent_id or DEFAULT_POD_AGENT_ID}"
+
+        inner_tool_name = tool_args.get("tool_name")
+        if isinstance(inner_tool_name, str) and inner_tool_name:
+            inner_args = tool_args.get("args")
+            await record_session_approval(
+                session_id=str(conversation.id),
+                workload_actor_id=workload_actor_id,
+                permission_id=exact_command_permission_id(
+                    inner_tool_name,
+                    inner_args if isinstance(inner_args, dict) else {},
+                ),
+                resolved_by_user_id=user_id,
+            )
 
         permission_ids = tool_args.get("permission_ids")
         if not isinstance(permission_ids, list):
             return
-        workload_actor_id = f"agent:{conversation.agent_id or DEFAULT_POD_AGENT_ID}"
         for permission_id in permission_ids:
             if not isinstance(permission_id, str) or not permission_id:
                 continue

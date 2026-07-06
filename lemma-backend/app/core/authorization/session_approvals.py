@@ -12,6 +12,8 @@ direction: the agent re-prompts instead of acting unapproved.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -22,6 +24,29 @@ from app.core.log.log import get_logger
 logger = get_logger(__name__)
 
 _approval_cache: RedisJsonCache | None = None
+
+
+def exact_command_permission_id(tool_name: str, args: dict | None) -> str:
+    """A stable "permission id" identifying one exact (tool_name, args) call.
+
+    Used as a ``has_session_approval``/``record_session_approval`` key so a
+    ``request_approval`` call with no structured ``permission_ids`` (e.g.
+    ``exec_command``/``execute_python`` — these have no authorization gate at
+    all, so there's nothing to derive a category from) still gets SOME
+    APPROVE_FOR_SESSION reuse: approving one exact call lets the agent repeat
+    that literal call again in the same conversation without re-prompting.
+
+    Deliberately exact-match only, never a prefix/substring match: shell
+    metacharacters (``;``, ``&&``, ``|``, backticks, command substitution) let
+    an attacker smuggle extra commands after a prefix that looks identical to
+    one the user already approved, so anything looser than an exact match on
+    the full argument set would be a real injection vector.
+    """
+    canonical = json.dumps(
+        args or {}, sort_keys=True, separators=(",", ":"), default=str
+    )
+    digest = hashlib.sha256(f"{tool_name}:{canonical}".encode("utf-8")).hexdigest()[:32]
+    return f"exact_command:{tool_name}:{digest}"
 
 
 def _get_approval_cache() -> RedisJsonCache | None:

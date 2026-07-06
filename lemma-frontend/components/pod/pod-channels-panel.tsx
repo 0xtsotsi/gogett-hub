@@ -871,10 +871,10 @@ function SurfacePlatformGroup({
                 </div>
             )}
 
-            <button type="button" onClick={onAdd} disabled={isBusy} className="surface-platform-add">
+            <Button type="button" variant="link" size="xs" onClick={onAdd} disabled={isBusy} className="w-fit gap-1.5">
                 <Plus className="h-3.5 w-3.5" />
                 {isEmpty ? `Add ${definition.label} surface` : `Add another ${definition.label} surface`}
-            </button>
+            </Button>
         </article>
     );
 }

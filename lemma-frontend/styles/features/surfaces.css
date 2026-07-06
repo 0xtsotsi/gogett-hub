@@ -178,26 +178,6 @@
   background: color-mix(in srgb, var(--surface-2) 32%, transparent);
 }
 
-.surface-platform-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  width: fit-content;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--action-primary);
-}
-
-.surface-platform-add:hover {
-  text-decoration: underline;
-}
-
-.surface-platform-add:disabled {
-  opacity: 0.5;
-  cursor: default;
-  text-decoration: none;
-}
-
 @media (max-width: 640px) {
   .surface-instance-row {
     grid-template-columns: 1fr;

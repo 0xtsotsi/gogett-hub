@@ -51,13 +51,14 @@ class DatastoreSettings(BaseSettings):
     document_processing_max_concurrency: int = Field(
         default=2,
         description=(
-            "Maximum concurrent document extraction jobs per worker process. This "
-            "is the one guaranteed lever on Kreuzberg's peak RAM: each extraction "
-            "carries a ~1.5GB model+runtime floor plus a per-doc working set, so "
-            "the multiplier matters. Kept at 2 so a mixed native+scanned load "
-            "stays under a 4GB kreuzberg instance (measured ~3.9GB peak at 2; OOM "
-            "at higher concurrency or 4 CPU). Lower to 1 for more headroom; pair "
-            "with the kreuzberg container held at cpus=2."
+            "Maximum concurrent document extractions per worker process. This is "
+            "the primary lever on a worker's peak RAM during ingestion: each "
+            "extraction holds the source document plus the extractor's response "
+            "(markdown + chunks + any extracted images) in memory at once, so peak "
+            "memory scales with this multiplier. Keep it low enough that "
+            "concurrency times the largest expected per-document working set stays "
+            "within the worker's memory budget; tune per deployment. Env: "
+            "``DOCUMENT_PROCESSING_MAX_CONCURRENCY``."
         ),
     )
     document_processing_debounce_seconds: int = Field(
@@ -144,16 +145,24 @@ class DatastoreSettings(BaseSettings):
         description="HTTP timeout (seconds) for Kreuzberg extract and chunk requests",
     )
     kreuzberg_transient_retry_attempts: int = Field(
-        default=5,
+        default=6,
         description=(
             "Attempts for transient (connection/timeout) Kreuzberg failures before "
-            "giving up. Bump in resource-constrained CI/e2e where a single shared "
-            "Kreuzberg can briefly stall under concurrent load."
+            "giving up. Combined with the base delay below the exponential backoff "
+            "totals base*(2^(attempts-1)-1) seconds of waiting, so the default "
+            "6/1.0s rides out ~30s of unavailability — enough to survive a backend "
+            "restart or a scale-from-zero cold start rather than failing the "
+            "extraction (which would mark the file FAILED). Raise for a backend "
+            "with longer cold starts. Env: ``KREUZBERG_TRANSIENT_RETRY_ATTEMPTS``."
         ),
     )
     kreuzberg_transient_retry_base_delay_seconds: float = Field(
-        default=0.5,
-        description="Base delay (seconds) for exponential backoff between Kreuzberg retries.",
+        default=1.0,
+        description=(
+            "Base delay (seconds) for exponential backoff between transient "
+            "Kreuzberg retries; total wait is base*(2^(attempts-1)-1). Env: "
+            "``KREUZBERG_TRANSIENT_RETRY_BASE_DELAY_SECONDS``."
+        ),
     )
 
     # PDF page rendering (on-demand, in-backend via pypdfium2 + Pillow)

@@ -170,18 +170,30 @@ class WorkflowEngine:
             schedule_event_id=schedule_event_id,
         )
 
-        result = await self._stepper(ctx).advance(run, flow)
-
+        # Persist the run row BEFORE advancing. The (flow_id, user_id,
+        # schedule_event_id) unique constraint must gate node side effects, not just
+        # the row: create() flushes, so a redelivered scheduled fire raises
+        # IntegrityError here — we convert it to WorkflowConflictError WITHOUT ever
+        # calling advance(), so a duplicate can never double-run entry-node side
+        # effects (start a conversation, invoke a function). We deliberately keep the
+        # in-memory `run` rather than create()'s return value, which is a summary
+        # entity missing the execution context/stack/step history the stepper needs.
         try:
-            run = await self.run_repo.create(run)
-            await self._persist_wait(run, result)
-            await self.uow.commit()
+            await self.run_repo.create(run)
         except IntegrityError as exc:
             if schedule_event_id is None:
                 raise
             raise WorkflowConflictError(
                 "Workflow run already exists for this schedule event"
             ) from exc
+
+        result = await self._stepper(ctx).advance(run, flow)
+
+        # create() persisted only the entry-node state; write the post-advance state
+        # (final node, status, step history, context) before committing.
+        run = await self.run_repo.update(run)
+        await self._persist_wait(run, result)
+        await self.uow.commit()
 
         return run
 

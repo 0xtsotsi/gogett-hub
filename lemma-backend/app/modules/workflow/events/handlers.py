@@ -246,6 +246,20 @@ async def on_schedule_fired(
 
     fs_logger.info(f"Workflow: Received ScheduleFired for {schedule_id}")
 
+    # Dedup redelivered schedule fires: streaq drops a duplicate enqueue while a
+    # task with the same _job_id is still queued/running (its lock releases on
+    # completion), which covers the common at-least-once redelivery window between
+    # this handler receiving the event and ack-ing it. Durable idempotency across
+    # the full window still rests on the run's unique constraint (workflow target)
+    # and the Redis dedup key (agent target) inside handle_schedule_fired. Only set
+    # a _job_id when we have a stable event id to key on; otherwise fall back to
+    # streaq's random id (matches prior behavior).
+    dedup_kwargs: dict[str, str] = {}
+    if schedule_event_id:
+        dedup_kwargs["_job_id"] = (
+            f"workflow-schedule-fire:{schedule_id}:{schedule_event_id}"
+        )
+
     try:
         await job_queue.enqueue(
             "check_and_start_flows_for_schedule",
@@ -254,6 +268,7 @@ async def on_schedule_fired(
             metadata=metadata or {},
             llm_output=llm_output,
             schedule_event_id=str(schedule_event_id) if schedule_event_id else None,
+            **dedup_kwargs,
         )
     except Exception as e:
         fs_logger.error(

@@ -26,13 +26,14 @@ logger = get_logger(__name__)
 # outright (which would mark the file FAILED and wait on the recovery cron).
 # HTTP 4xx/5xx responses are NOT retried here; those are handled by the
 # config-fallback layer.
-# Defaults: 5 attempts with 0.5s base ⇒ backoff 0.5+1+2+4 = 7.5s of waiting,
-# enough to ride out a Kreuzberg container restart (e.g. after an OOM kill under
-# burst load). Both are overridable via datastore_settings (read at call time)
-# so resource-constrained CI/e2e — where a single shared Kreuzberg serves several
-# parallel workers — can wait longer instead of failing the extraction outright.
-_TRANSIENT_RETRY_ATTEMPTS = 5
-_TRANSIENT_RETRY_BASE_DELAY_SECONDS = 0.5
+# Defaults: 6 attempts with 1.0s base ⇒ backoff 1+2+4+8+16 = 31s of waiting
+# (total = base*(2^(attempts-1)-1)), enough to ride out a Kreuzberg restart or a
+# scale-from-zero cold start rather than failing the extraction outright (which
+# would mark the file FAILED and wait on the recovery cron). Both are overridable
+# via datastore_settings (read at call time) so a backend with longer cold starts
+# can wait longer.
+_TRANSIENT_RETRY_ATTEMPTS = 6
+_TRANSIENT_RETRY_BASE_DELAY_SECONDS = 1.0
 
 
 class KreuzbergExtractionResult:

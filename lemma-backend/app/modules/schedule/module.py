@@ -21,12 +21,14 @@ def _event_routers():
         datastore_consumer,
         pod_lifecycle_consumer,
         schedule_consumer,
+        schedule_notification_consumer,
     )
 
     return [
         schedule_consumer.router,
         datastore_consumer.router,
         pod_lifecycle_consumer.router,
+        schedule_notification_consumer.router,
     ]
 
 

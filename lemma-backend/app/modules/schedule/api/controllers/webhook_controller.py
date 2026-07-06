@@ -103,11 +103,21 @@ async def handle_webhook(
                 detail="Invalid webhook signature",
             )
     else:
-        # For other sources, parse JSON
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}  # Maybe just raw body handling if needed? But handler expects dict payload.
+        # SECURITY (interim): every source other than `composio` is unauthenticated
+        # here — the request body is attacker-controllable and flows straight into
+        # schedule matching + the started run's trigger context. Composio is the
+        # only source with real signature verification, so reject everything else
+        # until per-account verified webhook routing lands (see plan Part D). This
+        # deliberately disables the legacy shared Slack/generic ingress path.
+        logger.warning(
+            "Rejecting unauthenticated webhook for source %s; only composio is "
+            "verified on this endpoint.",
+            source,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Unsupported or unverified webhook source",
+        )
 
     await log_raw_webhook_event(source=source, payload=payload, headers=headers)
 

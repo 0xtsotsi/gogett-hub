@@ -50,11 +50,15 @@ app = FastAPI(
     version=API_VERSION,
     description="API for managing scheduled jobs. Jobs emit events via FastStream when they fire.",
     lifespan=lifespan,
-    debug=settings.debug,
+    # Never enable FastAPI debug on the scheduler sidecar: it is an internal
+    # service and debug=True would leak tracebacks on error responses.
+    debug=False,
 )
 
 # Configure CORS
-# Check if settings.cors_origins is a list or string, typically list in Pydantic settings
+# This is an internal service-to-service API (only the backend's SchedulerAPIClient
+# calls it); no browser talks to it, so keep the surface minimal rather than the
+# previous wildcard methods/headers.
 origins = settings.cors_origins
 if isinstance(origins, str):
     origins = [o.strip() for o in origins.split(",")]
@@ -63,8 +67,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

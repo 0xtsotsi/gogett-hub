@@ -29,6 +29,7 @@ import { usePodJoinRequests } from '@/lib/hooks/use-pod-join-requests';
 import { usePodSurfaces } from '@/lib/hooks/use-pod-surfaces';
 import { useSchedules } from '@/lib/hooks/use-schedules';
 import { cn } from '@/lib/utils';
+import { formatAgentName } from '@/lib/utils/agents';
 import { isConversationRunningStatus, normalizeConversationStatus } from '@/lib/utils/conversations';
 import { describeScheduleConfig, getScheduleTargetKind, getScheduleTargetName } from '@/lib/utils/schedules';
 import type { AgentRuntimeConfig, AssistantSurface, Conversation } from '@/lib/types';
@@ -433,7 +434,7 @@ function PodAgentWorkflowKanban({ podId }: { podId: string }) {
                 return {
                     id: `schedule-${schedule.id || schedule.workflow_name || schedule.agent_name || resolvedName}`,
                     kind: targetKind === 'agent' ? 'agent' as const : 'workflow' as const,
-                    title: formatDisplayName(resolvedName),
+                    title: formatAgentName(resolvedName),
                     detail: describeScheduleConfig(schedule),
                     href: getScheduleHref(podId, schedule, agent?.name, workflow?.name),
                     status: 'Scheduled',

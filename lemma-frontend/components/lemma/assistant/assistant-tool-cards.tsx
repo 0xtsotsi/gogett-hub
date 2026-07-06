@@ -33,6 +33,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatAgentName } from "@/lib/utils/agents";
 import { getLemmaClient } from "@/lib/sdk/lemma-client";
 // Pure formatting / label / tool-payload helpers (extracted from assistant-experience).
 import {
@@ -977,7 +978,7 @@ function SpawnSubagentDetails({ args, state, result }: { args: ToolCardArgs; sta
   const staticOutput = resultText(result, ["output", "message", "text", "result"]);
   const live = useSubagentLive(conversationId);
 
-  const title = agentName ? `Sub-agent · ${agentName}` : "Sub-agent";
+  const title = agentName ? `Sub-agent · ${formatAgentName(agentName)}` : "Sub-agent";
   const headerStatus = conversationId ? childStatusLabel(live.status ?? childStatus) : toolStatusLabel(state, result);
   const output = conversationId ? (live.latest || (live.settled ? staticOutput : undefined)) : staticOutput;
 

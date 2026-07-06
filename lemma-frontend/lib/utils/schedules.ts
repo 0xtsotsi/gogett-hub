@@ -1,5 +1,39 @@
 import type { Schedule } from '@/lib/types';
 
+export type TimeCadence = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'custom';
+
+function splitTime(value: string): { hour: string; minute: string } {
+    const [hour = '09', minute = '00'] = value.split(':');
+    return {
+        hour: hour.padStart(2, '0'),
+        minute: minute.padStart(2, '0'),
+    };
+}
+
+/** Build a 5-field cron expression from the compact cadence controls. */
+export function buildCronExpression({
+    cadence,
+    timeOfDay,
+    weeklyDays,
+    monthDay,
+    customCron,
+}: {
+    cadence: TimeCadence;
+    timeOfDay: string;
+    weeklyDays: string[];
+    monthDay: number;
+    customCron: string;
+}): string {
+    if (cadence === 'custom') return customCron.trim();
+    if (cadence === 'hourly') return '0 * * * *';
+
+    const { hour, minute } = splitTime(timeOfDay);
+    if (cadence === 'daily') return `${minute} ${hour} * * *`;
+    if (cadence === 'weekdays') return `${minute} ${hour} * * 1-5`;
+    if (cadence === 'weekly') return `${minute} ${hour} * * ${weeklyDays.length ? weeklyDays.join(',') : '1'}`;
+    return `${minute} ${hour} ${Math.min(31, Math.max(1, monthDay))} * *`;
+}
+
 export type ScheduleTargetKind = 'workflow' | 'agent' | 'unknown';
 export type ScheduleConfigDetail = {
     label: string;

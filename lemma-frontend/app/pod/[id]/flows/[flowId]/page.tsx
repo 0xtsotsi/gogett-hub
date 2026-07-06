@@ -24,6 +24,7 @@ import {
     ResourceTabPane,
 } from '@/components/pod/resource-layout';
 import { ProductIcon } from '@/components/pod/product-icon';
+import { AutomationPane, TriggersSection } from '@/components/pod/resource-automation';
 import { ResourceIcon } from '@/components/shared/resource-icon';
 import { ResourceArrivalNotice } from '@/components/shared/resource-feedback';
 import { ResourceShareButton, ResourceVisibilityBadge, type ResourceVisibilityValue } from '@/components/shared/resource-visibility';
@@ -37,10 +38,11 @@ import {
 } from '@/lib/hooks/use-flows';
 import { resourceAllows } from '@/lib/authz/resource-actions';
 import { usePodAccess } from '@/lib/hooks/use-pod-access';
+import { usePodAutomation } from '@/lib/hooks/use-pod-automation';
 import { getLemmaClient } from '@/lib/sdk/lemma-client';
 import { FlowDefinition, Workflow, WorkflowUpdateInput } from '@/lib/types';
 
-type WorkflowDetailTab = 'runs' | 'edit';
+type WorkflowDetailTab = 'runs' | 'triggers' | 'edit';
 type WorkflowEditView = 'steps' | 'flow';
 
 export default function FlowDetailPage({
@@ -56,30 +58,43 @@ export default function FlowDetailPage({
     const podAccess = usePodAccess(podId);
     const canCreateWorkflow = podAccess.can('workflow.create');
     const canUpdateWorkflow = podAccess.can('workflow.update');
+    const canUseSchedules = podAccess.canAny(['schedule.read', 'schedule.create']);
+    const canCreateSchedule = podAccess.can('schedule.create');
+    const canUpdateSchedule = podAccess.can('schedule.update');
+    const canDeleteSchedule = podAccess.can('schedule.delete');
 
     const { data: flowData, isLoading } = useFlow(podId, workflowName);
     const { data: allFlowsData = [] } = useFlows(podId);
+    // Pod-wide schedules, grouped client-side — shared cache with the schedules page.
+    const automation = usePodAutomation(podId, { schedules: canUseSchedules, surfaces: false });
+    const workflowSchedules = automation.schedulesForWorkflow(flowData?.name ?? workflowName);
     const updateFlow = useUpdateFlow();
     const updateFlowGraph = useUpdateFlowGraph();
 
     const [localDefinition, setLocalDefinition] = useState<FlowDefinition | null>(null);
     const allFlows = useMemo(() => allFlowsData || [], [allFlowsData]);
     const canUpdateCurrentWorkflow = resourceAllows(flowData, 'workflow.update', canUpdateWorkflow);
-    const activeTab: WorkflowDetailTab = canUpdateCurrentWorkflow && searchParams.get('mode') === 'edit' ? 'edit' : 'runs';
+    const requestedMode = searchParams.get('mode');
+    const activeTab: WorkflowDetailTab = requestedMode === 'triggers' && canUseSchedules
+        ? 'triggers'
+        : requestedMode === 'edit' && canUpdateCurrentWorkflow
+            ? 'edit'
+            : 'runs';
 
     const setActiveTab = useCallback((nextTab: WorkflowDetailTab) => {
         if (nextTab === 'edit' && !canUpdateCurrentWorkflow) return;
+        if (nextTab === 'triggers' && !canUseSchedules) return;
         const nextParams = new URLSearchParams(searchParams.toString());
 
-        if (nextTab === 'edit') {
-            nextParams.set('mode', 'edit');
-        } else {
+        if (nextTab === 'runs') {
             nextParams.delete('mode');
+        } else {
+            nextParams.set('mode', nextTab);
         }
 
         const nextQuery = nextParams.toString();
         router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
-    }, [canUpdateCurrentWorkflow, pathname, router, searchParams]);
+    }, [canUpdateCurrentWorkflow, canUseSchedules, pathname, router, searchParams]);
 
     useEffect(() => {
         if (!flowData) return;
@@ -236,6 +251,7 @@ export default function FlowDetailPage({
                         value={activeTab}
                         onChange={setActiveTab}
                         canEdit={canUpdateCurrentWorkflow}
+                        canTriggers={canUseSchedules}
                     />
                 )}
                 actions={canUpdateCurrentWorkflow ? (
@@ -300,6 +316,23 @@ export default function FlowDetailPage({
                     ) : null}
                 </ResourceTabPane>
 
+                <ResourceTabPane active={activeTab === 'triggers'}>
+                    {activeTab === 'triggers' ? (
+                        <AutomationPane>
+                            <TriggersSection
+                                podId={podId}
+                                target={{ kind: 'workflow', name: flowData.name }}
+                                schedules={workflowSchedules}
+                                newHref={`/pod/${podId}/schedules/new?workflow=${encodeURIComponent(flowData.name)}`}
+                                description="What starts this workflow on its own — a rhythm, an app event, or a data change."
+                                canCreate={canCreateSchedule}
+                                canUpdate={canUpdateSchedule}
+                                canDelete={canDeleteSchedule}
+                            />
+                        </AutomationPane>
+                    ) : null}
+                </ResourceTabPane>
+
                 <ResourceTabPane active={activeTab === 'runs'}>
                     {activeTab === 'runs' && <FlowExecutionPanel podId={podId} flowName={workflowName} />}
                 </ResourceTabPane>
@@ -308,16 +341,28 @@ export default function FlowDetailPage({
     );
 }
 
+const WORKFLOW_MODE_LABELS: Record<WorkflowDetailTab, string> = {
+    runs: 'Runs',
+    triggers: 'Triggers',
+    edit: 'Edit',
+};
+
 function WorkflowModeSwitch({
     value,
     onChange,
     canEdit,
+    canTriggers,
 }: {
     value: WorkflowDetailTab;
     onChange: (value: WorkflowDetailTab) => void;
     canEdit: boolean;
+    canTriggers: boolean;
 }) {
-    const items: WorkflowDetailTab[] = canEdit ? ['runs', 'edit'] : ['runs'];
+    const items: WorkflowDetailTab[] = [
+        'runs',
+        ...(canTriggers ? ['triggers' as const] : []),
+        ...(canEdit ? ['edit' as const] : []),
+    ];
     return (
         <div className="segmented-control">
             {items.map((item) => (
@@ -329,7 +374,7 @@ function WorkflowModeSwitch({
                     data-active={value === item}
                     aria-pressed={value === item}
                 >
-                    {item === 'runs' ? 'Runs' : 'Edit'}
+                    {WORKFLOW_MODE_LABELS[item]}
                 </button>
             ))}
         </div>

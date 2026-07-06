@@ -6,7 +6,7 @@ from agentbox_client import AgentBoxClient
 from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
-from app.modules.agent.domain.value_objects import JsonObject
+from app.modules.agent.domain.value_objects import AgentRunApprovalDecision, JsonObject
 from app.modules.agent.services.widget_token import widget_serve_path
 from app.modules.agent.tools.context import BaseAgentContext
 from app.modules.agent.tools.tool_errors import AgentInputRequired
@@ -233,6 +233,11 @@ async def request_approval(
       `approval.permission_ids` list from that failed tool result verbatim. If
       the user picks "approve for session", these action types stay approved for
       you for the rest of this conversation instead of re-prompting every time.
+
+    If the user previously picked "approve for session" for this EXACT
+    `tool_name` + `args` pair (not just a similar one — the arguments must match
+    verbatim), this call runs immediately with no prompt and no pause: you get
+    the result back right away, same as if the user had just approved it again.
     """
     del payload  # rendered from the persisted tool call; not needed at runtime
     del permission_ids  # read from the persisted tool call on resolution
@@ -266,6 +271,12 @@ async def request_approval(
             error="request_approval requires a durable tool call id.",
         )
 
+    auto_approved = await _run_if_exact_match_already_approved(
+        deps=deps, tool_name=tool_name, args=args
+    )
+    if auto_approved is not None:
+        return auto_approved
+
     # Pause the run for the user's decision instead of blocking the worker. The
     # harness already persisted this tool call (tool_name/args/title in its args)
     # for the client to render an approval card. Raising ends the run cleanly
@@ -274,6 +285,63 @@ async def request_approval(
     # synthesized RequestApprovalResponse back as this call's return on a fresh
     # run. request_approval therefore runs only once.
     raise AgentInputRequired(ctx.tool_call_id, "request_approval")
+
+
+async def _run_if_exact_match_already_approved(
+    *,
+    deps: BaseAgentContext,
+    tool_name: str,
+    args: JsonObject,
+) -> RequestApprovalResponse | None:
+    """Skip the pause when this exact call was approved for session earlier.
+
+    Returns the synthesized response (already executed) if so, else ``None`` to
+    fall through to the normal pause. `exec_command`/`execute_python` have no
+    authorization gate at all — request_approval is the only checkpoint that
+    exists for them — so this is the sole place their session-approval reuse
+    can be honored. See session_approvals.exact_command_permission_id for why
+    the match is exact-args-only, never a prefix.
+    """
+    from app.core.authorization.delegation import DEFAULT_POD_AGENT_ID
+    from app.core.authorization.session_approvals import (
+        exact_command_permission_id,
+        has_session_approval,
+    )
+
+    workload_actor_id = f"agent:{getattr(deps, 'workload_id', None) or DEFAULT_POD_AGENT_ID}"
+    approved = await has_session_approval(
+        session_id=str(deps.conversation_id),
+        workload_actor_id=workload_actor_id,
+        permission_id=exact_command_permission_id(tool_name, args),
+    )
+    if not approved:
+        return None
+
+    from app.core.infrastructure.db.session import async_session_maker
+    from app.core.infrastructure.db.uow_factory import SessionUnitOfWorkFactory
+    from app.modules.agent.domain.value_objects import to_json_value
+    from app.modules.agent.tools.approval.executor import ApprovalExecutor
+
+    executor = ApprovalExecutor(SessionUnitOfWorkFactory(async_session_maker))
+    try:
+        result = await executor.execute_as_user(deps=deps, tool_name=tool_name, args=args)
+    except Exception as exc:  # noqa: BLE001 - reported to the model, not fatal
+        return RequestApprovalResponse(
+            success=False,
+            error=f"Auto-approved (session), but running {tool_name} failed: {exc}",
+            decision=AgentRunApprovalDecision.APPROVE_FOR_SESSION,
+            executed=False,
+        )
+    return RequestApprovalResponse(
+        success=True,
+        message=(
+            f"Auto-approved: you approved this exact {tool_name} call earlier in "
+            "this conversation. Executed as you."
+        ),
+        decision=AgentRunApprovalDecision.APPROVE_FOR_SESSION,
+        executed=True,
+        result=to_json_value(result),
+    )
 
 
 async def ask_user(

@@ -508,6 +508,102 @@ async def test_request_approval_pauses_the_run():
 
 
 @pytest.mark.asyncio
+async def test_request_approval_auto_executes_on_exact_session_match(monkeypatch):
+    """A request_approval call identical to one already approved for session
+    runs immediately with no pause, executing the wrapped tool as the user."""
+    from app.core.authorization import session_approvals
+    from app.modules.agent.tools.approval.executor import ApprovalExecutor
+
+    async def fake_has_session_approval(**kwargs):
+        return True
+
+    captured: dict[str, object] = {}
+
+    async def fake_execute_as_user(self, *, deps, tool_name, args):
+        captured["tool_name"] = tool_name
+        captured["args"] = args
+        return {"stdout": "hi", "success": True}
+
+    monkeypatch.setattr(
+        session_approvals, "has_session_approval", fake_has_session_approval
+    )
+    monkeypatch.setattr(ApprovalExecutor, "execute_as_user", fake_execute_as_user)
+
+    ctx = _approval_ctx("approval-repeat")
+    ctx.deps.workload_id = uuid4()
+
+    result = await request_approval(
+        ctx,  # type: ignore[arg-type]
+        tool_name="exec_command",
+        args={"cmd": "ls"},
+        title="List files?",
+    )
+
+    assert result.success is True
+    assert result.executed is True
+    assert result.decision == "APPROVE_FOR_SESSION"
+    assert result.result == {"stdout": "hi", "success": True}
+    assert captured["tool_name"] == "exec_command"
+    assert captured["args"] == {"cmd": "ls"}
+
+
+@pytest.mark.asyncio
+async def test_request_approval_falls_through_to_pause_without_exact_match(monkeypatch):
+    """No prior exact-match approval for this call -> normal pause, unchanged."""
+    from app.core.authorization import session_approvals
+
+    async def fake_has_session_approval(**kwargs):
+        return False
+
+    monkeypatch.setattr(
+        session_approvals, "has_session_approval", fake_has_session_approval
+    )
+
+    ctx = _approval_ctx("approval-fresh")
+    ctx.deps.workload_id = uuid4()
+    with pytest.raises(AgentInputRequired):
+        await request_approval(
+            ctx,  # type: ignore[arg-type]
+            tool_name="exec_command",
+            args={"cmd": "ls"},
+            title="List files?",
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_approval_auto_execute_failure_reports_error(monkeypatch):
+    """If the auto-executed tool itself fails, that's reported back — never a
+    silent success and never a fall-through to re-pausing."""
+    from app.core.authorization import session_approvals
+    from app.modules.agent.tools.approval.executor import ApprovalExecutor
+
+    async def fake_has_session_approval(**kwargs):
+        return True
+
+    async def fake_execute_as_user(self, *, deps, tool_name, args):
+        raise RuntimeError("workspace unreachable")
+
+    monkeypatch.setattr(
+        session_approvals, "has_session_approval", fake_has_session_approval
+    )
+    monkeypatch.setattr(ApprovalExecutor, "execute_as_user", fake_execute_as_user)
+
+    ctx = _approval_ctx("approval-repeat-fails")
+    ctx.deps.workload_id = uuid4()
+
+    result = await request_approval(
+        ctx,  # type: ignore[arg-type]
+        tool_name="exec_command",
+        args={"cmd": "ls"},
+        title="List files?",
+    )
+
+    assert result.success is False
+    assert result.executed is False
+    assert "workspace unreachable" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_interaction_tools_guide_instead_of_pausing_on_daemon_harness():
     """On daemon/MCP runs (no pause signal) the tools never raise or block; they
     return guidance so the model falls back to a conversational ask."""
@@ -1555,3 +1651,91 @@ def test_latest_user_prompt_includes_metadata_state_without_changing_content():
     assert "UI state:" in user_prompt
     assert '"screen": "pod_runs"' in user_prompt
     assert message.text == "What should I do next?"
+
+
+def _tool_call_message(
+    *,
+    conversation_id: UUID,
+    sequence: int,
+    tool_name: str = "ask_user",
+    tool_call_id: str = "call-1",
+    tool_args: dict | None = None,
+) -> Message:
+    return Message(
+        conversation_id=conversation_id,
+        sequence=sequence,
+        agent_run_id=uuid4(),
+        role=MessageRole.ASSISTANT.value,
+        kind=MessageKind.TOOL_CALL,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_args=tool_args or {"questions": []},
+        metadata={"tool_name": tool_name},
+    )
+
+
+def _tool_return_message(
+    *,
+    conversation_id: UUID,
+    sequence: int,
+    tool_name: str = "ask_user",
+    tool_call_id: str = "call-1",
+    tool_result: dict | None = None,
+) -> Message:
+    return Message(
+        conversation_id=conversation_id,
+        sequence=sequence,
+        agent_run_id=uuid4(),
+        role=MessageRole.TOOL.value,
+        kind=MessageKind.TOOL_RETURN,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_result=tool_result or {"success": True},
+    )
+
+
+def test_pausing_tool_call_without_matching_return_is_dropped_from_history():
+    """A left-unresolved ask_user/request_approval call must not reach the
+    model as a dangling ToolCallPart — pydantic-ai requires every tool call to
+    have a matching return in the same request. Without a synthesized return
+    (see ConversationService._supersede_stale_pending_interactions), the
+    harness intentionally drops the orphaned call rather than sending an
+    invalid request; this test locks in that fallback behavior."""
+    conversation_id = uuid4()
+    orphaned_call = _tool_call_message(
+        conversation_id=conversation_id, sequence=0, tool_call_id="orphan-1"
+    )
+
+    history, _ = PydanticAIHarness()._history_and_prompt([orphaned_call])
+
+    assert history == []
+
+
+def test_pausing_tool_call_with_synthesized_return_is_paired_in_history():
+    """Once a return exists for a pausing call (whether from a real user
+    decision or an auto-deny superseding it), history reconstruction pairs the
+    call with its return like any other tool round-trip — nothing is dropped
+    and the model sees exactly what happened."""
+    conversation_id = uuid4()
+    call = _tool_call_message(
+        conversation_id=conversation_id, sequence=0, tool_call_id="resolved-1"
+    )
+    tool_return = _tool_return_message(
+        conversation_id=conversation_id,
+        sequence=1,
+        tool_call_id="resolved-1",
+        tool_result={
+            "success": False,
+            "message": "User dismissed the questions without answering.",
+        },
+    )
+
+    history, _ = PydanticAIHarness()._history_and_prompt([call, tool_return])
+
+    assert len(history) == 2
+    response_message, request_message = history
+    assert len(response_message.parts) == 1
+    assert response_message.parts[0].tool_call_id == "resolved-1"
+    assert len(request_message.parts) == 1
+    assert request_message.parts[0].tool_call_id == "resolved-1"
+    assert request_message.parts[0].content["success"] is False

@@ -822,20 +822,46 @@ class ConversationService:
         tool_args: dict[str, object],
         user_id: UUID,
     ) -> None:
-        """Persist APPROVE_FOR_SESSION as per-permission session approvals.
+        """Persist APPROVE_FOR_SESSION as per-permission session approvals, plus
+        an exact-match approval for the wrapped call itself.
 
         Keyed to (conversation, workload actor, permission) — the same key the
-        authorizer checks. Without permission ids in the request_approval args
-        this quietly degrades to APPROVE_ONCE behavior (the wrapped tool still
-        runs once as the user; the next attempt re-prompts).
+        authorizer checks (for `permission_ids`) or `request_approval` itself
+        checks before pausing again (for the exact-command key). Structured
+        actions (pod/table/folder/... delete) carry `permission_ids` copied from
+        the denied tool result, unlocking the whole action TYPE for the rest of
+        the conversation. Tools with no structured permission — exec_command,
+        execute_python, anything not gated by the authorizer — have no category
+        to unlock, so they get only the exact-command key: approving one call
+        lets the agent repeat that LITERAL call again without re-prompting, but
+        a different command still re-prompts (see
+        session_approvals.exact_command_permission_id for why anything looser,
+        e.g. a prefix match, would be a shell-injection vector).
         """
         from app.core.authorization.delegation import DEFAULT_POD_AGENT_ID
-        from app.core.authorization.session_approvals import record_session_approval
+        from app.core.authorization.session_approvals import (
+            exact_command_permission_id,
+            record_session_approval,
+        )
+
+        workload_actor_id = f"agent:{conversation.agent_id or DEFAULT_POD_AGENT_ID}"
+
+        inner_tool_name = tool_args.get("tool_name")
+        if isinstance(inner_tool_name, str) and inner_tool_name:
+            inner_args = tool_args.get("args")
+            await record_session_approval(
+                session_id=str(conversation.id),
+                workload_actor_id=workload_actor_id,
+                permission_id=exact_command_permission_id(
+                    inner_tool_name,
+                    inner_args if isinstance(inner_args, dict) else {},
+                ),
+                resolved_by_user_id=user_id,
+            )
 
         permission_ids = tool_args.get("permission_ids")
         if not isinstance(permission_ids, list):
             return
-        workload_actor_id = f"agent:{conversation.agent_id or DEFAULT_POD_AGENT_ID}"
         for permission_id in permission_ids:
             if not isinstance(permission_id, str) or not permission_id:
                 continue
@@ -942,6 +968,103 @@ class ConversationService:
             workspace_id=workspace_location.workspace_id,
             workspace_cwd=workspace_location.cwd,
             pod_cwd=resolve_pod_cwd(conversation),
+        )
+
+    async def _supersede_stale_pending_interactions(
+        self,
+        *,
+        conversation: Conversation,
+        user_id: UUID,
+    ) -> list[Message]:
+        """Auto-deny any ask_user/request_approval call left unresolved from an
+        earlier WAITING pause, before starting a fresh run for a new message.
+
+        This only ever runs when no run is currently active (the caller checked
+        that already), so any pausing call still unresolved at this point belongs
+        to a run that already finished — the user moved on without answering it.
+        Always DENY, never approve: this is a safety fallback synthesizing a
+        response on the user's behalf, not a real decision, so a request_approval
+        must never auto-execute here. Writes ride the caller's transaction (no
+        commit here) so they land atomically with the new run/message it creates;
+        the caller is responsible for publishing the returned messages once that
+        transaction actually commits.
+        """
+        resolved_ids = await self.conversation_repository.list_resolved_approval_ids(
+            conversation_id=conversation.id
+        )
+        messages, _ = await self.conversation_repository.list_messages(
+            conversation_id=conversation.id,
+            limit=500,
+        )
+        stale = [
+            message
+            for message in messages
+            if message.kind == MessageKind.TOOL_CALL
+            and message.tool_name in _PAUSING_TOOL_NAMES
+            and message.tool_call_id is not None
+            and message.tool_call_id not in resolved_ids
+        ]
+        synthesized_returns: list[Message] = []
+        for message in stale:
+            saved_return = await self._deny_stale_pending_interaction(
+                conversation=conversation,
+                message=message,
+                user_id=user_id,
+            )
+            if saved_return is not None:
+                synthesized_returns.append(saved_return)
+        return synthesized_returns
+
+    async def _deny_stale_pending_interaction(
+        self,
+        *,
+        conversation: Conversation,
+        message: Message,
+        user_id: UUID,
+    ) -> Message | None:
+        tool_args = message.tool_args if isinstance(message.tool_args, dict) else {}
+        decision_tool_name = (
+            "ask_user"
+            if message.tool_name == "ask_user"
+            else str(tool_args.get("tool_name") or "request_approval")
+        )
+        response = {"superseded_by_new_message": True}
+        recorded = await self.conversation_repository.record_approval_decision(
+            conversation_id=conversation.id,
+            approval_id=message.tool_call_id,
+            agent_run_id=message.agent_run_id,
+            tool_name=decision_tool_name,
+            decision=AgentRunApprovalDecision.DENY,
+            response=response,
+            resolved_by_user_id=user_id,
+        )
+        if not recorded:
+            # A concurrent resolve already recorded a real decision for this call;
+            # that resolve (or its own reconcile) owns synthesizing the return.
+            return None
+        existing_return = await self.conversation_repository.get_tool_return(
+            conversation_id=conversation.id,
+            tool_call_id=message.tool_call_id,
+        )
+        if existing_return is not None:
+            return None
+        return_tool_name, tool_result = await self._build_resume_tool_return(
+            conversation=conversation,
+            user_id=user_id,
+            kind=message.tool_name,
+            tool_args=tool_args,
+            decision=AgentRunApprovalDecision.DENY,
+            response=response,
+            paused_agent_run_id=message.agent_run_id,
+        )
+        return await self.conversation_repository.append_message(
+            conversation_id=conversation.id,
+            agent_run_id=message.agent_run_id,
+            draft=MessageDraft.of_tool_return(
+                tool_call_id=message.tool_call_id,
+                tool_name=return_tool_name,
+                tool_result=tool_result,
+            ),
         )
 
     async def _paused_call_from_messages(
@@ -1113,7 +1236,19 @@ class ConversationService:
             conversation.id
         )
         started_new_run = active_run is None
+        superseded_returns: list[Message] = []
         if active_run is None:
+            # A prior run may have paused on ask_user/request_approval (conversation
+            # -> WAITING) without the user ever resolving it — the composer stays
+            # enabled during WAITING, so the user can type past the card. Deny any
+            # such leftover call now: otherwise this new run's history rebuild finds
+            # no matching return for it and silently drops it (see
+            # PydanticAIHarness._build_tool_batch), permanently losing the model's
+            # memory of asking and leaving the UI card stuck "needs your input".
+            superseded_returns = await self._supersede_stale_pending_interactions(
+                conversation=conversation,
+                user_id=user_id,
+            )
             selected_agent_runtime = (
                 conversation.agent_runtime
                 or agent.agent_runtime
@@ -1153,6 +1288,16 @@ class ConversationService:
         # Streaming endpoints need the message/run committed before the worker
         # can safely load them; normal CRUD methods still rely on request UoW.
         await self.uow.commit()
+        # Publish superseded-interaction returns only now that they're durably
+        # committed alongside the new run/message (same transaction as above).
+        for superseded_return in superseded_returns:
+            await publish_conversation_event(
+                conversation.id,
+                message_payload(
+                    superseded_return.agent_run_id,
+                    message_to_payload(superseded_return),
+                ),
+            )
         await publish_conversation_event(
             conversation.id,
             input_added_payload(active_run.id, message_to_payload(saved_user_message)),

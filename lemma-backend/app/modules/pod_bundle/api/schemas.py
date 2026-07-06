@@ -134,7 +134,7 @@ class VariableSpecResponse(BaseModel):
     description: str | None = None
     required: bool = False
     default: str | None = None
-    platform: str | None = Field(
+    connector: str | None = Field(
         default=None,
         description=(
             "For a connector account variable, the connector the account must "
@@ -186,7 +186,7 @@ class ImportPlanResponse(BaseModel):
                     description=v.description,
                     required=v.required,
                     default=v.default,
-                    platform=v.platform,
+                    connector=v.connector,
                     provider=v.provider,
                 )
                 for v in plan.variables

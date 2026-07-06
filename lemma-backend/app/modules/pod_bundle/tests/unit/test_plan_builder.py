@@ -180,7 +180,7 @@ async def test_variables_classified(tmp):
             "acct": {
                 "type": "account",
                 "source_value": "x",
-                "platform": "slack",
+                "connector": "slack",
                 "provider": "COMPOSIO",
             },
             "owner": {"type": "member", "source_value": "y"},
@@ -191,13 +191,13 @@ async def test_variables_classified(tmp):
     plan = await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
     by_name = {v.name: v for v in plan.variables}
     # Connector accounts must be supplied by the importer -> required, and carry
-    # the platform + provider so the UI can prompt for the right connector.
+    # the connector + provider so the UI can prompt for the right one.
     assert by_name["acct"].kind == "account"
     assert by_name["acct"].required is True
-    assert by_name["acct"].platform == "slack"
+    assert by_name["acct"].connector == "slack"
     assert by_name["acct"].provider == "COMPOSIO"
-    # A variable with no platform context leaves it None.
-    assert by_name["region"].platform is None
+    # A variable with no connector context leaves it None.
+    assert by_name["region"].connector is None
     # Pod members auto-resolve to the importing user -> not required.
     assert by_name["owner"].kind == "pod_member"
     assert by_name["owner"].required is False
@@ -210,21 +210,21 @@ async def test_variables_classified(tmp):
 
 
 async def test_account_variable_missing_provider_is_rejected(tmp):
-    """A bundle built before platform/provider was mandatory (or hand-edited)
+    """A bundle built before connector/provider was mandatory (or hand-edited)
     must be re-exported, not imported half-resolvable."""
     from app.modules.pod_bundle.domain.errors import BundleInvalidError
 
     root = _build_bundle(
         tmp,
         variables={
-            "acct": {"type": "account", "source_value": "x", "platform": "slack"},
+            "acct": {"type": "account", "source_value": "x", "connector": "slack"},
         },
     )
     with pytest.raises(BundleInvalidError, match="acct"):
         await PlanBuilder(FakeExisting()).build_plan(bundle_root=root)
 
 
-async def test_account_variable_missing_platform_is_rejected(tmp):
+async def test_account_variable_missing_connector_is_rejected(tmp):
     from app.modules.pod_bundle.domain.errors import BundleInvalidError
 
     root = _build_bundle(

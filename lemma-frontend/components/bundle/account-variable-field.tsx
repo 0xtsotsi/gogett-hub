@@ -32,7 +32,11 @@ import type { Account, Connector } from '@/lib/types';
 interface AccountVariableFieldProps {
     organizationId?: string;
     podId?: string | null;
-    platform: string;
+    /** The connector this variable needs an account for (e.g. "slack"),
+     * matched against the connector catalog's name/title/slug. Named
+     * `connectorId` (not `connector`) to avoid shadowing the resolved
+     * Connector entity this component looks up below. */
+    connectorId: string;
     /** Auth provider ("LEMMA" or "COMPOSIO") the bundle needs for this
      * connector. When set, only accounts/auth configs of that provider are
      * offered — an org can have both a native and a Composio-backed auth
@@ -45,8 +49,8 @@ interface AccountVariableFieldProps {
     onChange: (value: string) => void;
 }
 
-function matchesPlatform(connector: Connector, platform: string): boolean {
-    const p = platform.toLowerCase();
+function matchesConnector(connector: Connector, connectorId: string): boolean {
+    const p = connectorId.toLowerCase();
     const slug = (connector as { slug?: string }).slug;
     return (
         connector.name?.toLowerCase() === p ||
@@ -62,7 +66,7 @@ function accountLabel(account: Account): string {
 export function AccountVariableField({
     organizationId,
     podId,
-    platform,
+    connectorId,
     provider,
     label,
     description,
@@ -72,8 +76,8 @@ export function AccountVariableField({
 }: AccountVariableFieldProps) {
     const { data: connectors = [] } = useConnectors({ limit: 200 });
     const connector = useMemo(
-        () => connectors.find((c) => matchesPlatform(c, platform)) ?? null,
-        [connectors, platform],
+        () => connectors.find((c) => matchesConnector(c, connectorId)) ?? null,
+        [connectors, connectorId],
     );
 
     const { data: accountsForConnector = [], refetch } = useAccounts({
@@ -145,13 +149,13 @@ export function AccountVariableField({
             if (fresh) {
                 onChangeRef.current(fresh.id);
                 setAwaitingOAuth(false);
-                toast.success(`Connected ${platform}`);
+                toast.success(`Connected ${connectorId}`);
             } else if (Date.now() - started > 120_000) {
                 setAwaitingOAuth(false);
             }
         }, 2500);
         return () => clearInterval(timer);
-    }, [awaitingOAuth, refetch, platform]);
+    }, [awaitingOAuth, refetch, connectorId]);
 
     async function resolveAuthConfigId(): Promise<string> {
         const active = authConfigs.find((cfg) => cfg.connector_id === connector!.id && cfg.status === 'ACTIVE');
@@ -179,7 +183,7 @@ export function AccountVariableField({
             }
         } catch (error) {
             setAwaitingOAuth(false);
-            toast.error(error instanceof Error ? error.message : `Could not connect ${platform}`);
+            toast.error(error instanceof Error ? error.message : `Could not connect ${connectorId}`);
         }
     }
 
@@ -200,7 +204,7 @@ export function AccountVariableField({
             await refetch();
             if (account?.id) onChange(account.id);
             setShowCredentials(false);
-            toast.success(`Connected ${platform}`);
+            toast.success(`Connected ${connectorId}`);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Could not save credentials');
         } finally {
@@ -227,7 +231,7 @@ export function AccountVariableField({
         if (podId) window.open(`/pod/${podId}/connectors`, '_blank', 'noopener,noreferrer');
     }
 
-    const title = platform.charAt(0).toUpperCase() + platform.slice(1);
+    const title = connectorId.charAt(0).toUpperCase() + connectorId.slice(1);
 
     return (
         <div className="space-y-2">
@@ -247,7 +251,7 @@ export function AccountVariableField({
                 <Input
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
-                    placeholder={`${platform} account id`}
+                    placeholder={`${connectorId} account id`}
                 />
             ) : (
                 <div className="space-y-1.5">

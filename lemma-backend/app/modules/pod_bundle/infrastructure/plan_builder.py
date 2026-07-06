@@ -367,9 +367,9 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
     importing user, and a ``free`` variable (e.g. an app slug) is required only when
     it has no default.
 
-    Every ``account`` variable must carry connector ``platform``/``provider``
-    metadata — a bundle missing it predates that guarantee (or was hand-edited)
-    and must be re-exported rather than imported half-resolvable."""
+    Every ``account`` variable must carry ``connector``/``provider`` metadata —
+    a bundle missing it predates that guarantee (or was hand-edited) and must
+    be re-exported rather than imported half-resolvable."""
     raw = pod_manifest.get("variables")
     if not isinstance(raw, dict):
         return []
@@ -387,7 +387,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
         else:
             kind = "free"
         default = (meta or {}).get("default")
-        platform = (meta or {}).get("platform")
+        connector = (meta or {}).get("connector")
         provider = (meta or {}).get("provider")
         specs.append(
             VariableSpec(
@@ -396,7 +396,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
                 description=(meta or {}).get("description"),
                 required=(kind == "account") or (kind == "free" and default is None),
                 default=str(default) if default is not None else None,
-                platform=str(platform) if platform else None,
+                connector=str(connector) if connector else None,
                 provider=str(provider) if provider else None,
             )
         )

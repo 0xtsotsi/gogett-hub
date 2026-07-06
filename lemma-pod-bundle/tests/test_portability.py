@@ -62,9 +62,9 @@ def test_extract_portable_variables_rewrites_and_records(tmp_path: Path):
     assert variables["approval_assignee"]["type"] == "pod_member"
     assert variables["approval_assignee"]["source_value"] == "member-123"
     assert variables["daily_account"]["type"] == "account"
-    assert variables["daily_account"]["platform"] == "jira"
+    assert variables["daily_account"]["connector"] == "jira"
     assert variables["daily_account"]["provider"] == "LEMMA"
-    assert variables["slack_account"]["platform"] == "slack"
+    assert variables["slack_account"]["connector"] == "slack"
     assert variables["slack_account"]["provider"] == "COMPOSIO"
 
     # Resource files now hold ${name} placeholders in place of the raw ids.
@@ -152,7 +152,7 @@ def test_extract_portable_variables_covers_any_resource_type(tmp_path: Path):
 
     variables = _extract_portable_variables(root)
 
-    assert variables["on_ticket_account"]["platform"] == "jira"
+    assert variables["on_ticket_account"]["connector"] == "jira"
     assert variables["on_ticket_account"]["provider"] == "COMPOSIO"
     trigger = json.loads(
         (root / "triggers" / "on_ticket" / "on_ticket.json").read_text()
@@ -180,7 +180,7 @@ def test_require_account_variable_metadata_accepts_complete_variables():
             "slack_account": {
                 "type": "account",
                 "source_value": "acct-1",
-                "platform": "slack",
+                "connector": "slack",
                 "provider": "COMPOSIO",
             },
             "app_slug": {"type": "app_slug", "source_value": "my-app"},
@@ -195,7 +195,20 @@ def test_require_account_variable_metadata_rejects_missing_provider():
                 "slack_account": {
                     "type": "account",
                     "source_value": "acct-1",
-                    "platform": "slack",
+                    "connector": "slack",
+                }
+            }
+        )
+
+
+def test_require_account_variable_metadata_rejects_missing_connector():
+    with pytest.raises(ValueError, match="slack_account"):
+        require_account_variable_metadata(
+            {
+                "slack_account": {
+                    "type": "account",
+                    "source_value": "acct-1",
+                    "provider": "COMPOSIO",
                 }
             }
         )

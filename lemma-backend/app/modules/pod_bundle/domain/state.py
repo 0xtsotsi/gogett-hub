@@ -119,7 +119,7 @@ class VariableSpec(BaseModel):
     # and connect exactly the right connector/provider combination. Both are
     # required for every ``kind="account"`` variable; None only for non-account
     # variables.
-    platform: str | None = None
+    connector: str | None = None
     provider: str | None = None
 
 

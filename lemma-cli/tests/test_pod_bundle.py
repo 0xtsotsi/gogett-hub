@@ -1592,7 +1592,7 @@ def test_export_pod_bundle_writes_normalized_surfaces(tmp_path: Path):
     }
 
     pod_data = json.loads((tmp_path / "demo-pod" / "pod.json").read_text(encoding="utf-8"))
-    assert pod_data["variables"]["slack_account"]["platform"] == "slack"
+    assert pod_data["variables"]["slack_account"]["connector"] == "slack"
     assert pod_data["variables"]["slack_account"]["provider"] == "COMPOSIO"
 
 
@@ -2151,8 +2151,8 @@ def test_variable_applier_resolves_and_strips_unresolved(tmp_path: Path):
                 "name": "demo",
                 "variables": {
                     "approver": {"type": "pod_member"},
-                    "slack_account": {"type": "account", "platform": "slack", "provider": "COMPOSIO"},
-                    "ghost_account": {"type": "account", "platform": "jira", "provider": "LEMMA"},
+                    "slack_account": {"type": "account", "connector": "slack", "provider": "COMPOSIO"},
+                    "ghost_account": {"type": "account", "connector": "jira", "provider": "LEMMA"},
                 },
             }
         ),

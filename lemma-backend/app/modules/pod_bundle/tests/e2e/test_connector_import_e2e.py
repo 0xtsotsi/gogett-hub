@@ -41,8 +41,8 @@ async def test_connector_account_is_required_and_enforced(
     assert account_var is not None, plan["variables"]
     assert account_var["kind"] == "account"
     assert account_var["required"] is True
-    # The connector platform is sent so the UI can prompt for the right connector.
-    assert account_var["platform"] == "slack"
+    # The connector is sent so the UI can prompt for the right one.
+    assert account_var["connector"] == "slack"
     # ...and the auth provider, so the UI connects/creates through the right one.
     assert account_var["provider"] == "COMPOSIO"
 
@@ -61,12 +61,12 @@ async def test_schedule_connector_account_is_required_and_enforced(
     authenticated_client, test_pod, worker
 ):
     """A schedule's account_id is tokenized exactly like a surface's: the plan
-    must surface it as a required variable carrying platform + provider, and
+    must surface it as a required variable carrying connector + provider, and
     apply without it must be rejected. (Regression coverage for a bug where
-    schedule account variables shipped with no platform at all, and a separate
-    bug where the applier silently dropped account_id even when resolved —
-    both covered at the unit level in test_applier.py; this proves the plan/
-    apply-gate contract end to end.)"""
+    schedule account variables shipped with no connector info at all, and a
+    separate bug where the applier silently dropped account_id even when
+    resolved — both covered at the unit level in test_applier.py; this proves
+    the plan/apply-gate contract end to end.)"""
     pod_id = test_pod["id"]
     zip_bytes = pack_fixture_bundle("with_connector_schedule")
     import_id = await start_and_plan_import(authenticated_client, pod_id, zip_bytes)
@@ -81,7 +81,7 @@ async def test_schedule_connector_account_is_required_and_enforced(
     assert account_var is not None, plan["variables"]
     assert account_var["kind"] == "account"
     assert account_var["required"] is True
-    assert account_var["platform"] == "jira"
+    assert account_var["connector"] == "jira"
     assert account_var["provider"] == "COMPOSIO"
 
     assert any(s["kind"] == "SCHEDULE" for s in plan["steps"]), plan["steps"]
@@ -96,8 +96,8 @@ async def test_schedule_connector_account_is_required_and_enforced(
 async def test_legacy_bundle_missing_provider_fails_planning(
     authenticated_client, test_pod, worker
 ):
-    """A bundle built before connector platform/provider was mandatory on
-    account variables (or a hand-edited one) must fail plan-build with a clear
+    """A bundle built before connector/provider was mandatory on account
+    variables (or a hand-edited one) must fail plan-build with a clear
     error instead of importing with a variable the UI/CLI can't resolve to the
     right connector — the hard-reject decision for pre-existing bundles."""
     pod_id = test_pod["id"]

@@ -6,7 +6,7 @@
     "on_ticket_account": {
       "type": "account",
       "source_value": "019ebad7-9c4f-7143-8273-60e9ff368697",
-      "platform": "jira",
+      "connector": "jira",
       "provider": "COMPOSIO",
       "description": "Connector account for schedule 'on_ticket'"
     }

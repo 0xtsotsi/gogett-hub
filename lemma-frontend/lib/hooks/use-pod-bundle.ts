@@ -67,7 +67,7 @@ export interface VariableSpec {
     required: boolean;
     default: string | null;
     /** For `account`-kind variables: the connector, e.g. "slack". */
-    platform?: string | null;
+    connector?: string | null;
     /** For `account`-kind variables: the auth provider ("LEMMA" or "COMPOSIO")
      * backing the connector, so the picker can select/create the right kind
      * of account instead of any account for that connector. */

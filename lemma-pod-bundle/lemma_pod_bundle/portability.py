@@ -116,7 +116,7 @@ def _assert_no_literal_account_ids(bundle_root: Path) -> None:
 
 def require_account_variable_metadata(variables: dict[str, Any] | None) -> None:
     """Raise ``ValueError`` if any declared ``type="account"`` variable is
-    missing connector platform/provider metadata.
+    missing connector/provider metadata.
 
     An up-to-date exporter always populates both (enforced by
     :func:`_extract_portable_variables`); this is the import-side backstop that
@@ -127,11 +127,11 @@ def require_account_variable_metadata(variables: dict[str, Any] | None) -> None:
     for name, meta in (variables or {}).items():
         if str((meta or {}).get("type") or "").lower() != "account":
             continue
-        if not (meta or {}).get("platform") or not (meta or {}).get("provider"):
+        if not (meta or {}).get("connector") or not (meta or {}).get("provider"):
             raise ValueError(
                 f"Variable '{name}' is a connector account reference but is "
-                "missing connector platform/provider info. Re-export this "
-                "bundle to include it."
+                "missing connector/provider info. Re-export this bundle to "
+                "include it."
             )
 
 
@@ -190,7 +190,7 @@ def _extract_portable_variables(bundle_root: Path) -> dict[str, Any]:
             f"{owner}_account",
             {
                 "description": f"Connector account for {resource_type} '{owner}'",
-                "platform": str(connector_id),
+                "connector": str(connector_id),
                 "provider": str(provider),
             },
         )

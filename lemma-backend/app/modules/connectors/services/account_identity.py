@@ -110,11 +110,12 @@ async def _telegram_identity(creds: dict) -> AccountIdentity:
         logger.warning("Telegram getMe failed while resolving account identity: %s", exc)
         return AccountIdentity()
     bot_id = result.get("id")
+    bot_id_str = str(bot_id) if bot_id is not None else None
     username = _str(result.get("username"))
     first_name = _str(result.get("first_name"))
-    display = f"@{username}" if username else first_name
+    display = f"@{username}" if username else (first_name or bot_id_str)
     return AccountIdentity(
-        provider_account_id=str(bot_id) if bot_id is not None else None,
+        provider_account_id=bot_id_str,
         display_name=display,
     )
 
@@ -149,10 +150,13 @@ def _email_identity(creds: dict, profile: dict, raw: dict, user_data: dict) -> A
         or _str(creds.get("email"))
     )
     provider_account_id = email or _nested(raw, "sub") or _nested(user_data, "sub")
+    # Rare, but scopes can be narrow enough that no profile call surfaces an
+    # email (e.g. a Drive-only grant) -- fall back to the id we do have so the
+    # account is still distinguishable rather than unlabeled.
     return AccountIdentity(
         provider_account_id=provider_account_id,
         email=email,
-        display_name=email,
+        display_name=email or provider_account_id,
     )
 
 
@@ -169,9 +173,10 @@ def _slack_identity(creds: dict, profile: dict, raw: dict, user_data: dict) -> A
         or _nested(profile, "user_id")
     )
     bot_user_id = _nested(raw, "bot_user_id") or _nested(profile, "bot_id")
+    provider_account_id = user_id or bot_user_id or team_id
     return AccountIdentity(
-        provider_account_id=user_id or bot_user_id or team_id,
-        display_name=team_name or team_id,
+        provider_account_id=provider_account_id,
+        display_name=team_name or team_id or provider_account_id,
     )
 
 
@@ -186,8 +191,29 @@ def _generic_identity(creds: dict, profile: dict, raw: dict, user_data: dict) ->
         or _nested(user_data, "sub")
         or email
     )
+    # This fallback covers most of the catalog: Composio-managed OAuth apps with
+    # no dedicated handler above. There's no universal email/name field across
+    # toolkits, so prefer (in order): a user-set Composio alias; a per-toolkit
+    # username/account label (subdomain/shop/site name/instance -- e.g. a
+    # Zendesk subdomain or Shopify store name); Composio's auto-generated,
+    # toolkit-agnostic word_id ("github_red-castle") purpose-built for
+    # telling multiple accounts of the same app apart; then the raw ids
+    # already resolved above.
+    labeled_fallback = (
+        _nested(raw, "alias")
+        or _nested(raw, "username")
+        or _nested(raw, "site_name")
+        or _nested(raw, "instance_name")
+        or _nested(raw, "shop")
+        or _nested(raw, "subdomain")
+        or _nested(raw, "domain")
+        or _nested(raw, "word_id")
+        or provider_account_id
+        or _nested(raw, "account_id")
+        or _nested(raw, "account_url")
+    )
     return AccountIdentity(
         provider_account_id=provider_account_id,
         email=email,
-        display_name=email or provider_account_id,
+        display_name=email or labeled_fallback,
     )

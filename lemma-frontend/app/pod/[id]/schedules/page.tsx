@@ -167,7 +167,7 @@ function getTriggerLabel(trigger: { id: string; description?: string | null } & 
 }
 
 function getAccountLabel(account: Account): string {
-    return account.email || account.id;
+    return account.display_name || account.email || account.id;
 }
 
 function formatTargetLabel(value: string) {
@@ -284,7 +284,7 @@ export default function PodSchedulesPage({
     const selectedAccountId = scheduleType === ScheduleType.WEBHOOK && accountId && compatibleAccounts.some((account) => account.id === accountId)
         ? accountId
         : scheduleType === ScheduleType.WEBHOOK
-            ? compatibleAccounts[0]?.id || ''
+            ? (compatibleAccounts.find((account) => account.is_default)?.id ?? compatibleAccounts[0]?.id ?? '')
             : '';
 
     const filteredSchedules = useMemo(() => {

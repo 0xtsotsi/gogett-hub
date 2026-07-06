@@ -50,7 +50,7 @@ function matchesPlatform(connector: Connector, platform: string): boolean {
 }
 
 function accountLabel(account: Account): string {
-    return account.email || account.provider_account_id || 'Connected account';
+    return account.display_name || account.email || account.provider_account_id || 'Connected account';
 }
 
 export function AccountVariableField({

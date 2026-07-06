@@ -366,7 +366,7 @@ export function ConnectorsView({ organizationId, organizationName, embedded = fa
                                     setAccountPendingDisconnect({
                                         id: acc.id,
                                         appName: acc.connector?.title || acc.connector?.name || 'this app',
-                                        accountLabel: acc.email || acc.connector?.title || acc.connector?.name || 'Connected account',
+                                        accountLabel: acc.display_name || acc.email || acc.connector?.title || acc.connector?.name || 'Connected account',
                                     })
                                 }
                             />

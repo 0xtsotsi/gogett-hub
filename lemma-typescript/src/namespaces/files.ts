@@ -10,6 +10,8 @@ import type { FileSignedUrlResponse } from "../openapi_client/models/FileSignedU
 import type { FileUrlResponse } from "../openapi_client/models/FileUrlResponse.js";
 import { SearchMethod } from "../openapi_client/models/SearchMethod.js";
 import type { update } from "../openapi_client/models/update.js";
+import type { attach } from "../openapi_client/models/attach.js";
+import type { FileDetailResponse } from "../openapi_client/models/FileDetailResponse.js";
 import { FilesService } from "../openapi_client/services/FilesService.js";
 
 function joinDatastorePath(basePath: string | undefined, leaf: string): string {
@@ -232,5 +234,30 @@ export class FilesNamespace {
       path: string,
       options: { pageStart?: number; pageEnd?: number } = {},
     ): Promise<Blob> => this.children.content(`${path}/document.md`, options),
+  };
+
+  // Bring-your-own markdown: replace a document's agent-facing `document.md`
+  // (and its referenced images) with a user-authored version, or drop it to
+  // revert to extraction. `attach` applies to non-markdown documents (PDF,
+  // Word, HTML, …); companion images are named to match the markdown's
+  // `![](fig.png)` references and served as sibling child artifacts.
+  readonly markdown = {
+    attach: (
+      path: string,
+      markdown: Blob,
+      options: { images?: Blob[] } = {},
+    ): Promise<FileDetailResponse> => {
+      const formData: attach = {
+        path,
+        data: markdown as unknown as string,
+        images: options.images as unknown as string[] | undefined,
+      };
+      return this.client.request(() =>
+        FilesService.fileMarkdownAttach(this.podId(), formData),
+      );
+    },
+
+    detach: (path: string): Promise<FileDetailResponse> =>
+      this.client.request(() => FilesService.fileMarkdownDetach(this.podId(), path)),
   };
 }

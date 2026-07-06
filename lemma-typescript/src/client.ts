@@ -17,6 +17,7 @@ import { PodJoinRequestsNamespace } from "./namespaces/pod-join-requests.js";
 import { PodsNamespace } from "./namespaces/pods.js";
 import { PodRolesNamespace } from "./namespaces/pod-roles.js";
 import { PodSurfacesNamespace } from "./namespaces/pod-surfaces.js";
+import { UserSurfacesNamespace } from "./namespaces/user-surfaces.js";
 import { RecordsNamespace } from "./namespaces/records.js";
 import { ResourceAccessNamespace } from "./namespaces/resource-access.js";
 import { SchedulesNamespace } from "./namespaces/schedules.js";
@@ -72,6 +73,8 @@ export class LemmaClient {
   readonly podRoles: PodRolesNamespace;
   readonly organizations: OrganizationsNamespace;
   readonly podSurfaces: PodSurfacesNamespace;
+  /** The caller's own surfaces across all pods (grouped by platform). */
+  readonly userSurfaces: UserSurfacesNamespace;
 
   constructor(
     overrides: Partial<LemmaConfig> = {},
@@ -130,6 +133,7 @@ export class LemmaClient {
     this.podRoles = new PodRolesNamespace(this._generated, podIdFn);
     this.organizations = new OrganizationsNamespace(this._generated, this._http);
     this.podSurfaces = new PodSurfacesNamespace(this._generated);
+    this.userSurfaces = new UserSurfacesNamespace(this._generated);
   }
 
   /** Change the active pod ID for subsequent calls. */

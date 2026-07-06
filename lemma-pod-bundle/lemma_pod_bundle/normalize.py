@@ -239,6 +239,12 @@ def _normalize_surface_payload(surface: dict[str, Any]) -> dict[str, Any]:
         "default_agent_name": surface.get("agent_name"),
         "credential_mode": surface.get("credential_mode"),
         "account_id": surface.get("account_id"),
+        # Ground-truth connector identity for the bound account, resolved by
+        # the exporter from the account itself (never inferred from the
+        # surface's own platform) — carried through so the portable-variable
+        # tokenizer can stamp every account variable with connector/provider.
+        "connector_id": surface.get("connector_id"),
+        "provider": surface.get("provider"),
         "is_enabled": status != "INACTIVE",
     }
     if behavior_config:

@@ -308,7 +308,7 @@ async def test_export_produces_expected_layout(patched_exporter, tmp_path):
 
     pod = json.loads((root / "pod.json").read_text())
     assert pod["name"] == "My CRM Pod"
-    assert pod["format_version"] == 2
+    assert pod["format_version"] == 3
 
     # Tables present with normalized payloads.
     assert (root / "tables" / "leads" / "leads.json").is_file()

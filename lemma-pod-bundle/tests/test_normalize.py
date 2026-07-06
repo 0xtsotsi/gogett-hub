@@ -147,6 +147,24 @@ def test_normalize_surface_payload_channels_identity_and_status():
     }
 
 
+def test_normalize_surface_payload_carries_connector_identity():
+    surface = {
+        "platform": "slack",
+        "account_id": "acct-1",
+        "connector_id": "slack",
+        "provider": "COMPOSIO",
+    }
+    payload = _normalize_surface_payload(surface)
+    assert payload["connector_id"] == "slack"
+    assert payload["provider"] == "COMPOSIO"
+
+
+def test_normalize_surface_payload_omits_connector_identity_when_absent():
+    payload = _normalize_surface_payload({"platform": "slack"})
+    assert "connector_id" not in payload
+    assert "provider" not in payload
+
+
 def test_surface_platform_from_payload_falls_back_to_resource_name():
     assert _surface_platform_from_payload({"platform": "slack"}, "x") == "SLACK"
     assert _surface_platform_from_payload({}, "teams") == "TEAMS"

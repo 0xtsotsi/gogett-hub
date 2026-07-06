@@ -511,6 +511,40 @@ async def test_schedule_apply_maps_manifest_to_entity(tmp_path, monkeypatch):
     assert entity.config == {"cron": "0 2 * * *"}
 
 
+async def test_schedule_apply_carries_account_and_trigger_fields(tmp_path, monkeypatch):
+    """Regression test: account_id, connector_trigger_id, filter_instruction and
+    filter_output_schema were previously dropped on apply even when the bundle
+    had them resolved."""
+    account = uuid4()
+    root = tmp_path / "bundle"
+    _write(
+        root / "schedules" / "on_ticket" / "on_ticket.json",
+        {
+            "name": "on_ticket",
+            "schedule_type": "WEBHOOK",
+            "config": {},
+            "account_id": "${on_ticket_account}",
+            "connector_trigger_id": "jira_new_issue",
+            "filter_instruction": "only urgent tickets",
+            "filter_output_schema": {"type": "object"},
+        },
+    )
+    fake = FakeScheduleService()
+    monkeypatch.setattr(
+        "app.modules.schedule.api.dependencies.get_schedule_service",
+        lambda uow: fake,
+    )
+    applier = _applier(root, replacements={"on_ticket_account": str(account)})
+    await applier.apply_step(_step(StepKind.SCHEDULE, "on_ticket"))
+
+    assert len(fake.created) == 1
+    entity = fake.created[0]
+    assert entity.account_id == account
+    assert entity.connector_trigger_id == "jira_new_issue"
+    assert entity.filter_instruction == "only urgent tickets"
+    assert entity.filter_output_schema == {"type": "object"}
+
+
 # --- surfaces (connectors) ---------------------------------------------------
 
 
@@ -587,3 +621,25 @@ async def test_surface_apply_creates_with_resolved_account(tmp_path, monkeypatch
     assert surface_fake.created["platform"] == "SLACK"
     assert surface_fake.created["account_id"] == account
     assert surface_fake.updated is None  # created, not updated
+
+
+async def test_surface_apply_rejects_missing_platform(tmp_path, monkeypatch):
+    """A surface manifest with no platform must fail loudly, not silently fall
+    back to guessing the platform from the resource's directory name."""
+    from app.modules.pod_bundle.domain.errors import PodBundleDomainError
+
+    root = tmp_path / "bundle"
+    _write(
+        root / "surfaces" / "slack" / "slack.json",
+        {"name": "slack", "account_id": str(uuid4()), "is_enabled": True},
+    )
+    monkeypatch.setattr(
+        "app.modules.agent_surfaces.api.dependencies.get_surface_service",
+        lambda uow: FakeSurfaceService(),
+    )
+    monkeypatch.setattr(
+        "app.modules.agent.api.dependencies.get_agent_service",
+        lambda uow: FakeAgentService(),
+    )
+    with pytest.raises(PodBundleDomainError, match="platform"):
+        await _applier(root).apply_step(_step(StepKind.SURFACE, "slack"))

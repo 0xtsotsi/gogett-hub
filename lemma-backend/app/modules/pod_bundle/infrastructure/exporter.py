@@ -144,6 +144,26 @@ def _dump_response(response: Any) -> dict[str, Any]:
     return response.model_dump(mode="json")
 
 
+async def _resolve_account_connector_info(
+    uow: SqlAlchemyUnitOfWork, account_id: UUID
+) -> tuple[str, str] | None:
+    """Ground-truth ``(connector_id, provider)`` for an account, resolved via
+    the connectors module — never inferred from a resource's own name (e.g. a
+    surface's platform or a schedule's directory name), since that guess is
+    wrong for any resource type with no platform concept of its own. Returns
+    ``None`` if the account (or its auth config) no longer exists."""
+    from app.modules.connectors.api.dependencies import get_connector_service
+
+    service = get_connector_service(uow)
+    account = await service.account_repository.get(account_id)
+    if account is None:
+        return None
+    auth_config = await service.auth_config_repository.get(account.auth_config_id)
+    if auth_config is None:
+        return None
+    return account.connector_id, auth_config.provider.value
+
+
 class BundleExporter:
     """Builds a pod bundle archive from a pod's resources.
 
@@ -375,9 +395,23 @@ class BundleExporter:
                     schedule_name = str(schedule.name or schedule.id or "")
                     dir_ = root / "schedules" / schedule_name
                     dir_.mkdir(parents=True, exist_ok=True)
-                    payload = _normalize_schedule_payload(
-                        _schedule_response_dict(schedule)
-                    )
+                    raw_schedule = _schedule_response_dict(schedule)
+                    account_id = raw_schedule.get("account_id")
+                    if account_id:
+                        info = await _resolve_account_connector_info(
+                            uow, UUID(str(account_id))
+                        )
+                        if info is None:
+                            from app.modules.pod_bundle.domain.errors import (
+                                BundleInvalidError,
+                            )
+
+                            raise BundleInvalidError(
+                                f"Schedule '{schedule_name}' references account "
+                                f"{account_id}, which no longer exists."
+                            )
+                        raw_schedule["connector_id"], raw_schedule["provider"] = info
+                    payload = _normalize_schedule_payload(raw_schedule)
                     payload.setdefault("name", schedule_name)
                     _write_json(dir_ / f"{schedule_name}.json", payload)
                 done += 1
@@ -515,9 +549,19 @@ class BundleExporter:
         seen_platforms: set[str] = set()
         for surface in surfaces:
             try:
-                payload = _normalize_surface_payload(
-                    _dump_response(_surface_response(surface))
-                )
+                raw_surface = _dump_response(_surface_response(surface))
+                account_id = raw_surface.get("account_id")
+                if account_id:
+                    info = await _resolve_account_connector_info(
+                        uow, UUID(str(account_id))
+                    )
+                    if info is None:
+                        raise ValueError(
+                            f"Surface references account {account_id}, which no "
+                            "longer exists."
+                        )
+                    raw_surface["connector_id"], raw_surface["provider"] = info
+                payload = _normalize_surface_payload(raw_surface)
                 platform = str(payload.get("platform") or "")
                 if not platform or platform in seen_platforms:
                     continue

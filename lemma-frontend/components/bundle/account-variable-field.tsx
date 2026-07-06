@@ -21,6 +21,7 @@ import {
     getAccountStatusMeta,
     getCredentialSchema,
     getPrimaryCapability,
+    getProviderCapability,
     hasSystemDefault,
     schemaHasFields,
     usesDirectCredentials,
@@ -32,6 +33,11 @@ interface AccountVariableFieldProps {
     organizationId?: string;
     podId?: string | null;
     platform: string;
+    /** Auth provider ("LEMMA" or "COMPOSIO") the bundle needs for this
+     * connector. When set, only accounts/auth configs of that provider are
+     * offered — an org can have both a native and a Composio-backed auth
+     * config for the same connector, and only one is the right fit here. */
+    provider?: string | null;
     label: string;
     description?: string | null;
     required?: boolean;
@@ -57,6 +63,7 @@ export function AccountVariableField({
     organizationId,
     podId,
     platform,
+    provider,
     label,
     description,
     required,
@@ -69,22 +76,44 @@ export function AccountVariableField({
         [connectors, platform],
     );
 
-    const { data: accounts = [], refetch } = useAccounts({
+    const { data: accountsForConnector = [], refetch } = useAccounts({
         organizationId,
         connectorId: connector?.id,
         limit: 100,
         enabled: Boolean(organizationId && connector),
     });
-    const { data: authConfigs = [] } = useAuthConfigs({
+    // An org can have both a native and a Composio-backed auth config for the
+    // same connector; only accounts through the provider this variable needs
+    // are valid picks.
+    const accounts = useMemo(
+        () =>
+            provider
+                ? accountsForConnector.filter((a) => !a.provider || a.provider === provider)
+                : accountsForConnector,
+        [accountsForConnector, provider],
+    );
+    const { data: authConfigsForConnector = [] } = useAuthConfigs({
         organizationId,
         limit: 200,
         enabled: Boolean(organizationId && connector),
     });
+    const authConfigs = useMemo(
+        () =>
+            provider
+                ? authConfigsForConnector.filter((cfg) => cfg.provider === provider)
+                : authConfigsForConnector,
+        [authConfigsForConnector, provider],
+    );
     const enableConnector = useEnableConnector(organizationId);
     const createConnectRequest = useCreateConnectRequest(organizationId);
     const createConnectorAccount = useCreateConnectorAccount(organizationId);
 
-    const capability = useMemo(() => getPrimaryCapability(connector), [connector]);
+    // When the variable pins a provider, connect/create through that specific
+    // capability instead of the connector's default (e.g. Composio-first) pick.
+    const capability = useMemo(
+        () => (provider ? getProviderCapability(connector, provider) : getPrimaryCapability(connector)),
+        [connector, provider],
+    );
     const credentialSchema = useMemo(() => getCredentialSchema(capability), [capability]);
     const isOAuth = Boolean(capability && hasSystemDefault(capability) && !usesDirectCredentials(capability));
     const canCredential = usesDirectCredentials(capability);

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from lemma_pod_bundle import load_resource_payload
+from lemma_pod_bundle.apply_fields import SCHEDULE_APPLY_FIELDS, SURFACE_APPLY_FIELDS
 from lemma_pod_bundle.layout import TABLE_DATA_FILE
 
 from app.core.log.log import get_logger
@@ -373,15 +374,22 @@ class BundleApplier:
         existing = await _get_schedule(service, self._pod_id, step.name, self._ctx)
         if existing is not None:
             return  # schedules are treated as create-once by name for this slice
+        # Build from the shared allow-list (also used by lemma-cli's direct
+        # import) so the two importers can't silently drift on which exported
+        # fields survive — this is what previously dropped account_id,
+        # connector_trigger_id, filter_instruction and filter_output_schema.
+        fields = {
+            key: value
+            for key, value in payload.items()
+            if key in SCHEDULE_APPLY_FIELDS
+        }
+        fields["name"] = step.name
+        fields["schedule_type"] = ScheduleType(str(payload.get("schedule_type")))
+        fields["config"] = payload.get("config") or {}
         entity = ScheduleCreateEntity(
             user_id=self._user_id,
             pod_id=self._pod_id,
-            name=step.name,
-            schedule_type=ScheduleType(str(payload.get("schedule_type"))),
-            config=payload.get("config") or {},
-            workflow_name=payload.get("workflow_name"),
-            agent_name=payload.get("agent_name"),
-            visibility=payload.get("visibility"),
+            **fields,
         )
         await service.create_schedule(entity, self._ctx)
 
@@ -432,9 +440,18 @@ class BundleApplier:
         from app.modules.agent_surfaces.domain.errors import AgentSurfaceNotFoundError
 
         payload = self._load("surfaces", step.name)
-        platform_raw = str(payload.get("platform") or step.name)
+        platform_raw = payload.get("platform")
+        if not platform_raw:
+            # An up-to-date exporter always writes platform explicitly; a
+            # missing value means a stale/hand-edited bundle, not something to
+            # silently paper over by guessing from the directory name.
+            raise PodBundleDomainError(
+                f"Surface '{step.name}' is missing its platform — re-export "
+                "this bundle.",
+                code="POD_BUNDLE_SURFACE_PLATFORM",
+            )
         try:
-            platform = SurfacePlatform(platform_raw.upper())
+            platform = SurfacePlatform(str(platform_raw).upper())
         except ValueError as exc:
             raise PodBundleDomainError(
                 f"Unsupported surface platform '{platform_raw}'.",

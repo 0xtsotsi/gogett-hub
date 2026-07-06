@@ -137,9 +137,18 @@ class VariableSpecResponse(BaseModel):
     platform: str | None = Field(
         default=None,
         description=(
-            "For a connector account variable, the platform the account must "
+            "For a connector account variable, the connector the account must "
             "belong to (e.g. 'slack'), so the importer can connect the right "
             "connector. Null for non-connector variables."
+        ),
+    )
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "For a connector account variable, the auth provider backing the "
+            "connector ('LEMMA' or 'COMPOSIO'), so the importer connects/selects "
+            "an account through the right provider. Null for non-connector "
+            "variables."
         ),
     )
 
@@ -178,6 +187,7 @@ class ImportPlanResponse(BaseModel):
                     required=v.required,
                     default=v.default,
                     platform=v.platform,
+                    provider=v.provider,
                 )
                 for v in plan.variables
             ],

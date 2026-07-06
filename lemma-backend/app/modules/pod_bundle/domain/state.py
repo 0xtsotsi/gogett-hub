@@ -112,11 +112,15 @@ class VariableSpec(BaseModel):
     description: str | None = None
     required: bool = False
     default: str | None = None
-    # For ``kind="account"`` surfaced connectors: the connector platform the
-    # account must belong to (e.g. "slack", "telegram"), so the importer UI can
-    # prompt for — and connect — the right connector. None for accounts with no
-    # platform context (e.g. a schedule's account) or non-account variables.
+    # For ``kind="account"`` variables: the connector the account must belong to
+    # (e.g. "slack", "jira") and the auth provider backing it ("LEMMA" or
+    # "COMPOSIO"), both resolved from the source account at export time — never
+    # inferred from a resource's own name — so the importer UI can prompt for
+    # and connect exactly the right connector/provider combination. Both are
+    # required for every ``kind="account"`` variable; None only for non-account
+    # variables.
     platform: str | None = None
+    provider: str | None = None
 
 
 class ImportPlan(BaseModel):

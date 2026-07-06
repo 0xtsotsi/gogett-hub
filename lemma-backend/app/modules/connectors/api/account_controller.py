@@ -24,6 +24,12 @@ router = APIRouter(
 )
 
 
+async def _account_response(connector_service, account) -> AccountResponseSchema:
+    response = AccountResponseSchema.model_validate(account)
+    response.provider = await connector_service.get_account_provider(account)
+    return response
+
+
 @router.get(
     "",
     response_model=AccountListResponseSchema,
@@ -50,7 +56,9 @@ async def list_accounts(
     )
 
     return AccountListResponseSchema(
-        items=[AccountResponseSchema.model_validate(account) for account in accounts],
+        items=[
+            await _account_response(connector_service, account) for account in accounts
+        ],
         limit=limit,
         next_page_token=str(next_cursor) if next_cursor else None,
     )
@@ -82,7 +90,7 @@ async def create_account(
         preferences=payload.preferences,
         allowed_scopes=payload.allowed_scopes,
     )
-    return AccountResponseSchema.model_validate(account)
+    return await _account_response(connector_service, account)
 
 
 @router.get(
@@ -99,7 +107,7 @@ async def get_account(
     connector_service: ConnectorServiceDep,
 ) -> AccountResponseSchema:
     account = await connector_service.get_account(account_id, user.id, organization_id)
-    return AccountResponseSchema.model_validate(account)
+    return await _account_response(connector_service, account)
 
 
 @router.get(

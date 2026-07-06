@@ -19,12 +19,17 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
-from lemma_pod_bundle import diff_table_columns, load_resource_payload
+from lemma_pod_bundle import (
+    diff_table_columns,
+    load_resource_payload,
+    require_account_variable_metadata,
+)
 from lemma_pod_bundle.diff import _order_table_dirs_by_dependency
 from lemma_pod_bundle.jsonc import loads_jsonc
 from lemma_pod_bundle.layout import FILES_MANIFEST, POD_MANIFEST_FILE, TABLE_DATA_FILE
 
 from app.core.log.log import get_logger
+from app.modules.pod_bundle.domain.errors import BundleInvalidError
 from app.modules.pod_bundle.domain.state import (
     ImportPlan,
     PlanStep,
@@ -360,10 +365,18 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
     exporting org and cannot be reused, so the importer must supply one of their own
     accounts (validated at apply). A ``pod_member`` variable auto-resolves to the
     importing user, and a ``free`` variable (e.g. an app slug) is required only when
-    it has no default."""
+    it has no default.
+
+    Every ``account`` variable must carry connector ``platform``/``provider``
+    metadata — a bundle missing it predates that guarantee (or was hand-edited)
+    and must be re-exported rather than imported half-resolvable."""
     raw = pod_manifest.get("variables")
     if not isinstance(raw, dict):
         return []
+    try:
+        require_account_variable_metadata(raw)
+    except ValueError as exc:
+        raise BundleInvalidError(str(exc)) from exc
     specs: list[VariableSpec] = []
     for name, meta in raw.items():
         vtype = str((meta or {}).get("type") or "").lower()
@@ -375,6 +388,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
             kind = "free"
         default = (meta or {}).get("default")
         platform = (meta or {}).get("platform")
+        provider = (meta or {}).get("provider")
         specs.append(
             VariableSpec(
                 name=str(name),
@@ -383,6 +397,7 @@ def _variables_from_manifest(pod_manifest: dict[str, Any]) -> list[VariableSpec]
                 required=(kind == "account") or (kind == "free" and default is None),
                 default=str(default) if default is not None else None,
                 platform=str(platform) if platform else None,
+                provider=str(provider) if provider else None,
             )
         )
     return specs

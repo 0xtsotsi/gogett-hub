@@ -608,6 +608,7 @@ export function ImportDialog({
                                                     organizationId={organizationId}
                                                     podId={targetPodId}
                                                     platform={v.platform}
+                                                    provider={v.provider}
                                                     label={v.name}
                                                     description={v.description}
                                                     required={v.required}

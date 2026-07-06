@@ -457,6 +457,8 @@ export type Connector = SdkConnector & {
 
 export type Account = Omit<SdkAccount, 'connector'> & {
   connector?: Connector;
+  /** Auth provider ("LEMMA" or "COMPOSIO") backing this account's auth config. */
+  provider?: string | null;
 };
 
 export type AuthConfig = SdkAuthConfig;

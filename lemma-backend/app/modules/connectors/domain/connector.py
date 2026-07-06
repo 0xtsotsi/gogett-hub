@@ -25,6 +25,13 @@ class OAuth2Defaults(BaseModel):
     extra_params: dict[str, Any] = Field(default_factory=dict)
     access_token_path: str = "access_token"
     refresh_token_path: str = "refresh_token"
+    use_pkce: bool = Field(
+        default=False,
+        description=(
+            "Opt in to PKCE (RFC 7636, S256) for the authorization-code flow. "
+            "Off by default because not every provider supports it."
+        ),
+    )
 
 
 class OAuth2Config(OAuth2Defaults):

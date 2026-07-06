@@ -121,7 +121,7 @@ async def test_initiate_connect_request_allowed_when_account_exists():
     user_id = uuid4()
     auth_config = _auth_config()
     auth_provider = AsyncMock()
-    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state")
+    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state", None)
     registry = Mock()
     registry.get.return_value = auth_provider
     uow = AsyncMock()
@@ -152,7 +152,7 @@ async def test_initiate_connect_request_allowed_when_account_exists():
 async def test_initiate_connect_request_success():
     user_id = uuid4()
     auth_provider = AsyncMock()
-    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state")
+    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state", None)
     registry = Mock()
     registry.get.return_value = auth_provider
     uow = AsyncMock()
@@ -225,7 +225,7 @@ async def test_initiate_connect_request_allows_reauth_for_unusable_account():
     unusable.status = AccountStatus.REAUTH_REQUIRED
 
     auth_provider = AsyncMock()
-    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state")
+    auth_provider.get_authorization_url.return_value = ("https://auth", "provider_state", None)
     registry = Mock()
     registry.get.return_value = auth_provider
     connect_repo = AsyncMock()
@@ -1146,3 +1146,169 @@ async def test_create_account_allows_when_existing_identity_unhealthy():
     )
     account_repo.create.assert_awaited_once()
     assert account.provider_account_id == "acc-dup"
+
+
+async def test_initiate_connect_request_stores_pkce_verifier_in_attributes():
+    """A PKCE verifier returned by the provider is persisted on the connect
+    request so it can be replayed at token exchange."""
+    user_id = uuid4()
+    auth_provider = AsyncMock()
+    auth_provider.get_authorization_url.return_value = (
+        "https://auth",
+        "provider_state",
+        "pkce-verifier-xyz",
+    )
+    registry = Mock()
+    registry.get.return_value = auth_provider
+    connect_repo = AsyncMock()
+    connect_repo.create.side_effect = lambda req: req
+    redirect_builder = Mock()
+    redirect_builder.build.return_value = "https://callback"
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector())),
+        auth_config_repository=_auth_config_repo(),
+        account_repository=AsyncMock(
+            get_by_user_and_auth_config=AsyncMock(return_value=None)
+        ),
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+        redirect_uri_builder=redirect_builder,
+    )
+
+    result = await service.initiate_connect_request(
+        user_id=user_id, organization_id=ORG_ID, connector_id="slack"
+    )
+
+    assert result.attributes["code_verifier"] == "pkce-verifier-xyz"
+
+
+async def test_initiate_connect_request_omits_verifier_for_non_pkce_provider():
+    """Non-PKCE providers return no verifier, so none is stored (existing
+    connect requests keep their original attribute shape)."""
+    user_id = uuid4()
+    auth_provider = AsyncMock()
+    auth_provider.get_authorization_url.return_value = (
+        "https://auth",
+        "provider_state",
+        None,
+    )
+    registry = Mock()
+    registry.get.return_value = auth_provider
+    connect_repo = AsyncMock()
+    connect_repo.create.side_effect = lambda req: req
+    redirect_builder = Mock()
+    redirect_builder.build.return_value = "https://callback"
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector())),
+        auth_config_repository=_auth_config_repo(),
+        account_repository=AsyncMock(
+            get_by_user_and_auth_config=AsyncMock(return_value=None)
+        ),
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+        redirect_uri_builder=redirect_builder,
+    )
+
+    result = await service.initiate_connect_request(
+        user_id=user_id, organization_id=ORG_ID, connector_id="slack"
+    )
+
+    assert "code_verifier" not in result.attributes
+
+
+async def test_handle_oauth_callback_replays_stored_pkce_verifier():
+    """The stored verifier and validated state are forwarded to the token
+    exchange at callback time."""
+    user_id = uuid4()
+    auth_config = _auth_config("slack")
+    connect_request = ConnectRequestEntity(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        connector_id="slack",
+        authorization_url="https://auth",
+        status=ConnectRequestStatus.PENDING,
+        attributes={"state": "state-pkce", "code_verifier": "stored-verifier"},
+    )
+    credentials = OAuthCredentials(access_token="xoxb-token")
+    auth_provider = AsyncMock()
+    auth_provider.exchange_code_for_credentials.return_value = credentials
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
+    account_repo.create.side_effect = lambda entity: entity
+    connect_repo = AsyncMock()
+    connect_repo.get_by_state.return_value = connect_request
+    connect_repo.update.side_effect = lambda req: req
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("slack"))),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+    )
+
+    with patch.object(service, "_load_native_account_profile", AsyncMock(return_value=None)):
+        await service.handle_oauth_callback(
+            redirect_uri="https://cb?state=state-pkce&code=abc",
+            state="state-pkce",
+        )
+
+    _, kwargs = auth_provider.exchange_code_for_credentials.await_args
+    assert kwargs["code_verifier"] == "stored-verifier"
+    assert kwargs["state"] == "state-pkce"
+
+
+async def test_handle_oauth_callback_passes_none_verifier_for_non_pkce():
+    """A connect request with no stored verifier forwards ``None`` (Composio and
+    other non-PKCE flows are unaffected)."""
+    user_id = uuid4()
+    auth_config = _auth_config("slack")
+    connect_request = ConnectRequestEntity(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=ORG_ID,
+        auth_config_id=auth_config.id,
+        connector_id="slack",
+        authorization_url="https://auth",
+        status=ConnectRequestStatus.PENDING,
+        attributes={"state": "state-nopkce"},
+    )
+    credentials = OAuthCredentials(access_token="xoxb-token")
+    auth_provider = AsyncMock()
+    auth_provider.exchange_code_for_credentials.return_value = credentials
+    registry = Mock()
+    registry.get.return_value = auth_provider
+
+    account_repo = AsyncMock()
+    account_repo.get_by_user_and_auth_config.return_value = None
+    account_repo.get_by_user_auth_config_and_provider_account.return_value = None
+    account_repo.create.side_effect = lambda entity: entity
+    connect_repo = AsyncMock()
+    connect_repo.get_by_state.return_value = connect_request
+    connect_repo.update.side_effect = lambda req: req
+
+    service = _service(
+        connector_repository=AsyncMock(get=AsyncMock(return_value=_connector("slack"))),
+        auth_config_repository=_auth_config_repo(auth_config),
+        account_repository=account_repo,
+        connect_request_repository=connect_repo,
+        auth_provider_registry=registry,
+    )
+
+    with patch.object(service, "_load_native_account_profile", AsyncMock(return_value=None)):
+        await service.handle_oauth_callback(
+            redirect_uri="https://cb?state=state-nopkce&code=abc",
+            state="state-nopkce",
+        )
+
+    _, kwargs = auth_provider.exchange_code_for_credentials.await_args
+    assert kwargs["code_verifier"] is None
+    assert kwargs["state"] == "state-nopkce"

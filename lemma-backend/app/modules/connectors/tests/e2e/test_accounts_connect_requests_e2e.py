@@ -80,10 +80,10 @@ async def test_connect_request_and_accounts_lifecycle(
 
     async def _fake_get_authorization_url(self, connector, user_id, state, redirect_uri):
         assert connector.oauth2_config.client_secret == "client-secret"
-        return ("https://mock.example.com/authorize", "provider_state")
+        return ("https://mock.example.com/authorize", "provider_state", None)
 
     async def _fake_exchange_code_for_credentials(
-        self, connector, redirect_uri, user_id, state=None
+        self, connector, redirect_uri, user_id, state=None, code_verifier=None
     ):
         return OAuthCredentials(
             access_token="access-token",

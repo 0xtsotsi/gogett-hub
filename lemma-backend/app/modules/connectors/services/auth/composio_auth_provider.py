@@ -239,7 +239,7 @@ class ComposioAuthProvider(AuthProviderInterface):
         user_id: UUID,
         state: str,
         redirect_uri: str,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, Optional[str]]:
         composio = self._composio_client_factory()
 
         auth_config_id = self._resolve_auth_config_id(connector, composio)
@@ -255,7 +255,9 @@ class ComposioAuthProvider(AuthProviderInterface):
         if not connection_request.redirect_url:
             raise ConnectorValidationError("No redirect URL found for Composio app")
 
-        return connection_request.redirect_url, connection_request.id
+        # Composio manages the OAuth handshake (PKCE included) on its side, so
+        # there is no verifier for Lemma to persist and replay.
+        return connection_request.redirect_url, connection_request.id, None
 
     async def exchange_code_for_credentials(
         self,
@@ -263,6 +265,7 @@ class ComposioAuthProvider(AuthProviderInterface):
         redirect_uri: str,
         user_id: UUID,
         state: Optional[str] = None,
+        code_verifier: Optional[str] = None,
     ) -> OAuthCredentials:
         composio_app_name = self._toolkit_slug(connector)
 

@@ -4,6 +4,7 @@ from typing import Awaitable, Callable, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
+from authlib.common.security import generate_token
 from authlib.integrations.requests_client import OAuth2Session
 
 from app.modules.connectors.domain.account import OAuthCredentials
@@ -16,6 +17,10 @@ from app.core.log.log import get_logger
 logger = get_logger(__name__)
 
 CloudIdResolver = Callable[[str], Awaitable[str]]
+
+# RFC 7636 recommends a 43–128 char verifier; 48 random bytes → a 64-char
+# base64url token, comfortably inside that range.
+_PKCE_VERIFIER_BYTES = 48
 
 
 class LemmaAuthProvider(AuthProviderInterface):
@@ -45,7 +50,7 @@ class LemmaAuthProvider(AuthProviderInterface):
         user_id: UUID,
         state: str,
         redirect_uri: str,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, Optional[str]]:
         if not connector.oauth2_config:
             raise ConnectorValidationError(
                 "OAuth2 configuration not found for connector"
@@ -53,21 +58,29 @@ class LemmaAuthProvider(AuthProviderInterface):
 
         oauth_config = connector.oauth2_config
 
+        # PKCE is opt-in per connector: only providers that advertise S256
+        # support get a code challenge, so existing flows are untouched.
+        code_verifier = generate_token(_PKCE_VERIFIER_BYTES) if oauth_config.use_pkce else None
+
         oauth = self._oauth_session_factory(
             client_id=oauth_config.client_id,
             client_secret=oauth_config.client_secret,
             redirect_uri=redirect_uri,
             scope=oauth_config.default_scopes,
+            code_challenge_method="S256" if oauth_config.use_pkce else None,
         )
 
+        # authlib derives the S256 challenge from the verifier and appends
+        # ``code_challenge``/``code_challenge_method`` to the URL for us.
         authorization_url, provider_state = await asyncio.to_thread(
             oauth.create_authorization_url,
             url=oauth_config.authorization_url,
             state=state,
+            code_verifier=code_verifier,
             **(oauth_config.extra_params or {})
         )
 
-        return authorization_url, provider_state
+        return authorization_url, provider_state, code_verifier
 
     async def exchange_code_for_credentials(
         self,
@@ -75,6 +88,7 @@ class LemmaAuthProvider(AuthProviderInterface):
         redirect_uri: str,
         user_id: UUID,
         state: Optional[str] = None,
+        code_verifier: Optional[str] = None,
     ) -> OAuthCredentials:
         if not connector.oauth2_config:
             raise ConnectorValidationError(
@@ -92,11 +106,21 @@ class LemmaAuthProvider(AuthProviderInterface):
             scope=oauth_config.default_scopes,
         )
 
-        token_data = await asyncio.to_thread(
-            oauth.fetch_token,
-            url=oauth_config.token_url,
-            authorization_response=authorization_response,
-        )
+        fetch_kwargs: dict[str, object] = {
+            "url": oauth_config.token_url,
+            "authorization_response": authorization_response,
+        }
+        # Pass the validated state so authlib re-checks it against the value
+        # echoed back in the callback URL (defence in depth on top of the
+        # connect-request lookup by state).
+        if state is not None:
+            fetch_kwargs["state"] = state
+        # Replay the PKCE verifier so the provider can match it against the
+        # challenge from the authorization request (RFC 7636).
+        if code_verifier is not None:
+            fetch_kwargs["code_verifier"] = code_verifier
+
+        token_data = await asyncio.to_thread(oauth.fetch_token, **fetch_kwargs)
 
         return await self._create_oauth_credentials(token_data, connector)
 

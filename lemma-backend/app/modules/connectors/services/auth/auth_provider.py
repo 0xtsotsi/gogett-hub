@@ -38,7 +38,7 @@ class AuthProviderInterface(ABC):
         user_id: UUID,
         state: str,
         redirect_uri: str,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, Optional[str]]:
         """
         Get authorization URL for OAuth flow.
 
@@ -49,7 +49,9 @@ class AuthProviderInterface(ABC):
             redirect_uri: OAuth redirect URI
 
         Returns:
-            Tuple of (authorization_url, state)
+            Tuple of (authorization_url, state, code_verifier). ``code_verifier``
+            is the PKCE (RFC 7636) verifier that must be replayed at token
+            exchange, or ``None`` when the flow does not use PKCE.
         """
         pass
 
@@ -60,6 +62,7 @@ class AuthProviderInterface(ABC):
         redirect_uri: str,
         user_id: UUID,
         state: Optional[str] = None,
+        code_verifier: Optional[str] = None,
     ) -> OAuthCredentials:
         """
         Exchange authorization code for OAuth credentials.
@@ -69,6 +72,7 @@ class AuthProviderInterface(ABC):
             redirect_uri: The redirect URI with authorization code
             user_id: The user ID
             state: Optional OAuth state parameter
+            code_verifier: Optional PKCE (RFC 7636) code verifier to replay
 
         Returns:
             OAuthCredentials object

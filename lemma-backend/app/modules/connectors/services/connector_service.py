@@ -1,6 +1,6 @@
 from datetime import datetime
 import secrets
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from app.core.domain.uow import IUnitOfWork
@@ -772,6 +772,7 @@ class ConnectorService:
             (
                 authorization_url,
                 provider_state,
+                code_verifier,
             ) = await auth_provider.get_authorization_url(
                 connector=effective_connector,
                 user_id=user_id,
@@ -787,6 +788,15 @@ class ConnectorService:
                 details=self._exception_details(exc),
             ) from exc
 
+        attributes: dict[str, Any] = {
+            "state": state,
+            "provider_state": provider_state,
+        }
+        # Stash the PKCE verifier alongside the state so it can be replayed at
+        # token exchange; absent for non-PKCE flows.
+        if code_verifier is not None:
+            attributes["code_verifier"] = code_verifier
+
         connect_request = ConnectRequestEntity(
             user_id=user_id,
             organization_id=organization_id,
@@ -794,7 +804,7 @@ class ConnectorService:
             connector_id=connector.id,
             authorization_url=authorization_url,
             status=ConnectRequestStatus.PENDING,
-            attributes={"state": state, "provider_state": provider_state},
+            attributes=attributes,
         )
         connect_request = await self.connect_request_repository.create(connect_request)
         await self.uow.commit()
@@ -946,12 +956,15 @@ class ConnectorService:
         effective_connector = self._build_effective_connector(connector, auth_config)
         auth_provider = self._get_auth_provider_by_name(self._provider_value(auth_config))
 
+        code_verifier = (pending_request.attributes or {}).get("code_verifier")
+
         try:
             credentials = await auth_provider.exchange_code_for_credentials(
                 connector=effective_connector,
                 redirect_uri=redirect_uri,
                 user_id=user_id,
-                state=None,
+                state=state,
+                code_verifier=code_verifier,
             )
         except DomainError:
             raise

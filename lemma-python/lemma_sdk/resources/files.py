@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from ..errors import LemmaNotFoundError
 from ..openapi_client.api.files import (
@@ -13,12 +13,15 @@ from ..openapi_client.api.files import (
     file_folder_create,
     file_get,
     file_list,
+    file_markdown_attach,
+    file_markdown_detach,
     file_search,
     file_signed_url,
     file_tree,
     file_update,
     file_url,
 )
+from ..openapi_client.models.body_file_markdown_attach import BodyFileMarkdownAttach
 from ..openapi_client.models.body_file_update import BodyFileUpdate
 from ..openapi_client.models.create_folder_request import CreateFolderRequest
 from ..openapi_client.models.directory_tree_response import DirectoryTreeResponse
@@ -254,6 +257,33 @@ class PodFiles(BoundResource):
         return self.download_child(
             f"{path}/document.md", page_start=page_start, page_end=page_end
         )
+
+    def attach_markdown(
+        self,
+        path: str,
+        markdown: str,
+        *,
+        images: list[str] | None = None,
+    ) -> FileDetailResponse:
+        """Replace a document's agent-facing markdown (bring-your-own markdown).
+
+        Applies to non-markdown documents (PDF, Word, HTML, …); the original file
+        is unchanged. ``images`` are referenced by the markdown (``![](fig.png)``)
+        and stored as sibling child artifacts.
+        """
+        body: dict[str, Any] = {"path": path, "data": markdown}
+        if images is not None:
+            body["images"] = images
+        return self._call(
+            file_markdown_attach,
+            self._pod_uuid(),
+            body=body,
+            body_model=BodyFileMarkdownAttach,
+        )
+
+    def detach_markdown(self, path: str) -> FileDetailResponse:
+        """Drop user-provided markdown so the document reverts to extraction."""
+        return self._call(file_markdown_detach, self._pod_uuid(), path=path)
 
     def download_to(self, path: str, local_path: str | Path) -> Path:
         target = Path(local_path)

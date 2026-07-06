@@ -27,6 +27,7 @@ import { ResourceShareButton, ResourceVisibilityBadge, type ResourceVisibilityVa
 import { usePodTopbar } from '@/components/pod/pod-topbar-context';
 import { resourceAllows } from '@/lib/authz/resource-actions';
 import { FileIndexStatusBadge } from '@/components/documents/file-index-status-badge';
+import { MarkdownAttachmentControl, canAttachDocumentMarkdown } from '@/components/documents/markdown-attachment-control';
 import { useDatastoreFile, useDeleteDatastoreFile } from '@/lib/hooks/use-datastores';
 import { getLemmaClient } from '@/lib/sdk/lemma-client';
 import {
@@ -588,6 +589,15 @@ export function DocumentViewer({
         <TooltipProvider>
             <div className="flex shrink-0 items-center gap-1">
             {extraActions}
+            {canWriteDocument && canAttachDocumentMarkdown(previewType) ? (
+                <MarkdownAttachmentControl
+                    podId={podId}
+                    datastoreName={datastoreName}
+                    filePath={documentPath}
+                    metadata={doc?.metadata}
+                    disabled={!doc}
+                />
+            ) : null}
             {canWriteDocument && hasUnsavedChanges && (
                 <Button
                     size="sm"
@@ -715,10 +725,12 @@ export function DocumentViewer({
         canDeleteDocument,
         canToggleTextView,
         canWriteDocument,
+        datastoreName,
         doc,
         documentPath,
         documentVisibility,
         extraActions,
+        previewType,
         handleCopyContent,
         handleDownload,
         handleSave,

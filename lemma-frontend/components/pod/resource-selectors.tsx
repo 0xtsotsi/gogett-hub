@@ -185,7 +185,7 @@ export function ConnectorsSelector({
                                 )}
                                 {linkedAccount && config.mode === ConnectorMode.FIXED && (
                                     <span className="ml-1 max-w-24 truncate text-xs text-[var(--text-tertiary)]">
-                                        {linkedAccount.email || linkedAccount.id.slice(0, 8)}
+                                        {linkedAccount.display_name || linkedAccount.email || linkedAccount.id.slice(0, 8)}
                                     </span>
                                 )}
 
@@ -259,7 +259,7 @@ export function ConnectorsSelector({
                             <SelectContent>
                                 {configuringAppAccounts.map((account) => (
                                     <SelectItem key={account.id} value={account.id}>
-                                        {account.email || account.id}
+                                        {account.display_name || account.email || account.id}
                                     </SelectItem>
                                 ))}
                                 {configuringAppAccounts.length === 0 && (

@@ -72,18 +72,16 @@ export function ConnectorCard({
                     className="flex-1 justify-center"
                     variant={isConnected ? 'outline' : 'primary'}
                     onClick={() => onConnect(app)}
-                    disabled={isBusy || isConnected}
+                    disabled={isBusy}
                 >
                     {isBusy ? (
                         <>
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                             Connecting...
                         </>
-                    ) : isConnected ? (
-                        'Connected'
                     ) : (
                         <>
-                            Connect
+                            {isConnected ? 'Connect another' : 'Connect'}
                             {connectsWithCredentials ? null : <ExternalLink className="ml-2 h-4 w-4" />}
                         </>
                     )}
@@ -124,8 +122,13 @@ export function ConnectedAccountCard({
                 <div className="flex min-w-0 items-center gap-3">
                     <ConnectorIcon icon={account.connector?.icon} alt={appName} />
                     <div className="min-w-0">
-                        <p className="truncate text-sm font-normal text-[var(--text-primary)]">{appName}</p>
-                        <p className="truncate text-xs text-[var(--text-tertiary)]">{account.email || 'Connected'}</p>
+                        <div className="flex items-center gap-1.5">
+                            <p className="truncate text-sm font-normal text-[var(--text-primary)]">{appName}</p>
+                            {account.is_default ? (
+                                <span className="chip chip-sm chip-muted shrink-0">Default</span>
+                            ) : null}
+                        </div>
+                        <p className="truncate text-xs text-[var(--text-tertiary)]">{account.display_name || account.email || 'Connected'}</p>
                     </div>
                 </div>
                 <ResourceActionsMenu

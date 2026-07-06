@@ -7,6 +7,10 @@ export type VariableSpecResponse = {
     description?: (string | null);
     kind: string;
     name: string;
+    /**
+     * For a connector account variable, the platform the account must belong to (e.g. 'slack'), so the importer can connect the right connector. Null for non-connector variables.
+     */
+    platform?: (string | null);
     required?: boolean;
 };
 

@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { attach } from '../models/attach.js';
 import type { CreateFolderRequest } from '../models/CreateFolderRequest.js';
 import type { DatastoreFileUploadRequest } from '../models/DatastoreFileUploadRequest.js';
 import type { DirectoryTreeResponse } from '../models/DirectoryTreeResponse.js';
@@ -137,6 +138,65 @@ export class FilesService {
         return __request(OpenAPI, {
             method: 'PATCH',
             url: '/pods/{pod_id}/datastore/files/by-path',
+            path: {
+                'pod_id': podId,
+            },
+            formData: formData,
+            mediaType: 'multipart/form-data',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Detach Document Markdown
+     * Remove a document's user-provided markdown so it reverts to extraction.
+     * @param podId
+     * @param path
+     * @returns FileDetailResponse Successful Response
+     * @throws ApiError
+     */
+    public static fileMarkdownDetach(
+        podId: string,
+        path: string,
+    ): CancelablePromise<FileDetailResponse> {
+        return __request(OpenAPI, {
+            method: 'DELETE',
+            url: '/pods/{pod_id}/datastore/files/by-path/markdown',
+            path: {
+                'pod_id': podId,
+            },
+            query: {
+                'path': path,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Attach Document Markdown
+     * Attach (or replace) a user-authored markdown version of a document, plus
+     * any images it references.
+     *
+     * The uploaded markdown becomes the document's agent-facing ``document.md`` and
+     * is chunked/indexed on the original's behalf; the source file is unchanged.
+     * Each uploaded image is stored as a sibling child artifact so a reference like
+     * ``![](fig1.png)`` resolves through the children endpoint — send the images
+     * under repeated ``images`` fields, named to match the markdown references.
+     * Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+     * @param podId
+     * @param formData
+     * @returns FileDetailResponse Successful Response
+     * @throws ApiError
+     */
+    public static fileMarkdownAttach(
+        podId: string,
+        formData: attach,
+    ): CancelablePromise<FileDetailResponse> {
+        return __request(OpenAPI, {
+            method: 'PUT',
+            url: '/pods/{pod_id}/datastore/files/by-path/markdown',
             path: {
                 'pod_id': podId,
             },

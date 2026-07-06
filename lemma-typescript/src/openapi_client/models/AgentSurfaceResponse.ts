@@ -13,6 +13,7 @@ export type AgentSurfaceResponse = {
     config: SurfaceConfigResponse;
     credential_mode?: SurfaceCredentialMode;
     id: string;
+    name: string;
     platform: SurfacePlatform;
     pod_id: string;
     status?: AgentSurfaceStatus;

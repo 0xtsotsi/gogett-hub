@@ -12,8 +12,10 @@ export type AccountResponseSchema = {
     connector?: (ConnectorResponseSchema | null);
     connector_id: string;
     created_at: string;
+    display_name?: (string | null);
     email: (string | null);
     id: string;
+    is_default?: boolean;
     organization_id: string;
     preferences: (Record<string, any> | null);
     provider_account_id?: (string | null);

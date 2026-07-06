@@ -25,6 +25,7 @@ class AgentSurfaceResponse:
     Attributes:
         config (SurfaceConfigResponse): Mirrors SurfaceBehaviorConfigInput: what you send is what you get back.
         id (UUID):
+        name (str):
         platform (SurfacePlatform):
         pod_id (UUID):
         account_id (None | Unset | UUID):
@@ -40,6 +41,7 @@ class AgentSurfaceResponse:
 
     config: SurfaceConfigResponse
     id: UUID
+    name: str
     platform: SurfacePlatform
     pod_id: UUID
     account_id: None | Unset | UUID = UNSET
@@ -57,6 +59,8 @@ class AgentSurfaceResponse:
         config = self.config.to_dict()
 
         id = str(self.id)
+
+        name = self.name
 
         platform = self.platform.value
 
@@ -118,6 +122,7 @@ class AgentSurfaceResponse:
             {
                 "config": config,
                 "id": id,
+                "name": name,
                 "platform": platform,
                 "pod_id": pod_id,
             }
@@ -151,6 +156,8 @@ class AgentSurfaceResponse:
         config = SurfaceConfigResponse.from_dict(d.pop("config"))
 
         id = UUID(d.pop("id"))
+
+        name = d.pop("name")
 
         platform = SurfacePlatform(d.pop("platform"))
 
@@ -249,6 +256,7 @@ class AgentSurfaceResponse:
         agent_surface_response = cls(
             config=config,
             id=id,
+            name=name,
             platform=platform,
             pod_id=pod_id,
             account_id=account_id,

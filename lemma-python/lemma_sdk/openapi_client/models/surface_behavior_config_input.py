@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.surface_channel_route_input import SurfaceChannelRouteInput
     from ..models.surface_identity_config_input import SurfaceIdentityConfigInput
+    from ..models.surface_send_policy_config import SurfaceSendPolicyConfig
 
 
 T = TypeVar("T", bound="SurfaceBehaviorConfigInput")
@@ -22,11 +23,13 @@ class SurfaceBehaviorConfigInput:
         channels (list[SurfaceChannelRouteInput] | Unset):
         dm_conversation_reset_after_hours (int | Unset):  Default: 24.
         identity (SurfaceIdentityConfigInput | Unset):
+        send_policy (SurfaceSendPolicyConfig | Unset): Proactive-send controls. Mirrored across request and response.
     """
 
     channels: list[SurfaceChannelRouteInput] | Unset = UNSET
     dm_conversation_reset_after_hours: int | Unset = 24
     identity: SurfaceIdentityConfigInput | Unset = UNSET
+    send_policy: SurfaceSendPolicyConfig | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         channels: list[dict[str, Any]] | Unset = UNSET
@@ -42,6 +45,10 @@ class SurfaceBehaviorConfigInput:
         if not isinstance(self.identity, Unset):
             identity = self.identity.to_dict()
 
+        send_policy: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.send_policy, Unset):
+            send_policy = self.send_policy.to_dict()
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -53,6 +60,8 @@ class SurfaceBehaviorConfigInput:
             )
         if identity is not UNSET:
             field_dict["identity"] = identity
+        if send_policy is not UNSET:
+            field_dict["send_policy"] = send_policy
 
         return field_dict
 
@@ -60,6 +69,7 @@ class SurfaceBehaviorConfigInput:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.surface_channel_route_input import SurfaceChannelRouteInput
         from ..models.surface_identity_config_input import SurfaceIdentityConfigInput
+        from ..models.surface_send_policy_config import SurfaceSendPolicyConfig
 
         d = dict(src_dict)
         _channels = d.pop("channels", UNSET)
@@ -82,10 +92,18 @@ class SurfaceBehaviorConfigInput:
         else:
             identity = SurfaceIdentityConfigInput.from_dict(_identity)
 
+        _send_policy = d.pop("send_policy", UNSET)
+        send_policy: SurfaceSendPolicyConfig | Unset
+        if isinstance(_send_policy, Unset):
+            send_policy = UNSET
+        else:
+            send_policy = SurfaceSendPolicyConfig.from_dict(_send_policy)
+
         surface_behavior_config_input = cls(
             channels=channels,
             dm_conversation_reset_after_hours=dm_conversation_reset_after_hours,
             identity=identity,
+            send_policy=send_policy,
         )
 
         return surface_behavior_config_input

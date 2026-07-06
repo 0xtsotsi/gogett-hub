@@ -41,21 +41,38 @@ import { useAccounts } from '@/lib/hooks/use-connectors';
 import { usePod } from '@/lib/hooks/use-pods';
 import {
     type SurfacePlatformValue,
+    useCreatePodSurface,
     useDeletePodSurface,
     usePodSurfaces,
+    useSendSurfaceMessage,
     useSurfaceChannels,
     useSurfaceSetup,
     useTogglePodSurface,
-    useUpsertPodSurface,
+    useUpdatePodSurface,
 } from '@/lib/hooks/use-pod-surfaces';
+import { usePodMembers } from '@/lib/hooks/use-pod-members';
+import { Textarea } from '@/components/ui/textarea';
 import type { Account, AssistantSurface } from '@/lib/types';
-import type { SurfaceSetupAction, SurfaceSetupActionField } from 'lemma-sdk';
+import type {
+    SurfaceBehaviorConfigInput,
+    SurfaceCredentialMode,
+    SurfacePlatform,
+    SurfaceSetupAction,
+    SurfaceSetupActionField,
+} from 'lemma-sdk';
 import { cn } from '@/lib/utils';
 
 type IdentityMode = 'BUILT_IN' | 'CONNECTED';
 type SurfaceTone = 'success' | 'warning' | 'muted' | 'danger' | 'info';
 type SurfacePanelMode = 'index' | 'create';
 type ChannelDraft = { channel_id: string; channel_name: string; agent_name: string | null };
+// The config dialog targets either an existing surface (addressed by its
+// pod-unique name) or a brand-new one for a platform. A platform can hold
+// several surfaces, so edits are keyed by name rather than by platform.
+type SurfaceEditTarget =
+    | { mode: 'create'; platform: SurfacePlatformValue }
+    | { mode: 'edit'; platform: SurfacePlatformValue; surfaceName: string };
+type SurfaceSendTarget = { surfaceName: string; label: string };
 type AvailableChannel = { id: string; name?: string | null; is_member?: boolean | null };
 
 type SurfaceDefinition = {
@@ -65,7 +82,7 @@ type SurfaceDefinition = {
     accountLabel: string;
     targetLabel: string;
     icon: ComponentType<{ className?: string }>;
-    logoSrc: string;
+    logoSrc?: string;
     builtInIdentity?: boolean;
 };
 
@@ -107,6 +124,14 @@ const SURFACE_DEFINITIONS: SurfaceDefinition[] = [
         logoSrc: '/surfaces/outlook.png',
     },
     {
+        platform: 'RESEND',
+        label: 'Resend',
+        promise: 'Send and receive email through Lemma’s managed Resend address — no mailbox to connect.',
+        accountLabel: 'Resend account',
+        targetLabel: 'Mailbox',
+        icon: Mail,
+    },
+    {
         platform: 'TELEGRAM',
         label: 'Telegram',
         promise: 'Make this pod reachable from a Telegram bot.',
@@ -144,30 +169,46 @@ export function PodSurfacesPanel({
     const { data: pod } = usePod(podId);
     const { data: accounts = [], isLoading: isLoadingAccounts } = useAccounts({ organizationId: pod?.organization_id, limit: 200 });
     const { mutate: toggleSurface, isPending: isToggling } = useTogglePodSurface();
-    const { mutate: upsertSurface, isPending: isUpserting } = useUpsertPodSurface();
+    const { mutate: createSurface, isPending: isCreating } = useCreatePodSurface();
+    const { mutate: updateSurface, isPending: isUpdating } = useUpdatePodSurface();
     const { mutate: deleteSurface, isPending: isDeleting } = useDeletePodSurface();
 
-    const [editingPlatform, setEditingPlatform] = useState<SurfacePlatformValue | null>(null);
+    const [editTarget, setEditTarget] = useState<SurfaceEditTarget | null>(null);
+    const [sendTarget, setSendTarget] = useState<SurfaceSendTarget | null>(null);
+    const [draftName, setDraftName] = useState('');
     const [draftAgentName, setDraftAgentName] = useState(DEFAULT_AGENT_VALUE);
     const [draftAccountId, setDraftAccountId] = useState('');
     const [draftIdentityMode, setDraftIdentityMode] = useState<IdentityMode>('BUILT_IN');
     const [draftChannels, setDraftChannels] = useState<ChannelDraft[]>([]);
     const [draftAllowedDomains, setDraftAllowedDomains] = useState('');
     const [draftAllowedEmails, setDraftAllowedEmails] = useState('');
+    const [draftAllowSend, setDraftAllowSend] = useState(false);
 
     const assistants = assistantsData?.items ?? [];
     const isLoading = isLoadingSurfaces || isLoadingAssistants || isLoadingAccounts;
-    const surfaceByPlatform = useMemo(
-        () => new Map(surfaces.map((surface) => [getSurfacePlatform(surface), surface])),
-        [surfaces]
-    );
+    const surfacesByPlatform = useMemo(() => {
+        const map = new Map<SurfacePlatformValue, AssistantSurface[]>();
+        for (const surface of surfaces) {
+            const platform = getSurfacePlatform(surface);
+            const list = map.get(platform);
+            if (list) list.push(surface);
+            else map.set(platform, [surface]);
+        }
+        return map;
+    }, [surfaces]);
     const liveCount = surfaces.reduce((count, surface) => count + (surface.status === 'ACTIVE' ? 1 : 0), 0);
     const needsSetupCount = surfaces.filter((surface) => {
         const status = getSurfaceStatus(surface);
         return status.tone === 'warning' || status.tone === 'danger';
     }).length;
+
+    const editingPlatform = editTarget?.platform ?? null;
+    const isCreatingSurface = editTarget?.mode === 'create';
     const editingDefinition = SURFACE_DEFINITIONS.find((definition) => definition.platform === editingPlatform) ?? null;
     const editingAccounts = editingPlatform ? accounts.filter((account) => accountMatchesPlatform(account, editingPlatform)) : [];
+    const editingSurface = editTarget?.mode === 'edit'
+        ? (surfacesByPlatform.get(editTarget.platform) ?? []).find((surface) => surface.name === editTarget.surfaceName)
+        : undefined;
     const selectedAssistantName = draftAgentName !== DEFAULT_AGENT_VALUE && assistants.some((assistant) => assistant.name === draftAgentName)
         ? draftAgentName
         : null;
@@ -175,23 +216,35 @@ export function PodSurfacesPanel({
         ? platformRequiresAccount(editingDefinition.platform) || (platformSupportsManagedIdentity(editingDefinition.platform) && draftIdentityMode === 'CONNECTED')
         : false;
     const supportsChannelRoutes = editingDefinition ? platformSupportsChannelRoutes(editingDefinition.platform) : false;
-    const editingSurface = editingPlatform ? surfaceByPlatform.get(editingPlatform) : undefined;
     // Channels can only be enumerated once the surface exists (we need its
     // connected account to list them), so routing is an existing-surface step.
     const channelRoutingEnabled = supportsChannelRoutes && Boolean(editingSurface);
     const { data: availableChannelsData, isLoading: isLoadingChannels } = useSurfaceChannels(
         podId,
-        editingPlatform,
+        editingSurface?.name,
         channelRoutingEnabled
     );
     const availableChannels = (availableChannelsData?.channels ?? []) as AvailableChannel[];
     const usedChannelIds = new Set(draftChannels.map((route) => route.channel_id).filter(Boolean));
     const remainingChannels = availableChannels.filter((channel) => !usedChannelIds.has(channel.id));
+
+    // Name handling: the first surface of a platform can use the default name
+    // (lowercased platform); adding another requires a distinct, unused name.
+    const existingNames = useMemo(
+        () => new Set((editingPlatform ? surfacesByPlatform.get(editingPlatform) ?? [] : []).map((surface) => surface.name.toLowerCase())),
+        [editingPlatform, surfacesByPlatform]
+    );
+    const defaultSurfaceName = editingDefinition ? editingDefinition.platform.toLowerCase() : '';
+    const effectiveName = (draftName.trim() || defaultSurfaceName).toLowerCase();
+    const nameCollision = isCreatingSurface && existingNames.has(effectiveName);
+    const nameValid = !isCreatingSurface || (effectiveName.length > 0 && !nameCollision);
+
     const canSave =
         Boolean(editingDefinition) &&
+        nameValid &&
         (!requiresAccount || Boolean(draftAccountId)) &&
         draftChannels.every((route) => Boolean(route.channel_id));
-    const isSaving = isUpserting;
+    const isSaving = isCreating || isUpdating;
 
     const addRoute = () => {
         const next = remainingChannels[0];
@@ -205,17 +258,16 @@ export function PodSurfacesPanel({
     const removeRoute = (index: number) =>
         setDraftChannels((prev) => prev.filter((_, i) => i !== index));
 
-    const openConfig = (definition: SurfaceDefinition) => {
-        const existing = surfaceByPlatform.get(definition.platform);
+    const loadDraftsFromSurface = (definition: SurfaceDefinition, existing?: AssistantSurface) => {
         const config = existing?.config || {};
         const channels = config.channels || [];
         const identity = config.identity || {};
         const platformAccounts = accounts.filter((account) => accountMatchesPlatform(account, definition.platform));
         const accountId = existing?.account_id && platformAccounts.some((account) => account.id === existing.account_id)
             ? existing.account_id
-            : platformAccounts[0]?.id || '';
+            : (platformAccounts.find((account) => account.is_default)?.id ?? platformAccounts[0]?.id ?? '');
 
-        setEditingPlatform(definition.platform);
+        setDraftName(existing?.name || '');
         setDraftAgentName(existing?.agent_name || DEFAULT_AGENT_VALUE);
         setDraftAccountId(accountId);
         setDraftIdentityMode(platformSupportsManagedIdentity(definition.platform) && existing?.account_id ? 'CONNECTED' : 'BUILT_IN');
@@ -228,13 +280,24 @@ export function PodSurfacesPanel({
         );
         setDraftAllowedDomains((identity.allowed_domains || []).join(', '));
         setDraftAllowedEmails((identity.allowed_email_addresses || []).join(', '));
+        setDraftAllowSend(Boolean((config as { send_policy?: { allow_send?: boolean } }).send_policy?.allow_send));
     };
 
-    const closeConfig = () => setEditingPlatform(null);
+    const openCreate = (definition: SurfaceDefinition) => {
+        loadDraftsFromSurface(definition, undefined);
+        setEditTarget({ mode: 'create', platform: definition.platform });
+    };
 
-    const handleToggle = (platform: SurfacePlatformValue, isCurrentlyActive: boolean) => {
+    const openEdit = (definition: SurfaceDefinition, surface: AssistantSurface) => {
+        loadDraftsFromSurface(definition, surface);
+        setEditTarget({ mode: 'edit', platform: definition.platform, surfaceName: surface.name });
+    };
+
+    const closeConfig = () => setEditTarget(null);
+
+    const handleToggle = (surfaceName: string, isCurrentlyActive: boolean) => {
         toggleSurface(
-            { podId, platform, isActive: !isCurrentlyActive },
+            { podId, surfaceName, isActive: !isCurrentlyActive },
             {
                 onSuccess: () => toast.success(isCurrentlyActive ? 'Surface paused' : 'Surface turned on'),
                 onError: (error) => toast.error(`Failed to update surface: ${error.message}`),
@@ -242,18 +305,10 @@ export function PodSurfacesPanel({
         );
     };
 
-    const handleSwitch = (definition: SurfaceDefinition, surface: AssistantSurface | undefined, nextChecked: boolean) => {
-        if (nextChecked) {
-            openConfig(definition);
-            return;
-        }
-        if (surface) handleToggle(definition.platform, surface.status === 'ACTIVE');
-    };
-
     const handleDeleteSurface = () => {
         if (!editingDefinition || !editingSurface) return;
         deleteSurface(
-            { podId, platform: editingDefinition.platform },
+            { podId, surfaceName: editingSurface.name },
             {
                 onSuccess: () => {
                     toast.success(`${editingDefinition.label} surface removed`);
@@ -281,37 +336,53 @@ export function PodSurfacesPanel({
             }));
         const isEmail = platformIsEmailSurface(editingDefinition.platform);
 
-        upsertSurface(
-            {
-                podId,
-                platform: editingDefinition.platform,
-                data: {
-                    default_agent_name: selectedAssistantName,
-                    is_enabled: true,
-                    credential_mode: (requiresAccount ? 'CUSTOM' : 'SYSTEM') as never,
-                    ...(requiresAccount ? { account_id: draftAccountId } : {}),
-                    config: {
-                        dm_conversation_reset_after_hours: DEFAULT_DM_RESET_HOURS,
-                        ...(supportsChannelRoutes ? { channels } : {}),
-                        ...(isEmail
-                            ? {
-                                  identity: {
-                                      allowed_domains: parseList(draftAllowedDomains),
-                                      allowed_email_addresses: parseList(draftAllowedEmails),
-                                  },
-                              }
-                            : {}),
+        const config: SurfaceBehaviorConfigInput = {
+            dm_conversation_reset_after_hours: DEFAULT_DM_RESET_HOURS,
+            ...(supportsChannelRoutes ? { channels } : {}),
+            ...(isEmail
+                ? {
+                      identity: {
+                          allowed_domains: parseList(draftAllowedDomains),
+                          allowed_email_addresses: parseList(draftAllowedEmails),
+                      },
+                  }
+                : {}),
+            send_policy: { allow_send: draftAllowSend },
+        };
+
+        // Shared by create and update; the surface's platform and name are set
+        // once at creation and are immutable thereafter.
+        const shared = {
+            default_agent_name: selectedAssistantName,
+            is_enabled: true,
+            credential_mode: (requiresAccount ? 'CUSTOM' : 'SYSTEM') as SurfaceCredentialMode,
+            ...(requiresAccount ? { account_id: draftAccountId } : {}),
+            config,
+        };
+
+        const callbacks = {
+            onSuccess: () => {
+                toast.success(`${editingDefinition.label} surface is on`);
+                closeConfig();
+            },
+            onError: (error: Error) => toast.error(`Failed to save ${editingDefinition.label}: ${error.message}`),
+        };
+
+        if (isCreatingSurface) {
+            createSurface(
+                {
+                    podId,
+                    data: {
+                        platform: editingDefinition.platform as SurfacePlatform,
+                        name: draftName.trim() || undefined,
+                        ...shared,
                     },
                 },
-            },
-            {
-                onSuccess: () => {
-                    toast.success(`${editingDefinition.label} surface is on`);
-                    closeConfig();
-                },
-                onError: (error) => toast.error(`Failed to save ${editingDefinition.label}: ${error.message}`),
-            }
-        );
+                callbacks
+            );
+        } else if (editingSurface) {
+            updateSurface({ podId, surfaceName: editingSurface.name, data: shared }, callbacks);
+        }
     };
 
     return (
@@ -341,38 +412,63 @@ export function PodSurfacesPanel({
                     </div>
                 ) : (
                     <div className="surfaces-platform-list">
-                        {SURFACE_DEFINITIONS.map((definition) => {
-                            const surface = surfaceByPlatform.get(definition.platform);
-                            return (
-                                <SurfacePlatformRow
-                                    key={definition.platform}
-                                    definition={definition}
-                                    surface={surface}
-                                    account={surface?.account_id ? accounts.find((account) => account.id === surface.account_id) : undefined}
-                                    isBusy={isToggling || isSaving}
-                                    onConfigure={() => openConfig(definition)}
-                                    onSwitch={(nextChecked) => handleSwitch(definition, surface, nextChecked)}
-                                />
-                            );
-                        })}
+                        {SURFACE_DEFINITIONS.map((definition) => (
+                            <SurfacePlatformGroup
+                                key={definition.platform}
+                                definition={definition}
+                                surfaces={surfacesByPlatform.get(definition.platform) ?? []}
+                                accounts={accounts}
+                                isBusy={isToggling || isSaving}
+                                onAdd={() => openCreate(definition)}
+                                onConfigure={(surface) => openEdit(definition, surface)}
+                                onToggle={(surface) => handleToggle(surface.name, surface.status === 'ACTIVE')}
+                                onSend={(surface) => setSendTarget({ surfaceName: surface.name, label: surfaceSendLabel(definition, surface) })}
+                            />
+                        ))}
                     </div>
                 )}
             </section>
 
-            <Dialog open={editingPlatform !== null} onOpenChange={(open) => {
+            <Dialog open={editTarget !== null} onOpenChange={(open) => {
                 if (!open) closeConfig();
             }}>
                 <DialogContent className="max-w-2xl">
                     {editingDefinition ? (
                         <>
                             <DialogHeader>
-                                <DialogTitle>Configure {editingDefinition.label}</DialogTitle>
+                                <DialogTitle>
+                                    {isCreatingSurface
+                                        ? `Add ${editingDefinition.label} surface`
+                                        : `Configure ${editingSurface?.name ?? editingDefinition.label}`}
+                                </DialogTitle>
                                 <DialogDescription>
                                     {getConfigurationDescription(editingDefinition.platform)}
                                 </DialogDescription>
                             </DialogHeader>
 
                             <div className="grid gap-4 py-1">
+                                {isCreatingSurface ? (
+                                    <div className="grid gap-2">
+                                        <label className="type-eyebrow-medium">Surface name</label>
+                                        <Input
+                                            value={draftName}
+                                            onChange={(event) => setDraftName(event.target.value)}
+                                            placeholder={defaultSurfaceName}
+                                            aria-invalid={nameCollision}
+                                        />
+                                        <p className={cn('text-xs leading-5', nameCollision ? 'text-[var(--state-error)]' : 'text-[var(--text-tertiary)]')}>
+                                            {nameCollision
+                                                ? 'A surface with this name already exists on this pod.'
+                                                : `Optional. Defaults to “${defaultSurfaceName}”. Add a name to run a second ${editingDefinition.label} surface routed to its own agent.`}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="grid gap-1">
+                                        <label className="type-eyebrow-medium">Surface name</label>
+                                        <p className="text-sm text-[var(--text-primary)]">{editingSurface?.name}</p>
+                                        <p className="text-xs leading-5 text-[var(--text-tertiary)]">Fixed once the surface is created.</p>
+                                    </div>
+                                )}
                                 <div className="grid gap-2">
                                     <label className="type-eyebrow-medium">
                                         Default responder
@@ -553,8 +649,27 @@ export function PodSurfacesPanel({
                                     </div>
                                 ) : null}
 
+                                <div className="flex items-center justify-between gap-3 rounded-lg border border-[color:var(--border-subtle)] bg-[color:color-mix(in_srgb,var(--surface-2)_42%,transparent)] p-3">
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-medium text-[var(--text-primary)]">Proactive messages</p>
+                                        <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                                            Let agents message pod members first on this surface. Delivery only reuses an existing thread — there is no cold outreach.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        checked={draftAllowSend}
+                                        onCheckedChange={setDraftAllowSend}
+                                        aria-label="Allow proactive messages"
+                                        className="surface-platform-switch"
+                                    >
+                                        <SwitchTrack className={draftAllowSend ? 'bg-[var(--action-primary)]' : undefined}>
+                                            <SwitchThumb className={draftAllowSend ? 'translate-x-4' : undefined} />
+                                        </SwitchTrack>
+                                    </Switch>
+                                </div>
+
                                 {editingSurface ? (
-                                    <SurfaceSetupSection podId={podId} platform={editingDefinition.platform} />
+                                    <SurfaceSetupSection podId={podId} surfaceName={editingSurface.name} />
                                 ) : null}
 
                             </div>
@@ -583,6 +698,8 @@ export function PodSurfacesPanel({
                     ) : null}
                 </DialogContent>
             </Dialog>
+
+            <SurfaceSendDialog podId={podId} target={sendTarget} onClose={() => setSendTarget(null)} />
         </div>
     );
 }
@@ -672,56 +789,151 @@ function SurfacePlatformMark({ definition }: { definition: SurfaceDefinition }) 
 
     return (
         <span className="surface-platform-mark surface-platform-mark-logo" data-platform={definition.platform.toLowerCase()}>
-            <Image src={definition.logoSrc} alt="" width={16} height={16} className="surface-platform-logo" aria-hidden="true" />
-            <Icon className="surface-platform-icon-fallback h-4 w-4" />
+            {definition.logoSrc ? (
+                <>
+                    <Image src={definition.logoSrc} alt="" width={16} height={16} className="surface-platform-logo" aria-hidden="true" />
+                    <Icon className="surface-platform-icon-fallback h-4 w-4" />
+                </>
+            ) : (
+                <Icon className="h-4 w-4" />
+            )}
         </span>
     );
 }
 
-function SurfacePlatformRow({
+function surfaceIsPrimary(definition: SurfaceDefinition, surface: AssistantSurface) {
+    return surface.name.toLowerCase() === definition.platform.toLowerCase();
+}
+
+function surfaceDisplayName(definition: SurfaceDefinition, surface: AssistantSurface) {
+    return surfaceIsPrimary(definition, surface) ? definition.label : surface.name;
+}
+
+function surfaceSendLabel(definition: SurfaceDefinition, surface: AssistantSurface) {
+    const display = surfaceDisplayName(definition, surface);
+    return display === definition.label ? definition.label : `${definition.label} · ${display}`;
+}
+
+function SurfacePlatformGroup({
     definition,
-    surface,
-    account,
+    surfaces,
+    accounts,
     isBusy,
+    onAdd,
     onConfigure,
-    onSwitch,
+    onToggle,
+    onSend,
 }: {
     definition: SurfaceDefinition;
-    surface?: AssistantSurface;
-    account?: Account;
+    surfaces: AssistantSurface[];
+    accounts: Account[];
     isBusy: boolean;
-    onConfigure: () => void;
-    onSwitch: (nextChecked: boolean) => void;
+    onAdd: () => void;
+    onConfigure: (surface: AssistantSurface) => void;
+    onToggle: (surface: AssistantSurface) => void;
+    onSend: (surface: AssistantSurface) => void;
 }) {
-    const status = surface ? getSurfaceStatus(surface) : { label: 'Off', tone: 'muted' as SurfaceTone };
-    const isOn = surface?.status === 'ACTIVE';
-    const detail = surface
-        ? getSurfaceConfiguredDetail(surface, account, definition)
-        : getSurfaceEmptyDetail(definition.platform);
+    const isEmpty = surfaces.length === 0;
 
     return (
-        <article className="surface-platform-row">
+        <article className="surface-platform-group">
             <div className="flex min-w-0 items-center gap-3">
                 <SurfacePlatformMark definition={definition} />
                 <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-sm font-medium leading-5 text-[var(--text-primary)]">{definition.label}</h3>
-                        <StatusPill label={status.label} tone={status.tone} />
+                        {isEmpty ? (
+                            <StatusPill label="Off" tone="muted" />
+                        ) : surfaces.length > 1 ? (
+                            <span className="chip chip-sm chip-muted shrink-0">{surfaces.length}</span>
+                        ) : null}
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{detail}</p>
                     <p className="mt-0.5 text-xs leading-5 text-[var(--text-tertiary)]">{getSurfaceNuance(definition.platform)}</p>
                 </div>
             </div>
 
+            {isEmpty ? (
+                <p className="text-xs leading-5 text-[var(--text-secondary)]">{getSurfaceEmptyDetail(definition.platform)}</p>
+            ) : (
+                <div className="surface-instance-list">
+                    {surfaces.map((surface) => (
+                        <SurfaceInstanceRow
+                            key={surface.id ?? surface.name}
+                            definition={definition}
+                            surface={surface}
+                            account={surface.account_id ? accounts.find((account) => account.id === surface.account_id) : undefined}
+                            isBusy={isBusy}
+                            onConfigure={() => onConfigure(surface)}
+                            onToggle={() => onToggle(surface)}
+                            onSend={() => onSend(surface)}
+                        />
+                    ))}
+                </div>
+            )}
+
+            <Button type="button" variant="link" size="xs" onClick={onAdd} disabled={isBusy} className="w-fit gap-1.5">
+                <Plus className="h-3.5 w-3.5" />
+                {isEmpty ? `Add ${definition.label} surface` : `Add another ${definition.label} surface`}
+            </Button>
+        </article>
+    );
+}
+
+function SurfaceInstanceRow({
+    definition,
+    surface,
+    account,
+    isBusy,
+    onConfigure,
+    onToggle,
+    onSend,
+}: {
+    definition: SurfaceDefinition;
+    surface: AssistantSurface;
+    account?: Account;
+    isBusy: boolean;
+    onConfigure: () => void;
+    onToggle: () => void;
+    onSend: () => void;
+}) {
+    const status = getSurfaceStatus(surface);
+    const isOn = surface.status === 'ACTIVE';
+    const detail = getSurfaceConfiguredDetail(surface, account, definition);
+    const isPrimary = surfaceIsPrimary(definition, surface);
+
+    return (
+        <div className="surface-instance-row">
+            <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium leading-5 text-[var(--text-primary)]">
+                        {isPrimary ? 'Default' : surface.name}
+                    </span>
+                    <StatusPill label={status.label} tone={status.tone} />
+                </div>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{detail}</p>
+            </div>
+
             <div className="surface-platform-actions">
+                {isOn ? (
+                    <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={onSend}
+                        disabled={isBusy}
+                        aria-label="Message a member"
+                        title="Message a member"
+                    >
+                        <Send className="h-3.5 w-3.5" />
+                    </Button>
+                ) : null}
                 <Button size="xs" variant="outline" onClick={onConfigure} disabled={isBusy}>
                     Configure
                 </Button>
                 <Switch
                     checked={isOn}
-                    onCheckedChange={onSwitch}
+                    onCheckedChange={() => onToggle()}
                     disabled={isBusy}
-                    aria-label={`${isOn ? 'Turn off' : 'Turn on'} ${definition.label}`}
+                    aria-label={`${isOn ? 'Turn off' : 'Turn on'} ${surfaceDisplayName(definition, surface)}`}
                     className="surface-platform-switch"
                 >
                     <SwitchTrack className={isOn ? 'bg-[var(--action-primary)]' : undefined}>
@@ -729,7 +941,7 @@ function SurfacePlatformRow({
                     </SwitchTrack>
                 </Switch>
             </div>
-        </article>
+        </div>
     );
 }
 
@@ -752,8 +964,8 @@ function StatusPill({ label, tone }: { label: string; tone: SurfaceTone }) {
     );
 }
 
-function SurfaceSetupSection({ podId, platform }: { podId: string; platform: SurfacePlatformValue }) {
-    const { data: setup, isLoading } = useSurfaceSetup(podId, platform);
+function SurfaceSetupSection({ podId, surfaceName }: { podId: string; surfaceName: string }) {
+    const { data: setup, isLoading } = useSurfaceSetup(podId, surfaceName);
 
     if (isLoading) {
         return (
@@ -903,12 +1115,15 @@ function platformSupportsChannelRoutes(platform: SurfacePlatformValue) {
 }
 
 function platformIsEmailSurface(platform: SurfacePlatformValue) {
-    return platform === 'GMAIL' || platform === 'OUTLOOK';
+    return platform === 'GMAIL' || platform === 'OUTLOOK' || platform === 'RESEND';
 }
 
 function getConfigurationDescription(platform: SurfacePlatformValue) {
     if (platformSupportsChannelRoutes(platform)) {
         return 'Choose the connected workspace and map a channel to the agent that should answer there.';
+    }
+    if (platform === 'RESEND') {
+        return 'Set the default agent and sender filters for email handled through Lemma’s managed Resend address.';
     }
     if (platformIsEmailSurface(platform)) {
         return 'Choose the mailbox and default agent for emails that should become pod work.';
@@ -923,14 +1138,15 @@ function getSurfaceNuance(platform: SurfacePlatformValue) {
     if (platform === 'TEAMS') return 'Routing: team channel and mention behavior.';
     if (platform === 'GMAIL') return 'Routes all eligible inbox events into the pod.';
     if (platform === 'OUTLOOK') return 'Routes all eligible mailbox messages into the pod.';
+    if (platform === 'RESEND') return 'Managed email via Resend — no mailbox to connect.';
     if (platform === 'TELEGRAM') return 'Identity: Lemma bot by default.';
     if (platform === 'WHATSAPP') return 'Identity: WhatsApp webhook setup and default responder.';
     return 'Configure this platform before turning it on.';
 }
 
 function getSurfaceEmptyDetail(platform: SurfacePlatformValue) {
-    if (platformRequiresAccount(platform)) return 'Not connected yet. Turn on to choose an account and configure rules.';
-    return 'Not connected yet. Turn on to configure the default responder.';
+    if (platformRequiresAccount(platform)) return 'Not connected yet. Add a surface to choose an account and configure rules.';
+    return 'Not connected yet. Add a surface to configure the default responder.';
 }
 
 function getSurfaceConfiguredDetail(surface: AssistantSurface, account: Account | undefined, definition: SurfaceDefinition) {
@@ -994,6 +1210,7 @@ function accountMatchesPlatform(account: Account, platform: SurfacePlatformValue
         OUTLOOK: ['outlook'],
         WHATSAPP: ['whatsapp'],
         TELEGRAM: ['telegram'],
+        RESEND: ['resend'],
     };
 
     return needles[platform].some((needle) => haystack.includes(needle));
@@ -1030,7 +1247,7 @@ function getIdentityOptionHelpText(definition: SurfaceDefinition, mode: Identity
 
 
 function formatAccountLabel(account: Account) {
-    return account.email || account.connector?.title || account.connector?.name || account.id;
+    return account.display_name || account.email || account.connector?.title || account.connector?.name || account.id;
 }
 
 
@@ -1046,4 +1263,99 @@ function formatDisplayName(value: string | null | undefined) {
         .split(' ')
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(' ');
+}
+
+function SurfaceSendDialog({
+    podId,
+    target,
+    onClose,
+}: {
+    podId: string;
+    target: SurfaceSendTarget | null;
+    onClose: () => void;
+}) {
+    // Only fetch members once the dialog is actually opened for a surface.
+    const { data: membersData } = usePodMembers(target ? podId : '');
+    const members = membersData?.items ?? [];
+    const { mutate: send, isPending } = useSendSurfaceMessage();
+    const [userId, setUserId] = useState('');
+    const [message, setMessage] = useState('');
+
+    const reset = () => {
+        setUserId('');
+        setMessage('');
+    };
+
+    const close = () => {
+        onClose();
+        reset();
+    };
+
+    const submit = () => {
+        const trimmed = message.trim();
+        if (!target || !userId || !trimmed) return;
+        send(
+            { podId, surfaceName: target.surfaceName, userId, message: trimmed },
+            {
+                onSuccess: (result) => {
+                    if (result?.sent) {
+                        toast.success('Message sent');
+                    } else {
+                        toast.warning('That member has no reachable thread on this surface yet');
+                    }
+                    close();
+                },
+                onError: (error) => toast.error(`Couldn’t send message: ${error.message}`),
+            }
+        );
+    };
+
+    return (
+        <Dialog open={target !== null} onOpenChange={(open) => { if (!open) close(); }}>
+            <DialogContent className="max-w-lg">
+                <DialogHeader>
+                    <DialogTitle>Message a member</DialogTitle>
+                    <DialogDescription>
+                        Send a proactive message through {target?.label ?? 'this surface'}. It reaches the member only if
+                        they already have a conversation on this surface — there is no cold outreach.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-4 py-1">
+                    <div className="grid gap-1.5">
+                        <label className="type-eyebrow-medium">Pod member</label>
+                        <Select value={userId} onValueChange={setUserId}>
+                            <SelectTrigger className="h-10 bg-[var(--field-bg)]">
+                                <SelectValue placeholder="Select a member" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {members.map((member) => (
+                                    <SelectItem key={member.user_id} value={member.user_id}>
+                                        {member.user_name || member.user_email}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="grid gap-1.5">
+                        <label className="type-eyebrow-medium">Message</label>
+                        <Textarea
+                            value={message}
+                            onChange={(event) => setMessage(event.target.value)}
+                            placeholder="What should the agent say?"
+                            rows={4}
+                        />
+                    </div>
+                </div>
+
+                <DialogFooter>
+                    <Button variant="outline" onClick={close} disabled={isPending}>Cancel</Button>
+                    <Button onClick={submit} disabled={!userId || !message.trim() || isPending}>
+                        {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+                        Send message
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
 }

@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { PlainPageShell } from "@/components/dashboard/plain-page-shell";
 import { ProductIcon } from "@/components/pod/product-icon";
 import { QuietEmptyState } from "@/components/shared/empty-state";
+import { UserSurfacesPanel } from "@/components/settings/user-surfaces-panel";
 import { cn } from "@/lib/utils";
 
 export default function ProfilePage() {
@@ -251,6 +252,19 @@ export default function ProfilePage() {
                             </Button>
                         </div>
                     </form>
+                </div>
+            </section>
+
+            <section className="office-room-chrome office-arrive mt-6 p-6 sm:p-8">
+                <div className="settings-title-row">
+                    <MessageCircle className="h-5 w-5 text-[var(--text-tertiary)]" />
+                    <h2 className="settings-title">Your surfaces</h2>
+                </div>
+                <p className="settings-description">
+                    Where pods can reach you. When the same channel could answer you from more than one pod, pick which one wins.
+                </p>
+                <div className="mt-6">
+                    <UserSurfacesPanel />
                 </div>
             </section>
         </PlainPageShell>

@@ -79,6 +79,7 @@ _NAME_TO_MODULE = {
     'AvailableSurfaceChannelResponse': 'available_surface_channel_response',
     'AvailableSurfaceChannelsResponse': 'available_surface_channels_response',
     'BodyAppBundleUpload': 'body_app_bundle_upload',
+    'BodyFileMarkdownAttach': 'body_file_markdown_attach',
     'BodyFileUpdate': 'body_file_update',
     'BodyFileUpload': 'body_file_upload',
     'BodyIconUpload': 'body_icon_upload',
@@ -350,6 +351,7 @@ _NAME_TO_MODULE = {
     'SearchResult': 'search_result',
     'SendMessageRequest': 'send_message_request',
     'SendMessageRequestMetadataType0': 'send_message_request_metadata_type_0',
+    'SetDefaultSurfaceRequest': 'set_default_surface_request',
     'StepRecordResponse': 'step_record_response',
     'StepStatus': 'step_status',
     'SurfaceAdminConsentInfo': 'surface_admin_consent_info',
@@ -358,11 +360,15 @@ _NAME_TO_MODULE = {
     'SurfaceChannelRouteResponse': 'surface_channel_route_response',
     'SurfaceConfigResponse': 'surface_config_response',
     'SurfaceConnectorSetupGuide': 'surface_connector_setup_guide',
+    'SurfaceCreateRequest': 'surface_create_request',
     'SurfaceCredentialMode': 'surface_credential_mode',
     'SurfaceIdentityConfigInput': 'surface_identity_config_input',
     'SurfaceIdentityConfigResponse': 'surface_identity_config_response',
     'SurfacePlatform': 'surface_platform',
     'SurfacePlatformSetupGuide': 'surface_platform_setup_guide',
+    'SurfaceSendPolicyConfig': 'surface_send_policy_config',
+    'SurfaceSendRequest': 'surface_send_request',
+    'SurfaceSendResponse': 'surface_send_response',
     'SurfaceSetupAction': 'surface_setup_action',
     'SurfaceSetupActionField': 'surface_setup_action_field',
     'SurfaceSetupField': 'surface_setup_field',
@@ -371,7 +377,7 @@ _NAME_TO_MODULE = {
     'SurfaceSetupPhase': 'surface_setup_phase',
     'SurfaceSetupResponse': 'surface_setup_response',
     'SurfaceSetupStep': 'surface_setup_step',
-    'SurfaceUpsertRequest': 'surface_upsert_request',
+    'SurfaceUpdateRequest': 'surface_update_request',
     'TableDetailResponse': 'table_detail_response',
     'TableDetailResponseConfigType0': 'table_detail_response_config_type_0',
     'TableListResponse': 'table_list_response',
@@ -411,6 +417,9 @@ _NAME_TO_MODULE = {
     'UserApprovalListResponse': 'user_approval_list_response',
     'UserProfileRequest': 'user_profile_request',
     'UserResponse': 'user_response',
+    'UserSurfaceItem': 'user_surface_item',
+    'UserSurfacePlatformGroup': 'user_surface_platform_group',
+    'UserSurfacesResponse': 'user_surfaces_response',
     'VariableSpecResponse': 'variable_spec_response',
     'VerifyTokenResponse': 'verify_token_response',
     'WaitUntilNode': 'wait_until_node',
@@ -519,6 +528,7 @@ if TYPE_CHECKING:
     from .available_surface_channel_response import AvailableSurfaceChannelResponse
     from .available_surface_channels_response import AvailableSurfaceChannelsResponse
     from .body_app_bundle_upload import BodyAppBundleUpload
+    from .body_file_markdown_attach import BodyFileMarkdownAttach
     from .body_file_update import BodyFileUpdate
     from .body_file_upload import BodyFileUpload
     from .body_icon_upload import BodyIconUpload
@@ -790,6 +800,7 @@ if TYPE_CHECKING:
     from .search_result import SearchResult
     from .send_message_request import SendMessageRequest
     from .send_message_request_metadata_type_0 import SendMessageRequestMetadataType0
+    from .set_default_surface_request import SetDefaultSurfaceRequest
     from .step_record_response import StepRecordResponse
     from .step_status import StepStatus
     from .surface_admin_consent_info import SurfaceAdminConsentInfo
@@ -798,11 +809,15 @@ if TYPE_CHECKING:
     from .surface_channel_route_response import SurfaceChannelRouteResponse
     from .surface_config_response import SurfaceConfigResponse
     from .surface_connector_setup_guide import SurfaceConnectorSetupGuide
+    from .surface_create_request import SurfaceCreateRequest
     from .surface_credential_mode import SurfaceCredentialMode
     from .surface_identity_config_input import SurfaceIdentityConfigInput
     from .surface_identity_config_response import SurfaceIdentityConfigResponse
     from .surface_platform import SurfacePlatform
     from .surface_platform_setup_guide import SurfacePlatformSetupGuide
+    from .surface_send_policy_config import SurfaceSendPolicyConfig
+    from .surface_send_request import SurfaceSendRequest
+    from .surface_send_response import SurfaceSendResponse
     from .surface_setup_action import SurfaceSetupAction
     from .surface_setup_action_field import SurfaceSetupActionField
     from .surface_setup_field import SurfaceSetupField
@@ -811,7 +826,7 @@ if TYPE_CHECKING:
     from .surface_setup_phase import SurfaceSetupPhase
     from .surface_setup_response import SurfaceSetupResponse
     from .surface_setup_step import SurfaceSetupStep
-    from .surface_upsert_request import SurfaceUpsertRequest
+    from .surface_update_request import SurfaceUpdateRequest
     from .table_detail_response import TableDetailResponse
     from .table_detail_response_config_type_0 import TableDetailResponseConfigType0
     from .table_list_response import TableListResponse
@@ -851,6 +866,9 @@ if TYPE_CHECKING:
     from .user_approval_list_response import UserApprovalListResponse
     from .user_profile_request import UserProfileRequest
     from .user_response import UserResponse
+    from .user_surface_item import UserSurfaceItem
+    from .user_surface_platform_group import UserSurfacePlatformGroup
+    from .user_surfaces_response import UserSurfacesResponse
     from .variable_spec_response import VariableSpecResponse
     from .verify_token_response import VerifyTokenResponse
     from .wait_until_node import WaitUntilNode
@@ -972,6 +990,7 @@ __all__ = [
     'AvailableSurfaceChannelResponse',
     'AvailableSurfaceChannelsResponse',
     'BodyAppBundleUpload',
+    'BodyFileMarkdownAttach',
     'BodyFileUpdate',
     'BodyFileUpload',
     'BodyIconUpload',
@@ -1243,6 +1262,7 @@ __all__ = [
     'SearchResult',
     'SendMessageRequest',
     'SendMessageRequestMetadataType0',
+    'SetDefaultSurfaceRequest',
     'StepRecordResponse',
     'StepStatus',
     'SurfaceAdminConsentInfo',
@@ -1251,11 +1271,15 @@ __all__ = [
     'SurfaceChannelRouteResponse',
     'SurfaceConfigResponse',
     'SurfaceConnectorSetupGuide',
+    'SurfaceCreateRequest',
     'SurfaceCredentialMode',
     'SurfaceIdentityConfigInput',
     'SurfaceIdentityConfigResponse',
     'SurfacePlatform',
     'SurfacePlatformSetupGuide',
+    'SurfaceSendPolicyConfig',
+    'SurfaceSendRequest',
+    'SurfaceSendResponse',
     'SurfaceSetupAction',
     'SurfaceSetupActionField',
     'SurfaceSetupField',
@@ -1264,7 +1288,7 @@ __all__ = [
     'SurfaceSetupPhase',
     'SurfaceSetupResponse',
     'SurfaceSetupStep',
-    'SurfaceUpsertRequest',
+    'SurfaceUpdateRequest',
     'TableDetailResponse',
     'TableDetailResponseConfigType0',
     'TableListResponse',
@@ -1304,6 +1328,9 @@ __all__ = [
     'UserApprovalListResponse',
     'UserProfileRequest',
     'UserResponse',
+    'UserSurfaceItem',
+    'UserSurfacePlatformGroup',
+    'UserSurfacesResponse',
     'VariableSpecResponse',
     'VerifyTokenResponse',
     'WaitUntilNode',

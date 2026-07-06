@@ -9794,7 +9794,7 @@ var LemmaClient = (() => {
   }
 
   // src/version.ts
-  var SDK_VERSION = "0.5.5";
+  var SDK_VERSION = "0.5.6";
   var CLIENT_HEADER_NAME = "X-Lemma-Client";
   var CLIENT_HEADER_VALUE = `lemma-sdk-ts/${SDK_VERSION}`;
 
@@ -10196,7 +10196,7 @@ var LemmaClient = (() => {
   // src/openapi_client/core/OpenAPI.ts
   var OpenAPI = {
     BASE: "",
-    VERSION: "3.3.0",
+    VERSION: "3.4.0",
     WITH_CREDENTIALS: false,
     CREDENTIALS: "include",
     TOKEN: void 0,
@@ -11543,6 +11543,59 @@ var LemmaClient = (() => {
       });
     }
     /**
+     * Detach Document Markdown
+     * Remove a document's user-provided markdown so it reverts to extraction.
+     * @param podId
+     * @param path
+     * @returns FileDetailResponse Successful Response
+     * @throws ApiError
+     */
+    static fileMarkdownDetach(podId, path) {
+      return request(OpenAPI, {
+        method: "DELETE",
+        url: "/pods/{pod_id}/datastore/files/by-path/markdown",
+        path: {
+          "pod_id": podId
+        },
+        query: {
+          "path": path
+        },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+    /**
+     * Attach Document Markdown
+     * Attach (or replace) a user-authored markdown version of a document, plus
+     * any images it references.
+     *
+     * The uploaded markdown becomes the document's agent-facing ``document.md`` and
+     * is chunked/indexed on the original's behalf; the source file is unchanged.
+     * Each uploaded image is stored as a sibling child artifact so a reference like
+     * ``![](fig1.png)`` resolves through the children endpoint — send the images
+     * under repeated ``images`` fields, named to match the markdown references.
+     * Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+     * @param podId
+     * @param formData
+     * @returns FileDetailResponse Successful Response
+     * @throws ApiError
+     */
+    static fileMarkdownAttach(podId, formData) {
+      return request(OpenAPI, {
+        method: "PUT",
+        url: "/pods/{pod_id}/datastore/files/by-path/markdown",
+        path: {
+          "pod_id": podId
+        },
+        formData,
+        mediaType: "multipart/form-data",
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+    /**
      * List a document's derived child files
      * @param podId
      * @param path
@@ -11786,6 +11839,24 @@ var LemmaClient = (() => {
           );
         },
         markdown: (path, options = {}) => this.children.content(`${path}/document.md`, options)
+      });
+      // Bring-your-own markdown: replace a document's agent-facing `document.md`
+      // (and its referenced images) with a user-authored version, or drop it to
+      // revert to extraction. `attach` applies to non-markdown documents (PDF,
+      // Word, HTML, …); companion images are named to match the markdown's
+      // `![](fig.png)` references and served as sibling child artifacts.
+      __publicField(this, "markdown", {
+        attach: (path, markdown, options = {}) => {
+          const formData = {
+            path,
+            data: markdown,
+            images: options.images
+          };
+          return this.client.request(
+            () => FilesService.fileMarkdownAttach(this.podId(), formData)
+          );
+        },
+        detach: (path) => this.client.request(() => FilesService.fileMarkdownDetach(this.podId(), path))
       });
     }
     list(options = {}) {
@@ -14005,14 +14076,41 @@ var LemmaClient = (() => {
   // src/openapi_client/services/AgentSurfacesService.ts
   var AgentSurfacesService = class {
     /**
+     * Get Surface Setup Guide
+     * The static pre-creation checklist for a platform (env/OAuth
+     * prerequisites) — works before any surface of this platform exists.
+     * @param podId
+     * @param platform
+     * @returns SurfacePlatformSetupGuide Successful Response
+     * @throws ApiError
+     */
+    static agentSurfaceSetupGuide(podId, platform) {
+      return request(OpenAPI, {
+        method: "GET",
+        url: "/pods/{pod_id}/surface-setup/{platform}",
+        path: {
+          "pod_id": podId,
+          "platform": platform
+        },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+    /**
      * List Surfaces
+     * List surfaces in the pod. A pod may have several surfaces of the same
+     * ``platform`` (different bots/accounts, one per agent); filter by
+     * ``platform`` and/or ``agent_name`` to narrow the results.
      * @param podId
      * @param limit
      * @param pageToken
+     * @param platform
+     * @param agentName
      * @returns AgentSurfaceListResponse Successful Response
      * @throws ApiError
      */
-    static agentSurfaceList(podId, limit = 100, pageToken) {
+    static agentSurfaceList(podId, limit = 100, pageToken, platform, agentName) {
       return request(OpenAPI, {
         method: "GET",
         url: "/pods/{pod_id}/surfaces",
@@ -14021,8 +14119,34 @@ var LemmaClient = (() => {
         },
         query: {
           "limit": limit,
-          "page_token": pageToken
+          "page_token": pageToken,
+          "platform": platform,
+          "agent_name": agentName
         },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+    /**
+     * Create Surface
+     * Create a surface. ``name`` defaults to the lowercased platform — pass an
+     * explicit name to create a second surface of the same platform (e.g. a
+     * second bot routed to a different agent).
+     * @param podId
+     * @param requestBody
+     * @returns AgentSurfaceResponse Successful Response
+     * @throws ApiError
+     */
+    static agentSurfaceCreate(podId, requestBody) {
+      return request(OpenAPI, {
+        method: "POST",
+        url: "/pods/{pod_id}/surfaces",
+        path: {
+          "pod_id": podId
+        },
+        body: requestBody,
+        mediaType: "application/json",
         errors: {
           422: `Validation Error`
         }
@@ -14031,17 +14155,17 @@ var LemmaClient = (() => {
     /**
      * Delete Surface
      * @param podId
-     * @param platform
+     * @param surfaceName
      * @returns void
      * @throws ApiError
      */
-    static agentSurfaceDelete(podId, platform) {
+    static agentSurfaceDelete(podId, surfaceName) {
       return request(OpenAPI, {
         method: "DELETE",
-        url: "/pods/{pod_id}/surfaces/{platform}",
+        url: "/pods/{pod_id}/surfaces/{surface_name}",
         path: {
           "pod_id": podId,
-          "platform": platform
+          "surface_name": surfaceName
         },
         errors: {
           422: `Validation Error`
@@ -14051,17 +14175,17 @@ var LemmaClient = (() => {
     /**
      * Get Surface
      * @param podId
-     * @param platform
-     * @returns any Successful Response
+     * @param surfaceName
+     * @returns AgentSurfaceResponse Successful Response
      * @throws ApiError
      */
-    static agentSurfaceGet(podId, platform) {
+    static agentSurfaceGet(podId, surfaceName) {
       return request(OpenAPI, {
         method: "GET",
-        url: "/pods/{pod_id}/surfaces/{platform}",
+        url: "/pods/{pod_id}/surfaces/{surface_name}",
         path: {
           "pod_id": podId,
-          "platform": platform
+          "surface_name": surfaceName
         },
         errors: {
           422: `Validation Error`
@@ -14069,26 +14193,22 @@ var LemmaClient = (() => {
       });
     }
     /**
-     * Upsert Surface
-     * Create the surface for a platform, or merge updates into the existing one.
-     *
-     * A surface is unique per ``pod_id + platform``, so this single idempotent
-     * write covers create, config edits, channel routing, account/credential
-     * changes, and enable/disable. Only fields present in the request are applied
-     * on update.
+     * Update Surface
+     * Partially update a surface. Only fields present in the request are
+     * applied; the surface's platform and name are immutable.
      * @param podId
-     * @param platform
+     * @param surfaceName
      * @param requestBody
-     * @returns any Successful Response
+     * @returns AgentSurfaceResponse Successful Response
      * @throws ApiError
      */
-    static agentSurfaceUpsert(podId, platform, requestBody) {
+    static agentSurfaceUpdate(podId, surfaceName, requestBody) {
       return request(OpenAPI, {
-        method: "PUT",
-        url: "/pods/{pod_id}/surfaces/{platform}",
+        method: "PATCH",
+        url: "/pods/{pod_id}/surfaces/{surface_name}",
         path: {
           "pod_id": podId,
-          "platform": platform
+          "surface_name": surfaceName
         },
         body: requestBody,
         mediaType: "application/json",
@@ -14104,17 +14224,17 @@ var LemmaClient = (() => {
      * Returns an empty list for platforms without an enumerable channel concept
      * (Telegram groups, WhatsApp, email).
      * @param podId
-     * @param platform
+     * @param surfaceName
      * @returns AvailableSurfaceChannelsResponse Successful Response
      * @throws ApiError
      */
-    static agentSurfaceChannels(podId, platform) {
+    static agentSurfaceChannels(podId, surfaceName) {
       return request(OpenAPI, {
         method: "GET",
-        url: "/pods/{pod_id}/surfaces/{platform}/channels",
+        url: "/pods/{pod_id}/surfaces/{surface_name}/channels",
         path: {
           "pod_id": podId,
-          "platform": platform
+          "surface_name": surfaceName
         },
         errors: {
           422: `Validation Error`
@@ -14122,23 +14242,50 @@ var LemmaClient = (() => {
       });
     }
     /**
-     * Get Surface Setup
-     * Everything needed to finish setting up this platform's surface.
+     * Send Surface Message
+     * Proactively send a message to a pod member on this surface.
      *
-     * Merges the static platform checklist with live webhook + admin-consent
-     * state. Works before the surface exists (guide only) and after (live state).
+     * Powers notifications from functions/workflows. Reuses the member's existing
+     * thread on the surface (bots can't cold-DM), so a 404 means the member has no
+     * reachable conversation here yet.
      * @param podId
-     * @param platform
+     * @param surfaceName
+     * @param requestBody
+     * @returns SurfaceSendResponse Successful Response
+     * @throws ApiError
+     */
+    static agentSurfaceSend(podId, surfaceName, requestBody) {
+      return request(OpenAPI, {
+        method: "POST",
+        url: "/pods/{pod_id}/surfaces/{surface_name}/send",
+        path: {
+          "pod_id": podId,
+          "surface_name": surfaceName
+        },
+        body: requestBody,
+        mediaType: "application/json",
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+    /**
+     * Get Surface Setup
+     * Live setup state for an existing surface: static platform checklist plus
+     * webhook URL and admin-consent status. For the pre-creation checklist (before
+     * any surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.
+     * @param podId
+     * @param surfaceName
      * @returns SurfaceSetupResponse Successful Response
      * @throws ApiError
      */
-    static agentSurfaceSetup(podId, platform) {
+    static agentSurfaceSetup(podId, surfaceName) {
       return request(OpenAPI, {
         method: "GET",
-        url: "/pods/{pod_id}/surfaces/{platform}/setup",
+        url: "/pods/{pod_id}/surfaces/{surface_name}/setup",
         path: {
           "pod_id": podId,
-          "platform": platform
+          "surface_name": surfaceName
         },
         errors: {
           422: `Validation Error`
@@ -14159,28 +14306,105 @@ var LemmaClient = (() => {
           return AgentSurfacesService.agentSurfaceList(
             podId,
             (_a = options.limit) != null ? _a : 100,
-            (_b = options.pageToken) != null ? _b : options.cursor
+            (_b = options.pageToken) != null ? _b : options.cursor,
+            options.platform,
+            options.agentName
           );
         }
       );
     }
-    upsert(podId, platform, payload) {
+    create(podId, payload) {
       return this.client.request(
-        () => AgentSurfacesService.agentSurfaceUpsert(podId, platform, payload)
+        () => AgentSurfacesService.agentSurfaceCreate(podId, payload)
       );
     }
-    get(podId, platform) {
-      return this.client.request(() => AgentSurfacesService.agentSurfaceGet(podId, platform));
-    }
-    delete(podId, platform) {
-      return this.client.request(() => AgentSurfacesService.agentSurfaceDelete(podId, platform));
-    }
-    setup(podId, platform) {
-      return this.client.request(() => AgentSurfacesService.agentSurfaceSetup(podId, platform));
-    }
-    channels(podId, platform) {
+    update(podId, surfaceName, payload) {
       return this.client.request(
-        () => AgentSurfacesService.agentSurfaceChannels(podId, platform)
+        () => AgentSurfacesService.agentSurfaceUpdate(podId, surfaceName, payload)
+      );
+    }
+    get(podId, surfaceName) {
+      return this.client.request(
+        () => AgentSurfacesService.agentSurfaceGet(podId, surfaceName)
+      );
+    }
+    delete(podId, surfaceName) {
+      return this.client.request(
+        () => AgentSurfacesService.agentSurfaceDelete(podId, surfaceName)
+      );
+    }
+    send(podId, surfaceName, payload) {
+      return this.client.request(
+        () => AgentSurfacesService.agentSurfaceSend(podId, surfaceName, payload)
+      );
+    }
+    setup(podId, surfaceName) {
+      return this.client.request(
+        () => AgentSurfacesService.agentSurfaceSetup(podId, surfaceName)
+      );
+    }
+    /** Pre-creation platform checklist — works before any surface exists. */
+    setupGuide(podId, platform) {
+      return this.client.request(
+        () => AgentSurfacesService.agentSurfaceSetupGuide(podId, platform)
+      );
+    }
+    channels(podId, surfaceName) {
+      return this.client.request(
+        () => AgentSurfacesService.agentSurfaceChannels(podId, surfaceName)
+      );
+    }
+  };
+
+  // src/openapi_client/services/AgentSurfacesMeService.ts
+  var AgentSurfacesMeService = class {
+    /**
+     * List My Surfaces
+     * Every surface across the current user's pods, grouped by platform, with
+     * the chosen default and a ``conflict`` flag when more than one could answer.
+     * @returns UserSurfacesResponse Successful Response
+     * @throws ApiError
+     */
+    static agentSurfaceListMine() {
+      return request(OpenAPI, {
+        method: "GET",
+        url: "/surfaces/me"
+      });
+    }
+    /**
+     * Set My Default Surface
+     * Choose which surface answers the current user for a platform when several
+     * could (e.g. a shared system bot spanning pods in different orgs).
+     * @param requestBody
+     * @returns UserSurfacesResponse Successful Response
+     * @throws ApiError
+     */
+    static agentSurfaceSetMyDefault(requestBody) {
+      return request(OpenAPI, {
+        method: "PUT",
+        url: "/surfaces/me/default",
+        body: requestBody,
+        mediaType: "application/json",
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+  };
+
+  // src/namespaces/user-surfaces.ts
+  var UserSurfacesNamespace = class {
+    constructor(client) {
+      __publicField(this, "client", client);
+    }
+    /** List my surfaces across all pods, grouped by platform. */
+    list() {
+      return this.client.request(() => AgentSurfacesMeService.agentSurfaceListMine());
+    }
+    /** Choose which surface answers me on a platform when several could. */
+    setDefault(payload) {
+      return this.client.request(
+        () => AgentSurfacesMeService.agentSurfaceSetMyDefault(payload)
       );
     }
   };
@@ -15656,6 +15880,8 @@ var LemmaClient = (() => {
       __publicField(this, "podRoles");
       __publicField(this, "organizations");
       __publicField(this, "podSurfaces");
+      /** The caller's own surfaces across all pods (grouped by platform). */
+      __publicField(this, "userSurfaces");
       var _a;
       this._config = resolveConfig(overrides);
       this._currentPodId = this._config.podId;
@@ -15706,6 +15932,7 @@ var LemmaClient = (() => {
       this.podRoles = new PodRolesNamespace(this._generated, podIdFn);
       this.organizations = new OrganizationsNamespace(this._generated, this._http);
       this.podSurfaces = new PodSurfacesNamespace(this._generated);
+      this.userSurfaces = new UserSurfacesNamespace(this._generated);
     }
     /** Change the active pod ID for subsequent calls. */
     setPodId(podId) {

@@ -144,6 +144,46 @@
   }
 }
 
+/* One card per platform, holding its surfaces (0..N) plus a consistent
+   in-card "add" action. */
+.surface-platform-group {
+  display: grid;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.875rem;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 66%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+  box-shadow: var(--shadow-xs);
+}
+
+.surface-platform-group:hover,
+.surface-platform-group:focus-within {
+  border-color: color-mix(in srgb, var(--border-strong) 54%, var(--border-subtle));
+  background: var(--surface-1);
+}
+
+.surface-instance-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.surface-instance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-2) 32%, transparent);
+}
+
+@media (max-width: 640px) {
+  .surface-instance-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .surfaces-ledger-list {
   display: flex;
   flex-direction: column;

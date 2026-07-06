@@ -197,6 +197,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
           "email": {
             "anyOf": [
               {
@@ -212,6 +223,11 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
           },
           "organization_id": {
             "format": "uuid",
@@ -1346,6 +1362,10 @@
             "title": "Id",
             "type": "string"
           },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
           "platform": {
             "$ref": "#/components/schemas/SurfacePlatform"
           },
@@ -1400,6 +1420,7 @@
         "required": [
           "id",
           "pod_id",
+          "name",
           "platform",
           "config"
         ],
@@ -4544,6 +4565,21 @@
       "ExportStartRequest": {
         "description": "Body for starting a pod export.",
         "properties": {
+          "data_tables": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opt-in per-table seed selection: include row data only for these named tables (the common case \u2014 ship a few setup/config tables' rows). Ignored for names that aren't real tables (a warning is surfaced). Combined with `with_data` as a union; omit both for a resources-only export.",
+            "title": "Data Tables"
+          },
           "include": {
             "anyOf": [
               {
@@ -4572,9 +4608,15 @@
             "title": "Ttl Seconds"
           },
           "with_data": {
-            "default": true,
-            "description": "Include table row data (data.csv per table) in the bundle.",
+            "default": false,
+            "description": "Opt-in: include row data for EVERY table (data.csv per table) as seed/default data. Off by default \u2014 an export carries only pod resources, which recreate the pod in an empty-table state. Prefer `data_tables` to seed only specific setup tables; enable this only to seed the whole pod. Row data is capped (per-table + total) regardless.",
             "title": "With Data",
+            "type": "boolean"
+          },
+          "with_files": {
+            "default": false,
+            "description": "Opt-in: include the pod's POD-visible file storage (folders + file bytes) in the bundle. Off by default. File bytes share a conservative size budget with table row data (meant for small skill/script/seed files, not a bulk file dump).",
+            "title": "With Files",
             "type": "boolean"
           }
         },
@@ -10427,6 +10469,25 @@
         "title": "SendMessageRequest",
         "type": "object"
       },
+      "SetDefaultSurfaceRequest": {
+        "description": "Pick which surface answers this user for ``platform`` when several could.",
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/SurfacePlatform"
+          },
+          "surface_id": {
+            "format": "uuid",
+            "title": "Surface Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "surface_id"
+        ],
+        "title": "SetDefaultSurfaceRequest",
+        "type": "object"
+      },
       "StepRecordResponse": {
         "properties": {
           "completed_at": {
@@ -10543,6 +10604,9 @@
           },
           "identity": {
             "$ref": "#/components/schemas/SurfaceIdentityConfigInput"
+          },
+          "send_policy": {
+            "$ref": "#/components/schemas/SurfaceSendPolicyConfig"
           }
         },
         "title": "SurfaceBehaviorConfigInput",
@@ -10644,6 +10708,9 @@
           },
           "identity": {
             "$ref": "#/components/schemas/SurfaceIdentityConfigResponse"
+          },
+          "send_policy": {
+            "$ref": "#/components/schemas/SurfaceSendPolicyConfig"
           }
         },
         "title": "SurfaceConfigResponse",
@@ -10708,6 +10775,67 @@
         "title": "SurfaceConnectorSetupGuide",
         "type": "object"
       },
+      "SurfaceCreateRequest": {
+        "additionalProperties": false,
+        "description": "Body for `POST /pods/{pod_id}/surfaces` \u2014 creates one surface.\n\nA pod may have several surfaces of the same ``platform`` (different\nbots/accounts, each routed to its own agent); ``name`` is the stable,\npod-unique identifier used to address it afterward. When omitted, it\ndefaults to the lowercased platform (so the common single-surface-per-\nplatform case needs no name at all) \u2014 pick an explicit name to create a\nsecond surface of the same platform.",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "config": {
+            "$ref": "#/components/schemas/SurfaceBehaviorConfigInput"
+          },
+          "credential_mode": {
+            "$ref": "#/components/schemas/SurfaceCredentialMode",
+            "default": "SYSTEM"
+          },
+          "default_agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Agent Name"
+          },
+          "is_enabled": {
+            "default": true,
+            "title": "Is Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pod-unique surface identifier. Defaults to the lowercased platform.",
+            "title": "Name"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/SurfacePlatform"
+          }
+        },
+        "required": [
+          "platform"
+        ],
+        "title": "SurfaceCreateRequest",
+        "type": "object"
+      },
       "SurfaceCredentialMode": {
         "enum": [
           "SYSTEM",
@@ -10764,7 +10892,8 @@
           "WHATSAPP",
           "TELEGRAM",
           "GMAIL",
-          "OUTLOOK"
+          "OUTLOOK",
+          "RESEND"
         ],
         "title": "SurfacePlatform",
         "type": "string"
@@ -10801,6 +10930,54 @@
           "docs_path"
         ],
         "title": "SurfacePlatformSetupGuide",
+        "type": "object"
+      },
+      "SurfaceSendPolicyConfig": {
+        "description": "Proactive-send controls. Mirrored across request and response.",
+        "properties": {
+          "allow_send": {
+            "default": false,
+            "title": "Allow Send",
+            "type": "boolean"
+          }
+        },
+        "title": "SurfaceSendPolicyConfig",
+        "type": "object"
+      },
+      "SurfaceSendRequest": {
+        "description": "Send a proactive message to a pod member on this surface.",
+        "properties": {
+          "message": {
+            "description": "Message text to deliver.",
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "Target pod member (Lemma user id).",
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "message"
+        ],
+        "title": "SurfaceSendRequest",
+        "type": "object"
+      },
+      "SurfaceSendResponse": {
+        "properties": {
+          "sent": {
+            "title": "Sent",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sent"
+        ],
+        "title": "SurfaceSendResponse",
         "type": "object"
       },
       "SurfaceSetupAction": {
@@ -11042,9 +11219,9 @@
         "title": "SurfaceSetupStep",
         "type": "object"
       },
-      "SurfaceUpsertRequest": {
+      "SurfaceUpdateRequest": {
         "additionalProperties": false,
-        "description": "The single create-or-update body for `PUT /surfaces/{platform}`.\n\nA surface is uniquely identified by `pod_id + platform`, so this one\nrequest handles both creation and partial update. Only the fields present\nin the request are applied on update (merge semantics); `is_enabled`\ndefaults to True on create and is only changed on update when sent.",
+        "description": "Body for `PATCH /pods/{pod_id}/surfaces/{surface_name}`.\n\nPartial update (merge semantics): only fields present in the request are\napplied. The surface's ``platform`` and ``name`` are immutable \u2014 delete and\nrecreate to change either.",
         "properties": {
           "account_id": {
             "anyOf": [
@@ -11062,8 +11239,14 @@
             "$ref": "#/components/schemas/SurfaceBehaviorConfigInput"
           },
           "credential_mode": {
-            "$ref": "#/components/schemas/SurfaceCredentialMode",
-            "default": "SYSTEM"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SurfaceCredentialMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "default_agent_name": {
             "anyOf": [
@@ -11077,12 +11260,18 @@
             "title": "Default Agent Name"
           },
           "is_enabled": {
-            "default": true,
-            "title": "Is Enabled",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Enabled"
           }
         },
-        "title": "SurfaceUpsertRequest",
+        "title": "SurfaceUpdateRequest",
         "type": "object"
       },
       "TableDetailResponse": {
@@ -12507,6 +12696,107 @@
         "title": "UserResponse",
         "type": "object"
       },
+      "UserSurfaceItem": {
+        "description": "One of the current user's surfaces (across any pod they belong to).",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/SurfacePlatform"
+          },
+          "pod_id": {
+            "format": "uuid",
+            "title": "Pod Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "pod_id",
+          "platform"
+        ],
+        "title": "UserSurfaceItem",
+        "type": "object"
+      },
+      "UserSurfacePlatformGroup": {
+        "description": "All of a user's surfaces for one platform. ``conflict`` is true when more\nthan one surface could answer them (they should pick a ``default``).",
+        "properties": {
+          "conflict": {
+            "default": false,
+            "title": "Conflict",
+            "type": "boolean"
+          },
+          "default_surface_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Surface Id"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/SurfacePlatform"
+          },
+          "surfaces": {
+            "items": {
+              "$ref": "#/components/schemas/UserSurfaceItem"
+            },
+            "title": "Surfaces",
+            "type": "array"
+          }
+        },
+        "required": [
+          "platform",
+          "surfaces"
+        ],
+        "title": "UserSurfacePlatformGroup",
+        "type": "object"
+      },
+      "UserSurfacesResponse": {
+        "properties": {
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/UserSurfacePlatformGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          }
+        },
+        "required": [
+          "groups"
+        ],
+        "title": "UserSurfacesResponse",
+        "type": "object"
+      },
       "VariableSpecResponse": {
         "properties": {
           "default": {
@@ -12538,6 +12828,18 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a connector account variable, the platform the account must belong to (e.g. 'slack'), so the importer can connect the right connector. Null for non-connector variables.",
+            "title": "Platform"
           },
           "required": {
             "default": false,
@@ -13918,6 +14220,34 @@
         "title": "WorkspaceMeSession",
         "type": "object"
       },
+      "attach": {
+        "properties": {
+          "data": {
+            "contentMediaType": "application/octet-stream",
+            "title": "Data",
+            "type": "string"
+          },
+          "images": {
+            "default": [],
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Images",
+            "type": "array"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "path"
+        ],
+        "title": "Body_file.markdown.attach",
+        "type": "object"
+      },
       "fastapi___compat__v2__Body_pod__bundle__upload": {
         "properties": {
           "data": {
@@ -14006,7 +14336,7 @@
   "info": {
     "description": "Authentication API with JWT, user management, and OAuth support",
     "title": "Lemma Backend",
-    "version": "3.3.0"
+    "version": "3.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -20052,6 +20382,131 @@
         }
       }
     },
+    "/pods/{pod_id}/datastore/files/by-path/markdown": {
+      "delete": {
+        "description": "Remove a document's user-provided markdown so it reverts to extraction.",
+        "operationId": "file.markdown.detach",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pod_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pod Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Detach Document Markdown",
+        "tags": [
+          "files"
+        ],
+        "x-lemma": {
+          "invalidates": [
+            "file.markdown"
+          ],
+          "kind": "mutation",
+          "paginates": false,
+          "resource": "file.markdown",
+          "result": "entity",
+          "verb": "detach"
+        }
+      },
+      "put": {
+        "description": "Attach (or replace) a user-authored markdown version of a document, plus\nany images it references.\n\nThe uploaded markdown becomes the document's agent-facing ``document.md`` and\nis chunked/indexed on the original's behalf; the source file is unchanged.\nEach uploaded image is stored as a sibling child artifact so a reference like\n``![](fig1.png)`` resolves through the children endpoint \u2014 send the images\nunder repeated ``images`` fields, named to match the markdown references.\nApplies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, \u2026).",
+        "operationId": "file.markdown.attach",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pod_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pod Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/attach"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach Document Markdown",
+        "tags": [
+          "files"
+        ],
+        "x-lemma": {
+          "invalidates": [
+            "file.markdown"
+          ],
+          "kind": "mutation",
+          "paginates": false,
+          "resource": "file.markdown",
+          "result": "entity",
+          "verb": "attach"
+        }
+      }
+    },
     "/pods/{pod_id}/datastore/files/children": {
       "get": {
         "operationId": "file.children.list",
@@ -24517,8 +24972,69 @@
         }
       }
     },
+    "/pods/{pod_id}/surface-setup/{platform}": {
+      "get": {
+        "description": "The static pre-creation checklist for a platform (env/OAuth\nprerequisites) \u2014 works before any surface of this platform exists.",
+        "operationId": "agent.surface.setup_guide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pod_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pod Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "title": "Platform",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SurfacePlatformSetupGuide"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Surface Setup Guide",
+        "tags": [
+          "Agent Surfaces"
+        ],
+        "x-lemma": {
+          "kind": "query",
+          "paginates": false,
+          "resource": "agent.surface",
+          "result": "entity",
+          "verb": "setup_guide"
+        }
+      }
+    },
     "/pods/{pod_id}/surfaces": {
       "get": {
+        "description": "List surfaces in the pod. A pod may have several surfaces of the same\n``platform`` (different bots/accounts, one per agent); filter by\n``platform`` and/or ``agent_name`` to narrow the results.",
         "operationId": "agent.surface.list",
         "parameters": [
           {
@@ -24556,6 +25072,38 @@
               ],
               "title": "Page Token"
             }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Name"
+            }
           }
         ],
         "responses": {
@@ -24591,9 +25139,71 @@
           "result": "collection",
           "verb": "list"
         }
+      },
+      "post": {
+        "description": "Create a surface. ``name`` defaults to the lowercased platform \u2014 pass an\nexplicit name to create a second surface of the same platform (e.g. a\nsecond bot routed to a different agent).",
+        "operationId": "agent.surface.create",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pod_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pod Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SurfaceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSurfaceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Surface",
+        "tags": [
+          "Agent Surfaces"
+        ],
+        "x-lemma": {
+          "invalidates": [
+            "agent.surface"
+          ],
+          "kind": "mutation",
+          "paginates": false,
+          "resource": "agent.surface",
+          "result": "entity",
+          "verb": "create"
+        }
       }
     },
-    "/pods/{pod_id}/surfaces/{platform}": {
+    "/pods/{pod_id}/surfaces/{surface_name}": {
       "delete": {
         "operationId": "agent.surface.delete",
         "parameters": [
@@ -24609,10 +25219,10 @@
           },
           {
             "in": "path",
-            "name": "platform",
+            "name": "surface_name",
             "required": true,
             "schema": {
-              "title": "Platform",
+              "title": "Surface Name",
               "type": "string"
             }
           }
@@ -24662,10 +25272,10 @@
           },
           {
             "in": "path",
-            "name": "platform",
+            "name": "surface_name",
             "required": true,
             "schema": {
-              "title": "Platform",
+              "title": "Surface Name",
               "type": "string"
             }
           }
@@ -24674,7 +25284,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSurfaceResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -24702,9 +25314,9 @@
           "verb": "get"
         }
       },
-      "put": {
-        "description": "Create the surface for a platform, or merge updates into the existing one.\n\nA surface is unique per ``pod_id + platform``, so this single idempotent\nwrite covers create, config edits, channel routing, account/credential\nchanges, and enable/disable. Only fields present in the request are applied\non update.",
-        "operationId": "agent.surface.upsert",
+      "patch": {
+        "description": "Partially update a surface. Only fields present in the request are\napplied; the surface's platform and name are immutable.",
+        "operationId": "agent.surface.update",
         "parameters": [
           {
             "in": "path",
@@ -24718,10 +25330,10 @@
           },
           {
             "in": "path",
-            "name": "platform",
+            "name": "surface_name",
             "required": true,
             "schema": {
-              "title": "Platform",
+              "title": "Surface Name",
               "type": "string"
             }
           }
@@ -24730,7 +25342,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SurfaceUpsertRequest"
+                "$ref": "#/components/schemas/SurfaceUpdateRequest"
               }
             }
           },
@@ -24740,7 +25352,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSurfaceResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -24756,7 +25370,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Upsert Surface",
+        "summary": "Update Surface",
         "tags": [
           "Agent Surfaces"
         ],
@@ -24768,11 +25382,11 @@
           "paginates": false,
           "resource": "agent.surface",
           "result": "entity",
-          "verb": "upsert"
+          "verb": "update"
         }
       }
     },
-    "/pods/{pod_id}/surfaces/{platform}/channels": {
+    "/pods/{pod_id}/surfaces/{surface_name}/channels": {
       "get": {
         "description": "List the channels/groups this surface bot can be configured to respond in.\n\nReturns an empty list for platforms without an enumerable channel concept\n(Telegram groups, WhatsApp, email).",
         "operationId": "agent.surface.channels",
@@ -24789,10 +25403,10 @@
           },
           {
             "in": "path",
-            "name": "platform",
+            "name": "surface_name",
             "required": true,
             "schema": {
-              "title": "Platform",
+              "title": "Surface Name",
               "type": "string"
             }
           }
@@ -24832,9 +25446,82 @@
         }
       }
     },
-    "/pods/{pod_id}/surfaces/{platform}/setup": {
+    "/pods/{pod_id}/surfaces/{surface_name}/send": {
+      "post": {
+        "description": "Proactively send a message to a pod member on this surface.\n\nPowers notifications from functions/workflows. Reuses the member's existing\nthread on the surface (bots can't cold-DM), so a 404 means the member has no\nreachable conversation here yet.",
+        "operationId": "agent.surface.send",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pod_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pod Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "surface_name",
+            "required": true,
+            "schema": {
+              "title": "Surface Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SurfaceSendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SurfaceSendResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Surface Message",
+        "tags": [
+          "Agent Surfaces"
+        ],
+        "x-lemma": {
+          "invalidates": [
+            "agent.surface"
+          ],
+          "kind": "mutation",
+          "paginates": false,
+          "resource": "agent.surface",
+          "result": "entity",
+          "verb": "send"
+        }
+      }
+    },
+    "/pods/{pod_id}/surfaces/{surface_name}/setup": {
       "get": {
-        "description": "Everything needed to finish setting up this platform's surface.\n\nMerges the static platform checklist with live webhook + admin-consent\nstate. Works before the surface exists (guide only) and after (live state).",
+        "description": "Live setup state for an existing surface: static platform checklist plus\nwebhook URL and admin-consent status. For the pre-creation checklist (before\nany surface exists) use ``GET /pods/{pod_id}/surface-setup/{platform}``.",
         "operationId": "agent.surface.setup",
         "parameters": [
           {
@@ -24849,10 +25536,10 @@
           },
           {
             "in": "path",
-            "name": "platform",
+            "name": "surface_name",
             "required": true,
             "schema": {
-              "title": "Platform",
+              "title": "Surface Name",
               "type": "string"
             }
           }
@@ -25951,6 +26638,87 @@
           "resource": "icon.public",
           "result": "entity",
           "verb": "get"
+        }
+      }
+    },
+    "/surfaces/me": {
+      "get": {
+        "description": "Every surface across the current user's pods, grouped by platform, with\nthe chosen default and a ``conflict`` flag when more than one could answer.",
+        "operationId": "agent.surface.list_mine",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSurfacesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List My Surfaces",
+        "tags": [
+          "Agent Surfaces (Me)"
+        ],
+        "x-lemma": {
+          "kind": "query",
+          "paginates": false,
+          "resource": "agent.surface",
+          "result": "collection",
+          "verb": "list_mine"
+        }
+      }
+    },
+    "/surfaces/me/default": {
+      "put": {
+        "description": "Choose which surface answers the current user for a platform when several\ncould (e.g. a shared system bot spanning pods in different orgs).",
+        "operationId": "agent.surface.set_my_default",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDefaultSurfaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSurfacesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set My Default Surface",
+        "tags": [
+          "Agent Surfaces (Me)"
+        ],
+        "x-lemma": {
+          "invalidates": [
+            "agent.surface"
+          ],
+          "kind": "mutation",
+          "paginates": false,
+          "resource": "agent.surface",
+          "result": "entity",
+          "verb": "set_my_default"
         }
       }
     },

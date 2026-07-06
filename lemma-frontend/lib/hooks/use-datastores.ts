@@ -499,6 +499,50 @@ export const useUploadDatastoreFile = () => {
     });
 };
 
+/**
+ * Bring-your-own markdown: replace a document's agent-facing `document.md` (and
+ * the images it references) with a user-authored version. Applies to
+ * non-markdown documents (PDF, Word, HTML, …); the original file is unchanged.
+ */
+export const useAttachDocumentMarkdown = () => {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ podId, file_path, fileId, markdown, images }: {
+            podId: string;
+            datastoreName: string;
+            file_path?: string;
+            fileId?: string; // deprecated alias
+            markdown: Blob;
+            images?: File[];
+        }) => getLemmaClient(podId).files.markdown.attach(
+            resolveFilePath(file_path, fileId),
+            markdown,
+            { images },
+        ),
+        onSuccess: (_, variables) => {
+            queryClient.invalidateQueries({ queryKey: ['datastore-files', variables.podId, variables.datastoreName] });
+        },
+    });
+};
+
+/** Drop user-provided markdown so the document reverts to extraction. */
+export const useDetachDocumentMarkdown = () => {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ podId, file_path, fileId }: {
+            podId: string;
+            datastoreName: string;
+            file_path?: string;
+            fileId?: string; // deprecated alias
+        }) => getLemmaClient(podId).files.markdown.detach(resolveFilePath(file_path, fileId)),
+        onSuccess: (_, variables) => {
+            queryClient.invalidateQueries({ queryKey: ['datastore-files', variables.podId, variables.datastoreName] });
+        },
+    });
+};
+
 export const useCreateDatastoreFolder = () => {
     const queryClient = useQueryClient();
 

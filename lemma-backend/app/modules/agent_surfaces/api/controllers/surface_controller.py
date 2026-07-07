@@ -20,6 +20,7 @@ from app.modules.agent_surfaces.api.schemas import (
     AgentSurfaceResponse,
     AvailableSurfaceChannelResponse,
     AvailableSurfaceChannelsResponse,
+    AvailableSurfacesResponse,
     SurfaceBehaviorConfigInput,
     SurfaceConfigResponse,
     SurfaceCreateRequest,
@@ -39,9 +40,13 @@ from app.modules.agent_surfaces.domain.entities import (
 )
 from app.modules.agent_surfaces.domain.setup_guides import SurfacePlatformSetupGuide
 from app.modules.agent_surfaces.platforms.common import computed_webhook_url
+from app.modules.agent_surfaces.services.available_surfaces_builder import (
+    build_available_surfaces,
+)
 from app.modules.agent_surfaces.services.surface_service import (
     AgentSurfaceService,
 )
+from app.modules.connectors.api.dependencies import ConnectorServiceDep
 
 router = APIRouter(prefix="/pods/{pod_id}/surfaces", tags=["Agent Surfaces"])
 
@@ -49,6 +54,13 @@ router = APIRouter(prefix="/pods/{pod_id}/surfaces", tags=["Agent Surfaces"])
 # surface to exist yet, so it lives outside the surface-resource router.
 setup_guide_router = APIRouter(
     prefix="/pods/{pod_id}/surface-setup", tags=["Agent Surfaces"]
+)
+
+# The connectable-surface catalog (platform -> connector + supported credential
+# modes + connect schema) — also platform-level, needs no surface to exist. Kept
+# on its own path so it never collides with GET /surfaces/{surface_name}.
+available_surfaces_router = APIRouter(
+    prefix="/pods/{pod_id}/available-surfaces", tags=["Agent Surfaces"]
 )
 
 
@@ -551,3 +563,20 @@ async def get_surface_setup_guide(
     prerequisites) — works before any surface of this platform exists."""
     del user, pod_id
     return service.get_platform_setup_guide(platform)
+
+
+@available_surfaces_router.get(
+    "",
+    operation_id="agent.surface.available",
+    dependencies=[require_action(Permissions.AGENT_READ)],
+)
+async def list_available_surfaces(
+    pod_id: UUID,
+    user: CurrentUser,
+    connector_service: ConnectorServiceDep,
+) -> AvailableSurfacesResponse:
+    """The connectable-surface catalog: every surface platform with its connector,
+    supported credential modes, and the schema to connect an account. Platform-
+    level (no surface need exist); the pod scopes authorization only."""
+    del user, pod_id
+    return await build_available_surfaces(connector_service=connector_service)

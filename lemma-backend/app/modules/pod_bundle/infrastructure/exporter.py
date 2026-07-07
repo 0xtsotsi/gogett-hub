@@ -527,7 +527,9 @@ class BundleExporter:
         csv_text, kept = _csv_within_bytes(cleaned, data_budget.item_cap())
         if kept == 0:
             return 0, max(available, len(cleaned))
-        dest.write_text(csv_text, encoding="utf-8")
+        await run_blocking(
+            dest.write_text, csv_text, encoding="utf-8", limiter="cpu_bound"
+        )
         data_budget.consume(len(csv_text.encode("utf-8")))
         return kept, max(available, len(cleaned))
 
@@ -627,7 +629,9 @@ class BundleExporter:
         if dist_bytes and byte_budget.allow(
             name=f"apps/{app_name}/dist.zip", size=len(dist_bytes)
         ):
-            (dest / "dist.zip").write_bytes(dist_bytes)
+            await run_blocking(
+                (dest / "dist.zip").write_bytes, dist_bytes, limiter="cpu_bound"
+            )
 
     async def _export_pod_files(
         self,
@@ -706,7 +710,7 @@ class BundleExporter:
                 continue
             target = files_root.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
+            await run_blocking(target.write_bytes, content, limiter="cpu_bound")
             file_manifest.append(
                 {
                     "path": path,

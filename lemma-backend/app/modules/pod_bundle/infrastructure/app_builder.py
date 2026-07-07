@@ -397,7 +397,8 @@ class AppStepRunner:
             return source_bytes, dist_bytes
 
         if dist_zip.is_file():
-            return None, dist_zip.read_bytes()
+            dist_bytes = await run_blocking(dist_zip.read_bytes, limiter="cpu_bound")
+            return None, dist_bytes
 
         raise AppBuildFailedError(
             f"App '{name}' bundle has neither a source/ directory nor a dist.zip."

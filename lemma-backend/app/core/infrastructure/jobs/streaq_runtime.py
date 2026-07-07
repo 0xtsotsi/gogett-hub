@@ -215,6 +215,10 @@ async def worker_lifespan() -> AsyncGenerator[AppWorkerContext]:
     )
     init_telemetry(service_name="lemma-worker")
     instrument_database_engine(get_engine())
+    # Size the thread-offload pool before any task runs blocking work off-loop.
+    from app.core.concurrency.offload import configure_thread_pool
+
+    configure_thread_pool()
     # Pre-create Redis consumer groups BEFORE the broker starts its subscribers.
     # Several subscribers share a stream (e.g. workflow + surface both consume
     # `schedule_events`); at broker.start FastStream races to create each group,

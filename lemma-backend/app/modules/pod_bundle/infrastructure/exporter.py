@@ -47,6 +47,7 @@ from lemma_pod_bundle.normalize import (
 from lemma_pod_bundle.portability import _extract_portable_variables
 
 from app.core.authorization.context import Context
+from app.core.concurrency.offload import run_blocking
 from app.core.helpers.slug import slugify
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.core.log.log import get_logger
@@ -477,7 +478,8 @@ class BundleExporter:
                 with_files=wrote_files,
             )
 
-            zip_bytes = pack_bundle(root)
+            # DEFLATE over the whole bundle is CPU-bound; keep it off the loop.
+            zip_bytes = await run_blocking(pack_bundle, root, limiter="cpu_bound")
 
         bundle_filename = f"{slugify(pod_name) or 'pod'}.zip"
         await on_progress(total, total)
@@ -608,7 +610,9 @@ class BundleExporter:
 
         if source_bytes:
             if byte_budget.allow(name=f"apps/{app_name}/source", size=len(source_bytes)):
-                _extract_zip_bytes(source_bytes, dest / "source")
+                await run_blocking(
+                    _extract_zip_bytes, source_bytes, dest / "source", limiter="cpu_bound"
+                )
             return
 
         dist_bytes: bytes | None = None

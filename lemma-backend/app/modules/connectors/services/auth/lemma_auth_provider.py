@@ -11,6 +11,7 @@ from app.modules.connectors.domain.connector import ConnectorEntity
 from app.modules.connectors.domain.errors import ConnectorValidationError
 from app.modules.connectors.services.auth.auth_provider import AuthProviderInterface
 from app.modules.connectors.services.helpers.helpers import get_atlassian_cloud_id
+from app.core.concurrency.offload import run_blocking
 from app.core.log.log import get_logger
 
 logger = get_logger(__name__)
@@ -92,10 +93,11 @@ class LemmaAuthProvider(AuthProviderInterface):
             scope=oauth_config.default_scopes,
         )
 
-        token_data = await asyncio.to_thread(
+        token_data = await run_blocking(
             oauth.fetch_token,
             url=oauth_config.token_url,
             authorization_response=authorization_response,
+            limiter="external_http",
         )
 
         return await self._create_oauth_credentials(token_data, connector)
@@ -129,10 +131,11 @@ class LemmaAuthProvider(AuthProviderInterface):
             token=credentials.raw_response,
         )
 
-        token_data = await asyncio.to_thread(
+        token_data = await run_blocking(
             oauth.refresh_token,
             url=oauth_config.token_url,
             refresh_token=credentials.refresh_token,
+            limiter="external_http",
         )
 
         return await self._create_oauth_credentials(token_data, connector)

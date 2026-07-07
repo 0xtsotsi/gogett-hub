@@ -20,6 +20,7 @@ import tempfile
 
 import anyio
 
+from app.core.concurrency.offload import run_blocking
 from app.core.log.log import get_logger
 from app.modules.datastore.domain.document_processing import (
     DocumentExtraction,
@@ -67,7 +68,11 @@ class MarkItDownDocumentProcessor(PdfPageRenderingMixin):
         mime_type: str | None = None,
     ) -> DocumentExtraction:
         markdown = (await anyio.to_thread.run_sync(self._convert_sync, content, filename)).strip()
-        chunks = chunk_markdown(markdown) if markdown else []
+        chunks = (
+            await run_blocking(chunk_markdown, markdown, limiter="cpu_bound")
+            if markdown
+            else []
+        )
         pages = await anyio.to_thread.run_sync(
             self._pdf_pages, content, mime_type, filename
         )

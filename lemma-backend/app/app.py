@@ -121,6 +121,9 @@ async def lifespan(app: FastAPI):
 
         # Core startup
         logger.info("Application starting up")
+        from app.core.concurrency.offload import configure_thread_pool
+
+        configure_thread_pool()
         initialize_supertokens()
         await channel_service.connect()
         await get_streaq_job_queue().connect()

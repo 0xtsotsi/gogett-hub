@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import UUID
 
+from app.core.concurrency.offload import run_blocking
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.datastore.config import datastore_settings
 from app.modules.datastore.domain.document_processing import (
@@ -305,7 +306,10 @@ class DatastoreFileProcessingService:
                 markdown = raw.decode("utf-8", "replace")
                 if markdown.strip():
                     images = await self._load_user_markdown_images(file_entity)
-                    return self._extraction_from_user_markdown(markdown, images), raw
+                    extraction = await self._extraction_from_user_markdown(
+                        markdown, images
+                    )
+                    return extraction, raw
             logger.warning(
                 "File %s is flagged markdown_source=user but its source.md is "
                 "missing/empty; falling back to document extraction",
@@ -353,7 +357,7 @@ class DatastoreFileProcessingService:
             )
         return images
 
-    def _extraction_from_user_markdown(
+    async def _extraction_from_user_markdown(
         self, markdown: str, images: list[DocumentImage]
     ) -> DocumentExtraction:
         """Build a ``DocumentExtraction`` from user-provided markdown: rewrite its
@@ -361,7 +365,9 @@ class DatastoreFileProcessingService:
         sibling child artifacts), chunk it in-process, and derive per-page
         summaries from any ``<!-- PAGE n -->`` markers."""
         markdown = rewrite_image_references(markdown, {image.name for image in images})
-        chunks = chunk_markdown(markdown)
+        # chunk_markdown is a pure-Python loop over the whole document; keep it
+        # off the event loop so a large doc doesn't stall the worker.
+        chunks = await run_blocking(chunk_markdown, markdown, limiter="cpu_bound")
         page_count = max((page for _, page in parse_page_offsets(markdown)), default=0)
         pages = [DocumentPage(page_number=number) for number in range(1, page_count + 1)]
         return DocumentExtraction(

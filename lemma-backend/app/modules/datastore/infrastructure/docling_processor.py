@@ -30,6 +30,7 @@ import tempfile
 import aiohttp
 import anyio
 
+from app.core.concurrency.offload import run_blocking
 from app.core.log.log import get_logger
 from app.modules.datastore.config import datastore_settings
 from app.modules.datastore.domain.document_processing import (
@@ -89,7 +90,11 @@ class DoclingDocumentProcessor(PdfPageRenderingMixin):
             raise ValueError("Docling serve URL not configured")
         raw_markdown = await self._convert(content, filename, mime_type)
         markdown = self._number_page_markers(raw_markdown)
-        chunks = chunk_markdown(markdown) if markdown.strip() else []
+        chunks = (
+            await run_blocking(chunk_markdown, markdown, limiter="cpu_bound")
+            if markdown.strip()
+            else []
+        )
         pages = await anyio.to_thread.run_sync(
             self._pdf_pages, content, mime_type, filename
         )

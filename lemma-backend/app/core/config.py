@@ -107,6 +107,43 @@ class Settings(BaseSettings):
             "task that opens a DB session consumes one pooled connection."
         ),
     )
+    # --- Thread-offload pool (app.core.concurrency.offload) ---
+    # Blocking work (CPU-bound, sync SDKs, KMS) runs in worker threads via
+    # run_blocking(). These partition the pool by workload class so one class
+    # can't starve another, and the total raises anyio's default (40) to leave
+    # headroom for residual un-limited offloads (embedder/reranker).
+    offload_total_threads: int = Field(
+        default=64,
+        description=(
+            "Total worker threads for off-loop blocking work (anyio's global "
+            "default thread limiter). Raised from the anyio default (40) so the "
+            "named sub-limiters below, which sum above 40, have room alongside "
+            "un-limited offloads. Env: ``OFFLOAD_TOTAL_THREADS``."
+        ),
+    )
+    offload_cpu_bound_limit: int = Field(
+        default=8,
+        description=(
+            "Max concurrent CPU-bound offloads (markdown chunking, tokenizing, "
+            "zip/unzip). Env: ``OFFLOAD_CPU_BOUND_LIMIT``."
+        ),
+    )
+    offload_external_http_limit: int = Field(
+        default=24,
+        description=(
+            "Max concurrent blocking external-HTTP offloads (sync connector SDKs "
+            "like Composio, OAuth token exchanges). Sized near worker_concurrency "
+            "so connector-heavy runs aren't throttled, while still bounded. Env: "
+            "``OFFLOAD_EXTERNAL_HTTP_LIMIT``."
+        ),
+    )
+    offload_crypto_limit: int = Field(
+        default=8,
+        description=(
+            "Max concurrent crypto offloads (KMS wrap/unwrap gRPC). Env: "
+            "``OFFLOAD_CRYPTO_LIMIT``."
+        ),
+    )
     agent_run_stop_poll_interval_seconds: float = Field(
         default=1.0,
         description=(

@@ -48,6 +48,14 @@ class SurfaceSettings(BaseSettings):
             "Useful for local testing of Teams webhook JWT validation."
         ),
     )
+    microsoft_bot_app_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-friendly display name of the Lemma Teams bot, used as the "
+            "surface reach handle when the Graph servicePrincipal lookup is "
+            "unavailable (e.g. Application.Read.All not consented)."
+        ),
+    )
 
     # Slack
     slack_signing_secret: Optional[str] = Field(

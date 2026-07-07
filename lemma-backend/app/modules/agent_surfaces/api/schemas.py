@@ -155,6 +155,19 @@ class SurfaceUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SurfaceReach(BaseModel):
+    """How a human reaches this surface.
+
+    ``handle`` is the platform-native name a person types/sees to message the
+    bot (Slack/Teams bot display name, Telegram ``@username``, WhatsApp phone,
+    or the account/email for email surfaces). ``email`` is the surface's email
+    address, when it has one.
+    """
+
+    handle: str | None = None
+    email: str | None = None
+
+
 class AgentSurfaceResponse(BaseModel):
     id: UUID
     pod_id: UUID
@@ -167,7 +180,9 @@ class AgentSurfaceResponse(BaseModel):
     account_id: UUID | None = None
     surface_identity_id: str | None = None
     surface_identity_username: str | None = None
+    surface_identity_email: str | None = None
     webhook_url: str | None = None
+    reach: SurfaceReach | None = None
     config: SurfaceConfigResponse
     status: AgentSurfaceStatus = AgentSurfaceStatus.ACTIVE
 

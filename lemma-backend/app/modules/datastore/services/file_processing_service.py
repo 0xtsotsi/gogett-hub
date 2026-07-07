@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from app.modules.datastore.infrastructure.inflight_budget import (
     get_inflight_byte_budget,
 )
 from app.modules.datastore.infrastructure.markdown_chunker import chunk_markdown
+from app.modules.datastore.infrastructure.streaming import stream_to_tempfile
 from app.modules.datastore.infrastructure.markdown_images import (
     rewrite_image_references,
 )
@@ -316,14 +318,24 @@ class DatastoreFileProcessingService:
                 file_entity.path,
             )
 
-        source_content = await self.storage.download_file(
-            build_datastore_file_storage_key(self.pod_id, file_entity.path)
-        )
-        extraction = await self.document_processor.extract(
-            source_content,
-            file_entity.name,
-            mime_type=self._base_mime_type(file_entity),
-        )
+        # Stream the source to a temp file instead of buffering the whole file in
+        # memory. The processor extracts from the path (Kreuzberg streams it to
+        # its multipart body; markitdown/docling read it off the loop), so peak
+        # memory stays ~one chunk rather than the file plus a BytesIO copy.
+        storage_key = build_datastore_file_storage_key(self.pod_id, file_entity.path)
+        tmp_path = await stream_to_tempfile(self.storage.iter_download(storage_key))
+        try:
+            extraction = await self.document_processor.extract(
+                None,
+                file_entity.name,
+                mime_type=self._base_mime_type(file_entity),
+                content_path=tmp_path,
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return extraction, None
 
     async def _load_user_markdown_images(

@@ -13,11 +13,13 @@ from typing import Any
 import aiohttp
 import anyio
 
+from app.core.concurrency.offload import run_blocking
 from app.modules.datastore.config import datastore_settings
 from app.modules.datastore.infrastructure.kreuzberg_circuit import (
     get_kreuzberg_circuit,
 )
 from app.modules.datastore.infrastructure.pdf_renderer import get_pdf_text_sample
+from app.modules.datastore.infrastructure.streaming import open_binary
 from app.core.log.log import get_logger
 
 logger = get_logger(__name__)
@@ -213,12 +215,13 @@ class KreuzbergHelper:
 
     async def process_file(
         self,
-        file_content: bytes,
+        file_content: bytes | None,
         filename: str,
         chunk_content: bool = True,
         max_chars: int = 1000,
         max_overlap: int = 200,
         mime_type: str | None = None,
+        content_path: str | None = None,
         **kwargs,
     ) -> KreuzbergExtractionResult:
         if not self.base_url:
@@ -243,7 +246,9 @@ class KreuzbergHelper:
         ocr_enabled = datastore_settings.document_processing_ocr_enabled
         initial_force_ocr = False
         if ocr_enabled and mime_type == "application/pdf":
-            initial_force_ocr = await self._pdf_needs_ocr(file_content)
+            initial_force_ocr = await self._pdf_needs_ocr(
+                file_content, content_path=content_path
+            )
 
         async with aiohttp.ClientSession(timeout=self.request_timeout) as session:
             config = self._build_extract_config(
@@ -258,6 +263,7 @@ class KreuzbergHelper:
                 filename=filename,
                 mime_type=mime_type,
                 config=config,
+                content_path=content_path,
             )
             extraction.extraction_mode = "ocr" if initial_force_ocr else "direct"
 
@@ -281,6 +287,7 @@ class KreuzbergHelper:
                     filename=filename,
                     mime_type=mime_type,
                     config=config,
+                    content_path=content_path,
                 )
                 extraction.extraction_mode = "ocr"
 
@@ -298,7 +305,9 @@ class KreuzbergHelper:
 
             return extraction
 
-    async def _pdf_needs_ocr(self, content: bytes) -> bool:
+    async def _pdf_needs_ocr(
+        self, content: bytes | None, content_path: str | None = None
+    ) -> bool:
         """Probe a PDF with pypdfium2 to decide scanned-vs-native up front.
 
         Native PDFs carry a text layer; scanned ones don't. Deciding here lets us
@@ -306,20 +315,18 @@ class KreuzbergHelper:
         heavy layout path and reactively re-extracting. Runs off the event loop.
         Any failure (encrypted / corrupt / 0-page) falls back to the native path
         — the prior default — rather than failing the extraction.
+
+        When ``content_path`` is given (the streamed source on disk) it is probed
+        directly — no extra copy is written.
         """
         sample_pages = max(1, datastore_settings.pdf_ocr_detection_sample_pages)
         min_chars = datastore_settings.pdf_ocr_detection_min_chars_per_page
-        # Write to a temp file so PDFium mmaps it (peak ≈ one page, no second copy
-        # of the input held in the backend); mirror render_pages' cleanup shape.
-        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        try:
-            tmp.write(content)
-            tmp.flush()
-            tmp.close()
-            probe = partial(get_pdf_text_sample, max_pages=sample_pages)
+        probe = partial(get_pdf_text_sample, max_pages=sample_pages)
+
+        async def _probe(path: str) -> bool:
             try:
                 pages_sampled, total_chars = await anyio.to_thread.run_sync(
-                    probe, tmp.name
+                    probe, path
                 )
             except Exception:
                 logger.debug(
@@ -330,6 +337,18 @@ class KreuzbergHelper:
             if pages_sampled <= 0:
                 return False
             return (total_chars / pages_sampled) < min_chars
+
+        if content_path is not None:
+            return await _probe(content_path)
+
+        # Write to a temp file so PDFium mmaps it (peak ≈ one page, no second copy
+        # of the input held in the backend); mirror render_pages' cleanup shape.
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        try:
+            tmp.write(content or b"")
+            tmp.flush()
+            tmp.close()
+            return await _probe(tmp.name)
         finally:
             try:
                 os.unlink(tmp.name)
@@ -459,10 +478,11 @@ class KreuzbergHelper:
         self,
         session: aiohttp.ClientSession,
         *,
-        file_content: bytes,
+        file_content: bytes | None,
         filename: str,
         mime_type: str,
         config: dict[str, Any],
+        content_path: str | None = None,
     ) -> KreuzbergExtractionResult:
         fallback_configs = [
             self._build_compat_extract_config(config),
@@ -485,6 +505,7 @@ class KreuzbergHelper:
                     filename=filename,
                     mime_type=mime_type,
                     config=candidate,
+                    content_path=content_path,
                 )
             except RuntimeError as exc:
                 last_error = exc
@@ -526,25 +547,12 @@ class KreuzbergHelper:
         self,
         session: aiohttp.ClientSession,
         *,
-        file_content: bytes,
+        file_content: bytes | None,
         filename: str,
         mime_type: str,
         config: dict[str, Any] | None = None,
+        content_path: str | None = None,
     ) -> KreuzbergExtractionResult:
-        form_data = aiohttp.FormData()
-        form_data.add_field(
-            "files",
-            BytesIO(file_content),
-            filename=filename,
-            content_type=mime_type,
-        )
-        if config:
-            form_data.add_field(
-                "config",
-                json.dumps(config),
-                content_type="application/json",
-            )
-
         max_attempts = (
             datastore_settings.kreuzberg_transient_retry_attempts
             or _TRANSIENT_RETRY_ATTEMPTS
@@ -559,6 +567,28 @@ class KreuzbergHelper:
         circuit.raise_if_open()
 
         for attempt in range(max_attempts):
+            # Build the multipart body fresh each attempt: a streamed file handle
+            # is consumed once, so it can't be reused across retries. With a
+            # content_path we stream the file from disk (peak memory ≈ one chunk)
+            # instead of holding a full BytesIO copy.
+            file_obj = None
+            if content_path is not None:
+                file_obj = await run_blocking(
+                    open_binary, content_path, limiter="cpu_bound"
+                )
+                source: Any = file_obj
+            else:
+                source = BytesIO(file_content or b"")
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "files", source, filename=filename, content_type=mime_type
+            )
+            if config:
+                form_data.add_field(
+                    "config",
+                    json.dumps(config),
+                    content_type="application/json",
+                )
             try:
                 async with session.post(
                     f"{self.base_url}/extract",
@@ -594,6 +624,9 @@ class KreuzbergHelper:
             except aiohttp.ClientError as exc:
                 # Non-connection client error — not worth a same-request retry.
                 raise RuntimeError("Kreuzberg extract request failed") from exc
+            finally:
+                if file_obj is not None:
+                    file_obj.close()
         # Unreachable: the loop either returns or raises on the final attempt.
         raise RuntimeError("Kreuzberg extract request failed")
 

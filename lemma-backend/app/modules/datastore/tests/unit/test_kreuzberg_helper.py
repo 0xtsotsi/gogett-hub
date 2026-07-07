@@ -400,6 +400,43 @@ async def test_extract_retries_transient_connection_error_then_succeeds(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_extract_streams_content_path_instead_of_buffering(monkeypatch, tmp_path):
+    """When given a content_path, _extract streams the file from disk (opens it)
+    rather than holding a BytesIO copy of the bytes."""
+    doc = tmp_path / "paper.pdf"
+    doc.write_bytes(b"PDF-ON-DISK")
+
+    opened: list[str] = []
+    real_open = kreuzberg_module.open_binary
+
+    def _spy_open(path):
+        opened.append(path)
+        return real_open(path)
+
+    monkeypatch.setattr(kreuzberg_module, "open_binary", _spy_open)
+
+    response = SimpleNamespace(
+        status=200,
+        json=AsyncMock(return_value=[{"content": "ok", "chunks": [{"text": "ok"}]}]),
+    )
+    session = SimpleNamespace(post=_FlakyPost(fail_times=0, response=response))
+
+    helper = KreuzbergHelper()
+    result = await helper._extract(
+        session,
+        file_content=None,
+        filename="paper.pdf",
+        mime_type="application/pdf",
+        config=None,
+        content_path=str(doc),
+    )
+
+    assert result.content == "ok"
+    # The on-disk source was streamed (opened) rather than buffered from bytes.
+    assert opened == [str(doc)]
+
+
+@pytest.mark.asyncio
 async def test_extract_raises_after_exhausting_transient_retries(monkeypatch):
     """Persistent connection failures are retried a bounded number of times and
     then surface as a single RuntimeError rather than retrying forever."""

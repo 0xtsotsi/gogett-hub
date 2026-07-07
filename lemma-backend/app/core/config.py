@@ -3,6 +3,7 @@ from typing import Literal, Optional
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.core.settings_env import dotenv_path
 
 
 def _default_local_root() -> Path:
@@ -28,7 +29,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+        env_file=dotenv_path(), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
     environment: Literal["local", "development", "production", "testing"] = Field(
         default="local",

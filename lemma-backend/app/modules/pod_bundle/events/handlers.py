@@ -23,6 +23,7 @@ from pathlib import Path
 from uuid import UUID
 
 from app.core.authorization.scope import context_scope, uow_scope
+from app.core.concurrency.offload import run_blocking
 from app.core.authorization.service import AuthorizationDataService
 from app.core.domain.errors import DomainError
 from app.core.infrastructure.jobs.streaq_runtime import (
@@ -563,7 +564,7 @@ async def publish_pod_github(context: dict[str, str | None]) -> None:
                     on_progress=_noop_progress,
                 )
 
-        files = _zip_to_files(zip_bytes)
+        files = await run_blocking(_zip_to_files, zip_bytes, limiter="cpu_bound")
         counts = _resource_counts(files)
         pod_meta = _pod_meta_from_files(files)
         repo_description = pod_meta.get("description")

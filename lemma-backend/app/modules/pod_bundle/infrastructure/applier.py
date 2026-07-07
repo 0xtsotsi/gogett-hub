@@ -19,9 +19,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from lemma_pod_bundle import load_resource_payload
-from lemma_pod_bundle.apply_fields import SCHEDULE_APPLY_FIELDS, SURFACE_APPLY_FIELDS
+from lemma_pod_bundle.apply_fields import SCHEDULE_APPLY_FIELDS
 from lemma_pod_bundle.layout import TABLE_DATA_FILE
 
+from app.core.concurrency.offload import run_blocking
 from app.core.log.log import get_logger
 from app.modules.pod_bundle.domain.errors import PodBundleDomainError
 from app.modules.pod_bundle.domain.state import PlanStep, StepKind
@@ -192,10 +193,11 @@ class BundleApplier:
             return
         meta = _file_manifest_entry(files_root, pod_path)
         directory_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+        file_content = await run_blocking(source.read_bytes, limiter="cpu_bound")
         await service.create_file(
             self._pod_id,
             parts[-1],
-            source.read_bytes(),
+            file_content,
             self._ctx,
             description=meta.get("description"),
             directory_path=directory_path,

@@ -47,6 +47,7 @@ from lemma_pod_bundle.normalize import (
 from lemma_pod_bundle.portability import _extract_portable_variables
 
 from app.core.authorization.context import Context
+from app.core.concurrency.offload import run_blocking
 from app.core.helpers.slug import slugify
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.core.log.log import get_logger
@@ -477,7 +478,8 @@ class BundleExporter:
                 with_files=wrote_files,
             )
 
-            zip_bytes = pack_bundle(root)
+            # DEFLATE over the whole bundle is CPU-bound; keep it off the loop.
+            zip_bytes = await run_blocking(pack_bundle, root, limiter="cpu_bound")
 
         bundle_filename = f"{slugify(pod_name) or 'pod'}.zip"
         await on_progress(total, total)
@@ -525,7 +527,9 @@ class BundleExporter:
         csv_text, kept = _csv_within_bytes(cleaned, data_budget.item_cap())
         if kept == 0:
             return 0, max(available, len(cleaned))
-        dest.write_text(csv_text, encoding="utf-8")
+        await run_blocking(
+            dest.write_text, csv_text, encoding="utf-8", limiter="cpu_bound"
+        )
         data_budget.consume(len(csv_text.encode("utf-8")))
         return kept, max(available, len(cleaned))
 
@@ -608,7 +612,9 @@ class BundleExporter:
 
         if source_bytes:
             if byte_budget.allow(name=f"apps/{app_name}/source", size=len(source_bytes)):
-                _extract_zip_bytes(source_bytes, dest / "source")
+                await run_blocking(
+                    _extract_zip_bytes, source_bytes, dest / "source", limiter="cpu_bound"
+                )
             return
 
         dist_bytes: bytes | None = None
@@ -623,7 +629,9 @@ class BundleExporter:
         if dist_bytes and byte_budget.allow(
             name=f"apps/{app_name}/dist.zip", size=len(dist_bytes)
         ):
-            (dest / "dist.zip").write_bytes(dist_bytes)
+            await run_blocking(
+                (dest / "dist.zip").write_bytes, dist_bytes, limiter="cpu_bound"
+            )
 
     async def _export_pod_files(
         self,
@@ -702,7 +710,7 @@ class BundleExporter:
                 continue
             target = files_root.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
+            await run_blocking(target.write_bytes, content, limiter="cpu_bound")
             file_manifest.append(
                 {
                     "path": path,

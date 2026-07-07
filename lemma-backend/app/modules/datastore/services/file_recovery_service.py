@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -86,8 +87,12 @@ class DatastoreFileRecoveryService:
             )
             await self.uow.commit()
 
+        # Re-drive in bounded batches, yielding between them, so a large backlog
+        # is spread out instead of dispatched as one burst that spikes worker
+        # pickup + DB connection demand.
+        batch_size = max(1, datastore_settings.recovery_enqueue_batch_size)
         enqueued_count = 0
-        for file_entity in stale_files:
+        for index, file_entity in enumerate(stale_files):
             # Indexing-eligibility is NOT re-checked here: ``reindex_queue.enqueue``
             # gates on PENDING + search_enabled, which is the same rule the
             # indexing policy enforces at write time. Non-indexable files are
@@ -101,6 +106,8 @@ class DatastoreFileRecoveryService:
             )
             if queued:
                 enqueued_count += 1
+            if (index + 1) % batch_size == 0:
+                await asyncio.sleep(0)
 
         return DatastoreFileRecoverySummary(
             examined_count=len(stale_files),

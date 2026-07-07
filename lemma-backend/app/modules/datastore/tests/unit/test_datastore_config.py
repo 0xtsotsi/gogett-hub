@@ -17,6 +17,7 @@ EXPECTED = [
     ("datastore_query_max_plan_rows", "DATASTORE_QUERY_MAX_PLAN_ROWS", 5_000_000),
     ("document_processing_max_concurrency", "DOCUMENT_PROCESSING_MAX_CONCURRENCY", 2),
     ("document_processing_debounce_seconds", "DOCUMENT_PROCESSING_DEBOUNCE_SECONDS", 300),
+    ("recovery_enqueue_batch_size", "RECOVERY_ENQUEUE_BATCH_SIZE", 10),
     ("datastore_recovery_max_attempts", "DATASTORE_RECOVERY_MAX_ATTEMPTS", 3),
     ("document_processing_max_file_bytes", "DOCUMENT_PROCESSING_MAX_FILE_BYTES", 104_857_600),
     ("document_processing_max_inflight_bytes", "DOCUMENT_PROCESSING_MAX_INFLIGHT_BYTES", 0),

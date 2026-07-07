@@ -65,6 +65,16 @@ class DatastoreSettings(BaseSettings):
         default=300,
         description="Debounce window for datastore file content updates before enqueueing document processing.",
     )
+    recovery_enqueue_batch_size: int = Field(
+        default=10,
+        description=(
+            "The recovery cron re-drives stale files in batches of this size, "
+            "yielding to the event loop between batches, so a large backlog is "
+            "spread out instead of dispatched as one burst (which would spike "
+            "worker task pickup and DB connection demand). Env: "
+            "``RECOVERY_ENQUEUE_BATCH_SIZE``."
+        ),
+    )
     datastore_recovery_max_attempts: int = Field(
         default=3,
         description=(

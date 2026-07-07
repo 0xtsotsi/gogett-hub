@@ -144,6 +144,39 @@ class Settings(BaseSettings):
             "``OFFLOAD_CRYPTO_LIMIT``."
         ),
     )
+    # --- Event-loop watchdog (app.core.observability.loop_watchdog) ---
+    loop_lag_watchdog_interval_seconds: float = Field(
+        default=0.5,
+        description=(
+            "How often the watchdog probes event-loop lag and refreshes the "
+            "liveness heartbeat. Env: ``LOOP_LAG_WATCHDOG_INTERVAL_SECONDS``."
+        ),
+    )
+    loop_lag_warn_seconds: float = Field(
+        default=0.3,
+        description=(
+            "Log a warning when measured event-loop lag exceeds this. Env: "
+            "``LOOP_LAG_WARN_SECONDS``."
+        ),
+    )
+    loop_lag_unhealthy_seconds: float = Field(
+        default=5.0,
+        description=(
+            "Event-loop lag above this marks the process unhealthy: /livez "
+            "returns 503 so a Kubernetes liveness probe restarts a wedged loop. "
+            "Env: ``LOOP_LAG_UNHEALTHY_SECONDS``."
+        ),
+    )
+    worker_heartbeat_path: str = Field(
+        default="/tmp/worker_heartbeat",
+        description=(
+            "File the loop watchdog rewrites (epoch seconds) each tick. The "
+            "worker has no HTTP server, so its Kubernetes liveness probe execs a "
+            "freshness check on this file — a wedged loop stops updating it and "
+            "the pod is restarted. Set empty to disable heartbeat writes. Env: "
+            "``WORKER_HEARTBEAT_PATH``."
+        ),
+    )
     agent_run_stop_poll_interval_seconds: float = Field(
         default=1.0,
         description=(

@@ -58,6 +58,26 @@ class PodBundleSettings(BaseSettings):
         description="HTTP timeout (seconds) for fetching a GitHub repo zipball.",
     )
 
+    # --- Per-user daily abuse guard --------------------------------------
+    # Export and import are long-running jobs (archive assembly, agentbox app
+    # builds, multi-resource apply). A generous per-user daily cap stops a
+    # single account from hammering the workers; buckets are independent so a
+    # day of exports never blocks imports (and vice versa). 0 disables the cap.
+    pod_bundle_daily_export_limit: int = Field(
+        default=5,
+        description=(
+            "Max export jobs a single user may start per UTC day "
+            "(env: POD_BUNDLE_DAILY_EXPORT_LIMIT). 0 disables the limit."
+        ),
+    )
+    pod_bundle_daily_import_limit: int = Field(
+        default=5,
+        description=(
+            "Max import jobs a single user may start per UTC day "
+            "(env: POD_BUNDLE_DAILY_IMPORT_LIMIT). 0 disables the limit."
+        ),
+    )
+
     # --- Export download URL retention -----------------------------------
     pod_bundle_export_url_ttl_seconds: int = Field(
         default=24 * 60 * 60,

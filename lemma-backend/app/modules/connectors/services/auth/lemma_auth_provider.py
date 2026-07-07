@@ -176,7 +176,7 @@ class LemmaAuthProvider(AuthProviderInterface):
             expires_at = datetime.now().replace(microsecond=0) + timedelta(
                 seconds=token_data["expires_in"]
             )
-        if connector.id == "teams":
+        if connector.id == "microsoft_teams":
             import base64
             import json as _json
 

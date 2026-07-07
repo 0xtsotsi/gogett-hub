@@ -697,13 +697,13 @@ async def test_surface_apply_accepts_matching_connector_account(tmp_path, monkey
             "name": "teams",
             "platform": "TEAMS",
             "account_id": "${teams_account}",
-            "connector_id": "teams",
+            "connector_id": "microsoft_teams",
             "provider": "LEMMA",
             "is_enabled": True,
         },
     )
     surface_fake = FakeSurfaceService()
-    connector_account = SimpleNamespace(connector_id="teams", auth_config_id=uuid4())
+    connector_account = SimpleNamespace(connector_id="microsoft_teams", auth_config_id=uuid4())
     _patch_surface_deps(monkeypatch, surface_fake, _FakeConnectorService(connector_account))
 
     applier = _applier(root, replacements={"teams_account": str(account)})
@@ -726,7 +726,7 @@ async def test_surface_apply_rejects_wrong_connector_account(tmp_path, monkeypat
             "name": "teams",
             "platform": "TEAMS",
             "account_id": "${teams_account}",
-            "connector_id": "teams",
+            "connector_id": "microsoft_teams",
             "provider": "LEMMA",
             "is_enabled": True,
         },
@@ -753,7 +753,7 @@ async def test_surface_apply_rejects_missing_account(tmp_path, monkeypatch):
             "name": "teams",
             "platform": "TEAMS",
             "account_id": "${teams_account}",
-            "connector_id": "teams",
+            "connector_id": "microsoft_teams",
             "provider": "LEMMA",
             "is_enabled": True,
         },

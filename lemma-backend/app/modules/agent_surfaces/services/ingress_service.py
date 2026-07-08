@@ -222,6 +222,21 @@ class AgentSurfaceIngressService:
                     platform,
                 )
                 return None
+        elif platform in {
+            SurfacePlatform.TELEGRAM.value,
+            SurfacePlatform.WHATSAPP.value,
+        }:
+            # Platform-wide webhooks are shared system credentials. Custom/bound
+            # bots must arrive with receiver_surface_ids (native receiver) or via
+            # a direct surface webhook; otherwise continuity for the same external
+            # user/thread can accidentally pull a system-bot message into a
+            # custom-bot conversation.
+            surfaces = [
+                surface
+                for surface in surfaces
+                if surface.account_id is None
+                and surface.credential_mode is SurfaceCredentialMode.SYSTEM
+            ]
 
         # Mention verification for Telegram groups: the parser records any
         # @username / text_mention entities but does NOT set mentioned_agent for

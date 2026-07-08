@@ -104,7 +104,7 @@ async def _make_approved_tool_resolvable(
     ``request_approval``'s wrapped-tool execution (``ApprovalExecutor``) runs
     independently of the scripted-mock harness run and resolves the AGENT's
     (not the paused RUN's) runtime profile to decide tool availability — the
-    default test agent's "system:fireworks" profile isn't configured in this
+    default test agent's "system:lemma" profile isn't the scripted local runtime in this
     e2e environment, so that resolution must be redirected too.
     """
     runtime_profile_id = await _ensure_e2e_runtime_profile(

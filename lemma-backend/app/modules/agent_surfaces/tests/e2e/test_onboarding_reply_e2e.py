@@ -30,11 +30,20 @@ from app.modules.test_support.e2e_authz import signup_user
 pytestmark = pytest.mark.e2e
 
 
-async def _prepare_telegram_dm(db_session: AsyncSession, payload: dict):
+async def _prepare_telegram_dm(
+    db_session: AsyncSession,
+    payload: dict,
+    *,
+    receiver_surface_ids: list[UUID] | None = None,
+):
     uow = SqlAlchemyUnitOfWork(db_session)
     handler = build_surface_event_handler(uow)
     context = await handler.prepare_ingress(
-        SurfacePlatformWebhookIngress(source="telegram", payload=payload)
+        SurfacePlatformWebhookIngress(
+            source="telegram",
+            payload=payload,
+            receiver_surface_ids=receiver_surface_ids,
+        )
     )
     await uow.commit()
     return context
@@ -90,7 +99,7 @@ async def test_custom_bot_signed_up_non_member_gets_pod_access_link(
         connector_id="telegram",
         credentials={"bot_token": "custom-onboarding-bot"},
     )
-    await _create_surface(
+    surface = await _create_surface(
         authenticated_client,
         pod_id,
         config={"type": "TELEGRAM", "account_id": str(account.id)},
@@ -108,6 +117,7 @@ async def test_custom_bot_signed_up_non_member_gets_pod_access_link(
     context = await _prepare_telegram_dm(
         db_session,
         _telegram_payload(text="let me in", message_id=5, sender_id=700700700),
+        receiver_surface_ids=[UUID(surface["id"])],
     )
 
     # Instead of being dropped, they get a pod-access / join-request link.

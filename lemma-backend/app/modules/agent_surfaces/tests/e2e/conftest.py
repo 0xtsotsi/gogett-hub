@@ -21,8 +21,12 @@ from app.modules.agent_surfaces.tests.e2e.helpers import (
     fake_whatsapp,
     message_store,
 )
+from app.modules.agent.tests.e2e.system_lemma_helpers import (
+    skip_unless_system_lemma,
+    system_lemma_api_key,
+    system_lemma_env_overlay,
+)
 from app.modules.test_support.e2e import fixtures as e2e_fixtures
-from app.modules.test_support.e2e.runtime import _read_root_env_value
 
 # Re-export shared E2E fixtures so this module can run with --confcutdir.
 test_network = e2e_fixtures.test_network
@@ -43,24 +47,13 @@ db_session = e2e_fixtures.db_session
 scenario = e2e_fixtures.scenario
 
 
-def _fireworks_credential() -> str | None:
-    return (
-        os.getenv("FIREWORKS_API_KEY")
-        or _read_root_env_value("FIREWORKS_API_KEY")
-        or _read_root_env_value("lemma_openai_api_key")
-    )
-
-
 @pytest_asyncio.fixture(scope="function")
-async def fireworks_worker(e2e_settings):
-    """Production streaq worker subprocess wired to the Fireworks ``system:lemma``
-    runtime, sharing the test's Postgres/Redis.
+async def system_lemma_worker(e2e_settings):
+    """Production streaq worker subprocess wired to ``system:lemma``.
 
-    This is what makes surface e2e fully real: the in-process app publishes the
-    webhook event to Redis, this worker consumes it, runs the agent on Fireworks,
-    and the observer delivers the reply — nothing is simulated except the inbound
-    webhook payload and the external platform API (a local fake). Skips when no
-    Fireworks credential is configured.
+    Default e2e mode uses the deterministic FunctionModel token source. When
+    ``E2E_LLM_MODE=real`` is set, the existing system:lemma helper gates on the
+    configured LEMMA_OPENAI_* credentials.
     """
     import asyncio
 
@@ -68,21 +61,19 @@ async def fireworks_worker(e2e_settings):
 
     from app.core.config import settings
 
-    key = _fireworks_credential()
-    if not key:
-        pytest.skip(
-            "Fireworks credential unavailable; set FIREWORKS_API_KEY to run "
-            "fully-real surface agent e2e tests."
-        )
+    skip_unless_system_lemma()
+    env_overlay = system_lemma_env_overlay()
+    key = system_lemma_api_key()
 
     previous_setting = settings.lemma_openai_api_key
-    settings.lemma_openai_api_key = key
+    if key:
+        settings.lemma_openai_api_key = key
 
     redis_client = redis.from_url(e2e_settings.redis_url, decode_responses=False)
     await redis_client.flushdb()
     await redis_client.aclose()
 
-    log_path = f"/tmp/lemma_surface_worker_{uuid4().hex}.log"
+    log_path = f"/tmp/lemma_system_lemma_surface_worker_{uuid4().hex}.log"
     backend_root = Path(__file__).resolve().parents[5]
 
     def _read_log() -> str:
@@ -101,6 +92,7 @@ async def fireworks_worker(e2e_settings):
             cwd=str(backend_root),
             env={
                 **os.environ,
+                **env_overlay,
                 "PYTHONPATH": ".",
                 "PYTHONUNBUFFERED": "1",
                 "DATABASE_URL": e2e_settings.database_url,
@@ -118,8 +110,6 @@ async def fireworks_worker(e2e_settings):
                 "LOCAL_OBJECT_STORAGE_ROOT": e2e_settings.local_object_storage_root,
                 "LOCAL_FILE_STORAGE_ROOT": e2e_settings.local_file_storage_root,
                 "COMPOSIO_CACHE_DIR": "/tmp/composio",
-                "LEMMA_OPENAI_API_KEY": key,
-                "lemma_openai_api_key": key,
             },
             stdout=log_writer,
             stderr=subprocess.STDOUT,
@@ -198,7 +188,6 @@ __all__ = [
     "fake_teams",
     "fake_telegram",
     "fake_whatsapp",
-    "fireworks_worker",
     "fixed_test_org",
     "fixed_test_user",
     "message_store",
@@ -211,5 +200,6 @@ __all__ = [
     "test_network",
     "test_pod",
     "test_redis_url",
+    "system_lemma_worker",
     "worker",
 ]

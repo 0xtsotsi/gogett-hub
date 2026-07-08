@@ -1,19 +1,18 @@
-"""Fully-real agent surface e2e — real worker + real Fireworks agent.
+"""Full surface agent e2e — real worker + system:lemma runtime.
 
 Nothing is simulated except the inbound webhook payload (POSTed to the real,
 auth-excluded webhook endpoint) and the external platform's HTTP API (a local
 fake server that captures what the agent sends back — we cannot call the real
-Telegram Bot API from a test). The agent runs for real on Fireworks
-(``system:lemma``) inside the production streaq worker subprocess, and the full
-path is exercised: webhook → Redis → worker subscriber → agent run → progress
-observer → adapter → outbound delivery.
+Telegram Bot API from a test). The production streaq worker subprocess runs the
+agent through ``system:lemma``: deterministic FunctionModel by default, or the
+real configured provider only when ``E2E_LLM_MODE=real`` is requested.
 
 Run:
 
-    LEMMA_RUN_PROVIDER_E2E=1 uv run pytest \
+    uv run pytest \
         app/modules/agent_surfaces/tests/e2e/test_full_real_surface_e2e.py -m e2e
 
-Skips automatically when the Fireworks credential is absent.
+In real-LLM mode it skips automatically when system:lemma credentials are absent.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crypto import get_secret_cipher
 from app.modules.agent_surfaces.infrastructure.models import AgentSurface
 from app.modules.agent_surfaces.tests.e2e.helpers import (
     _conversation_by_external_thread,
@@ -39,13 +39,13 @@ from app.modules.agent_surfaces.tests.e2e.mock_infrastructure import (
     wait_for_messages,
 )
 
-pytestmark = [pytest.mark.e2e, pytest.mark.provider]
+pytestmark = pytest.mark.e2e
 
-# Real Fireworks call + worker round-trip — give it room.
+# Worker + queued run round-trip. Real-LLM mode can be slower, so keep room.
 REAL_REPLY_TIMEOUT = 180.0
 
 
-async def _create_real_agent(client: AsyncClient, pod_id: str) -> str:
+async def _create_system_lemma_agent(client: AsyncClient, pod_id: str) -> str:
     response = await client.post(
         f"/pods/{pod_id}/agents",
         json={
@@ -69,7 +69,7 @@ async def test_telegram_webhook_surface_registers_and_replies_with_real_agent(
     fixed_test_user,
     fake_telegram,
     message_store,
-    fireworks_worker,
+    system_lemma_worker,
     monkeypatch,
 ):
     from app.core.config import settings as app_settings
@@ -92,7 +92,7 @@ async def test_telegram_webhook_surface_registers_and_replies_with_real_agent(
         },
     )
 
-    agent_name = await _create_real_agent(authenticated_client, pod_id)
+    agent_name = await _create_system_lemma_agent(authenticated_client, pod_id)
     surface = await _create_surface(
         authenticated_client,
         pod_id,
@@ -116,7 +116,7 @@ async def test_telegram_webhook_surface_registers_and_replies_with_real_agent(
 
     surface_row = await db_session.get(AgentSurface, UUID(surface_id))
     assert surface_row is not None and surface_row.webhook_secret
-    secret = surface_row.webhook_secret
+    secret = get_secret_cipher().decrypt_str(surface_row.webhook_secret)
 
     payload = _telegram_payload(text="Hi there!", message_id=1, sender_id=sender_id)
     response = await authenticated_client.post(
@@ -126,8 +126,8 @@ async def test_telegram_webhook_surface_registers_and_replies_with_real_agent(
     )
     assert response.status_code == 200, response.text
 
-    # The real agent ran on Fireworks and the observer delivered one reply to
-    # the (fake) Telegram API for the right chat.
+    # The worker ran the agent and the observer delivered one reply to the
+    # fake Telegram API for the right chat.
     messages = await wait_for_messages(
         message_store, "TELEGRAM", min_count=1, timeout_seconds=REAL_REPLY_TIMEOUT
     )
@@ -143,7 +143,7 @@ async def test_telegram_webhook_multi_turn_reuses_conversation_with_real_agent(
     fixed_test_user,
     fake_telegram,
     message_store,
-    fireworks_worker,
+    system_lemma_worker,
     monkeypatch,
 ):
     from app.core.config import settings as app_settings
@@ -162,7 +162,7 @@ async def test_telegram_webhook_multi_turn_reuses_conversation_with_real_agent(
             "api_base_url": f"{fake_telegram.api_base}/bot",
         },
     )
-    agent_name = await _create_real_agent(authenticated_client, pod_id)
+    agent_name = await _create_system_lemma_agent(authenticated_client, pod_id)
     surface = await _create_surface(
         authenticated_client,
         pod_id,
@@ -178,7 +178,8 @@ async def test_telegram_webhook_multi_turn_reuses_conversation_with_real_agent(
         resolved_user_id=UUID(fixed_test_user["id"]),
     )
     surface_row = await db_session.get(AgentSurface, UUID(surface_id))
-    secret = surface_row.webhook_secret
+    assert surface_row is not None and surface_row.webhook_secret
+    secret = get_secret_cipher().decrypt_str(surface_row.webhook_secret)
 
     async def _send(text: str, message_id: int) -> None:
         payload = _telegram_payload(text=text, message_id=message_id, sender_id=sender_id)

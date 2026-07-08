@@ -61,7 +61,7 @@ async def _create_agent(authenticated_client, pod_id: str) -> dict:
         json={
             "name": f"Widget Agent {uuid4().hex[:8]}",
             "instruction": "Reply briefly.",
-            "agent_runtime": {"profile_id": "system:fireworks", "model_name": "kimi-k2.6"},
+            "agent_runtime": {"profile_id": "system:lemma"},
             "toolsets": [],
         },
     )

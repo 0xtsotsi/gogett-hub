@@ -24,6 +24,20 @@ from app.core.log.log import get_logger
 logger = get_logger(__name__)
 
 
+def _request_contract(request: web.Request) -> dict[str, str]:
+    metadata = {
+        "_method": request.method,
+        "_path": str(request.rel_url),
+    }
+    authorization = request.headers.get("Authorization")
+    if authorization:
+        metadata["_authorization"] = authorization
+    content_type = request.headers.get("Content-Type")
+    if content_type:
+        metadata["_content_type"] = content_type
+    return metadata
+
+
 class MockPlatformMessageStore:
     """Thread-safe store for messages sent via mock platform servers."""
 
@@ -89,8 +103,8 @@ class FakeSlackServer:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._port}/api/"
 
-    async def _collect_params(self, request: web.Request) -> dict[str, str]:
-        payload = dict(request.query)
+    async def _collect_params(self, request: web.Request) -> dict[str, Any]:
+        payload: dict[str, Any] = dict(request.query)
         if request.can_read_body:
             with suppress(Exception):
                 data = await request.json()
@@ -101,6 +115,7 @@ class FakeSlackServer:
             with suppress(Exception):
                 form = await request.post()
                 payload.update({k: str(v) for k, v in form.items()})
+        payload.update(_request_contract(request))
         return payload
 
     async def _users_info(self, request: web.Request) -> web.Response:
@@ -270,7 +285,9 @@ class FakeTeamsServer:
 
     async def _post_activity(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._store.add("TEAMS", {"path": str(request.rel_url), "body": body})
+        self._store.add(
+            "TEAMS", {"path": str(request.rel_url), "body": body, **_request_contract(request)}
+        )
         return web.json_response(
             {"id": f"activity-{len(self._store.get_all('TEAMS'))}"}
         )
@@ -283,6 +300,7 @@ class FakeTeamsServer:
                 "path": str(request.rel_url),
                 "activity_id": request.match_info["activity_id"],
                 "body": body,
+                **_request_contract(request),
             },
         )
         return web.json_response({"id": request.match_info["activity_id"]})
@@ -351,13 +369,14 @@ class FakeWhatsAppServer:
                 "phone_number_id": request.match_info["phone_number_id"],
                 "filename": getattr(uploaded, "filename", None),
                 "media_id": media_id,
+                **_request_contract(request),
             },
         )
         return web.json_response({"id": media_id})
 
     async def _send_message(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._store.add("WHATSAPP", body)
+        self._store.add("WHATSAPP", {**body, **_request_contract(request)})
         return web.json_response(
             {
                 "messaging_product": "whatsapp",
@@ -441,7 +460,7 @@ class FakeTelegramServer:
                 {"ok": False, "error_code": 400, "description": "Bad Request: message is too long"},
                 status=400,
             )
-        self._store.add("TELEGRAM", body)
+        self._store.add("TELEGRAM", {**body, **_request_contract(request)})
         return web.json_response(
             {
                 "ok": True,
@@ -458,7 +477,7 @@ class FakeTelegramServer:
         if failure is not None:
             return failure
         body = await request.json()
-        self._store.add("TELEGRAM_EDIT", body)
+        self._store.add("TELEGRAM_EDIT", {**body, **_request_contract(request)})
         return web.json_response(
             {
                 "ok": True,
@@ -481,6 +500,7 @@ class FakeTelegramServer:
                 "caption": str(form.get("caption")) if form.get("caption") else None,
                 "has_voice": voice is not None,
                 "voice_filename": getattr(voice, "filename", None),
+                **_request_contract(request),
             },
         )
         return web.json_response(
@@ -502,6 +522,7 @@ class FakeTelegramServer:
                 "chat_id": str(form.get("chat_id")) if form.get("chat_id") else None,
                 "caption": str(form.get("caption")) if form.get("caption") else None,
                 "filename": getattr(document, "filename", None),
+                **_request_contract(request),
             },
         )
         return web.json_response(
@@ -539,6 +560,7 @@ class FakeTelegramServer:
                 "method": "setWebhook",
                 "token": request.match_info["token"],
                 "body": body,
+                **_request_contract(request),
             },
         )
         return web.json_response({"ok": True, "result": True})
@@ -555,6 +577,7 @@ class FakeTelegramServer:
                 "method": "deleteWebhook",
                 "token": request.match_info["token"],
                 "body": body,
+                **_request_contract(request),
             },
         )
         return web.json_response({"ok": True, "result": True})
@@ -603,7 +626,7 @@ class FakeGmailServer:
 
     async def _send_message(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._store.add("GMAIL", body)
+        self._store.add("GMAIL", {**body, **_request_contract(request)})
         return web.json_response({"id": "gmail-message-1"})
 
 
@@ -637,7 +660,7 @@ class FakeResendServer:
 
     async def _send_email(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._store.add("RESEND", body)
+        self._store.add("RESEND", {**body, **_request_contract(request)})
         return web.json_response({"id": f"resend-message-{len(self._store.get_all('RESEND'))}"})
 
 
@@ -692,13 +715,13 @@ class FakeOutlookServer:
             return web.json_response({"error": {"message": "Not found"}}, status=404)
         self._store.add(
             "OUTLOOK_FETCH",
-            {"message_id": message_id, "query": dict(request.query)},
+            {"message_id": message_id, "query": dict(request.query), **_request_contract(request)},
         )
         return web.json_response(payload)
 
     async def _send_mail(self, request: web.Request) -> web.Response:
         body = await request.json()
-        self._store.add("OUTLOOK", body)
+        self._store.add("OUTLOOK", {**body, **_request_contract(request)})
         return web.Response(status=202)
 
     async def _reply(self, request: web.Request) -> web.Response:
@@ -708,6 +731,7 @@ class FakeOutlookServer:
             {
                 "message_id": request.match_info["message_id"],
                 "body": body,
+                **_request_contract(request),
             },
         )
         return web.Response(status=202)
@@ -719,6 +743,7 @@ class FakeOutlookServer:
             {
                 "source_message_id": request.match_info["message_id"],
                 "draft_id": draft_id,
+                **_request_contract(request),
             },
         )
         return web.json_response({"id": draft_id})
@@ -730,6 +755,7 @@ class FakeOutlookServer:
             {
                 "message_id": request.match_info["message_id"],
                 "body": body,
+                **_request_contract(request),
             },
         )
         return web.Response(status=200)
@@ -741,6 +767,7 @@ class FakeOutlookServer:
             {
                 "message_id": request.match_info["message_id"],
                 "body": body,
+                **_request_contract(request),
             },
         )
         return web.json_response(
@@ -750,7 +777,7 @@ class FakeOutlookServer:
     async def _send_draft(self, request: web.Request) -> web.Response:
         self._store.add(
             "OUTLOOK_DRAFT_SEND",
-            {"message_id": request.match_info["message_id"]},
+            {"message_id": request.match_info["message_id"], **_request_contract(request)},
         )
         return web.Response(status=202)
 

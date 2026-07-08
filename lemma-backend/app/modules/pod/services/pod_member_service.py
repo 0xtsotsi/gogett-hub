@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, Sequence, Tuple
 from uuid import UUID
 
+from app.modules.identity.domain.email import normalize_identity_email
 from app.modules.identity.domain.organization_entities import OrganizationRole
 from app.modules.pod.domain.errors import (
     PodAccessDeniedError,
@@ -227,7 +228,7 @@ class PodMemberService:
 
         pod_member = await self.pod_member_repository.get_by_pod_and_user_email(
             pod_id,
-            email,
+            normalize_identity_email(email),
         )
         if not pod_member:
             raise PodMemberNotFoundError()

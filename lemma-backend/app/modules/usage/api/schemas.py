@@ -117,4 +117,5 @@ class UsageLimitsResponse(BaseModel):
     user_id: UUID
     org_monthly: UsageLimitScopeResponse
     user_weekly: UsageLimitScopeResponse
+    user_monthly: UsageLimitScopeResponse
     allowed: bool

@@ -11,7 +11,7 @@ from app.core.log.log import get_logger
 from app.modules.agent.domain.runtime_profiles import RuntimeProfileScope
 from app.modules.agent.domain.value_objects import AgentRunUsage
 from app.modules.usage.domain.entities import UsageRecord, UsageReservation
-from app.modules.usage.domain.ports import UsageLimitPort
+from app.modules.usage.domain.ports import UsageLimitPort, UsageLimitValues
 from app.modules.usage.domain.errors import UsageLimitExceededError
 from app.modules.usage.domain.events import ModelUsageEvent, UsageLimitDeniedEvent
 from app.modules.usage.infrastructure.repositories import UsageRepository
@@ -35,6 +35,7 @@ class UsageService:
 
     DEFAULT_ORG_MONTHLY_COST_LIMIT_USD: float | None = 50.0
     DEFAULT_USER_WEEKLY_COST_LIMIT_USD: float | None = 10.0
+    DEFAULT_USER_MONTHLY_COST_LIMIT_USD: float | None = None
     DEFAULT_RESERVATION_USD = 0.01
 
     # Per-model rates (USD per 1M tokens). Keyed by both the public model name
@@ -123,6 +124,18 @@ class UsageService:
                     window_kind="user_week",
                     window_start=user_weekly["window_start"],
                     window_end=user_weekly["reset_at"],
+                    amount_usd=amount,
+                )
+            )
+        user_monthly = limits["user_monthly"]
+        if user_monthly["limit_usd"] is not None:
+            counter_ids.append(
+                await self.usage_repository.reserve_counter(
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    window_kind="user_month",
+                    window_start=user_monthly["window_start"],
+                    window_end=user_monthly["reset_at"],
                     amount_usd=amount,
                 )
             )
@@ -371,7 +384,7 @@ class UsageService:
             second=0,
             microsecond=0,
         )
-        org_limit_usd, user_limit_usd = await self._resolve_usage_limit_values(
+        limit_values = await self._resolve_usage_limit_values(
             organization_id=organization_id,
             user_id=user_id,
         )
@@ -390,38 +403,62 @@ class UsageService:
                 window_kind="org_month",
                 window_start=month_start,
             )
-        user_used = await self.usage_repository.get_system_cost(
+        user_weekly_used = await self.usage_repository.get_system_cost(
             organization_id=organization_id,
             user_id=user_id,
             start=week_start,
             end=now,
         )
-        user_reserved = await self.usage_repository.get_reserved_cost(
+        user_weekly_reserved = await self.usage_repository.get_reserved_cost(
             organization_id=organization_id,
             user_id=user_id,
             window_kind="user_week",
             window_start=week_start,
         )
+        user_monthly_used = await self.usage_repository.get_system_cost(
+            organization_id=organization_id,
+            user_id=user_id,
+            start=month_start,
+            end=now,
+        )
+        user_monthly_reserved = await self.usage_repository.get_reserved_cost(
+            organization_id=organization_id,
+            user_id=user_id,
+            window_kind="user_month",
+            window_start=month_start,
+        )
         org_scope = self._limit_scope(
-            limit_usd=org_limit_usd,
+            limit_usd=limit_values.org_monthly_limit_usd,
             used_usd=org_used,
             reserved_usd=org_reserved,
             reset_at=self._next_month_start(now),
             window_start=month_start,
         )
-        user_scope = self._limit_scope(
-            limit_usd=user_limit_usd,
-            used_usd=user_used,
-            reserved_usd=user_reserved,
+        user_weekly_scope = self._limit_scope(
+            limit_usd=limit_values.user_weekly_limit_usd,
+            used_usd=user_weekly_used,
+            reserved_usd=user_weekly_reserved,
             reset_at=week_start + timedelta(days=7),
             window_start=week_start,
+        )
+        user_monthly_scope = self._limit_scope(
+            limit_usd=limit_values.user_monthly_limit_usd,
+            used_usd=user_monthly_used,
+            reserved_usd=user_monthly_reserved,
+            reset_at=self._next_month_start(now),
+            window_start=month_start,
         )
         return {
             "organization_id": organization_id,
             "user_id": user_id,
             "org_monthly": org_scope,
-            "user_weekly": user_scope,
-            "allowed": bool(org_scope["allowed"] and user_scope["allowed"]),
+            "user_weekly": user_weekly_scope,
+            "user_monthly": user_monthly_scope,
+            "allowed": bool(
+                org_scope["allowed"]
+                and user_weekly_scope["allowed"]
+                and user_monthly_scope["allowed"]
+            ),
         }
 
     def _calculate_system_cost(
@@ -502,17 +539,32 @@ class UsageService:
         *,
         organization_id: UUID | None,
         user_id: UUID,
-    ) -> tuple[float | None, float | None]:
+    ) -> UsageLimitValues:
         # No external plan provider (e.g. no billing installed) -> built-in
         # defaults. A configured provider (billing) resolves plan-based limits.
         if self.usage_limit_port is None:
-            return (
-                self.DEFAULT_ORG_MONTHLY_COST_LIMIT_USD if organization_id else None,
-                self.DEFAULT_USER_WEEKLY_COST_LIMIT_USD,
+            return UsageLimitValues(
+                org_monthly_limit_usd=(
+                    self.DEFAULT_ORG_MONTHLY_COST_LIMIT_USD
+                    if organization_id
+                    else None
+                ),
+                user_weekly_limit_usd=self.DEFAULT_USER_WEEKLY_COST_LIMIT_USD,
+                user_monthly_limit_usd=self.DEFAULT_USER_MONTHLY_COST_LIMIT_USD,
             )
-        return await self.usage_limit_port.resolve_limits(
+        resolved = await self.usage_limit_port.resolve_limits(
             organization_id=organization_id,
             user_id=user_id,
+        )
+        if isinstance(resolved, UsageLimitValues):
+            return resolved
+        # Backwards-compatible guard for older tests/adapters returning
+        # ``(org_monthly, user_weekly)``.
+        org_monthly, user_weekly = resolved
+        return UsageLimitValues(
+            org_monthly_limit_usd=org_monthly,
+            user_weekly_limit_usd=user_weekly,
+            user_monthly_limit_usd=None,
         )
 
     def _limit_scope(

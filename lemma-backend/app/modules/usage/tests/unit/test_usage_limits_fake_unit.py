@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from app.modules.test_support.fakes import FakeUnitOfWork
+from app.modules.usage.domain.ports import UsageLimitValues
 from app.modules.usage.services.usage_service import UsageService
 
 pytestmark = pytest.mark.unit
@@ -70,6 +71,30 @@ async def test_user_weekly_limit_blocks_when_exceeded():
     assert limits["user_weekly"]["remaining_usd"] == 0.0
 
 
+async def test_user_monthly_limit_blocks_when_exceeded():
+    class _MonthlyLimitPort:
+        async def resolve_limits(self, *, organization_id, user_id):
+            del organization_id, user_id
+            return UsageLimitValues(
+                org_monthly_limit_usd=None,
+                user_weekly_limit_usd=None,
+                user_monthly_limit_usd=10.0,
+            )
+
+    service = UsageService(
+        usage_repository=_StubUsageRepository(used_usd=12.0),
+        usage_limit_port=_MonthlyLimitPort(),
+    )
+
+    limits = await service.get_usage_limits(organization_id=None, user_id=uuid4())
+
+    assert limits["allowed"] is False
+    assert limits["user_weekly"]["allowed"] is True
+    assert limits["user_monthly"]["allowed"] is False
+    assert limits["user_monthly"]["limit_usd"] == 10.0
+    assert limits["user_monthly"]["remaining_usd"] == 0.0
+
+
 async def test_falls_back_to_builtin_defaults_without_billing():
     # No UsageLimitPort (the OSS build) -> usage's built-in default limits.
     service = UsageService(
@@ -83,3 +108,4 @@ async def test_falls_back_to_builtin_defaults_without_billing():
         limits["user_weekly"]["limit_usd"]
         == UsageService.DEFAULT_USER_WEEKLY_COST_LIMIT_USD
     )
+    assert limits["user_monthly"]["limit_usd"] is None

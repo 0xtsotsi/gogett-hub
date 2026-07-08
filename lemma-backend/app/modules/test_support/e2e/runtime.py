@@ -477,6 +477,11 @@ async def full_stack(
     skip_unless_system_lemma()
     env_overlay = system_lemma_env_overlay()
     system_lemma_key = system_lemma_api_key()
+    coverage_env = {
+        name: value
+        for name in ("COVERAGE_PROCESS_START", "COVERAGE_FILE")
+        if (value := os.environ.get(name))
+    }
 
     # Make the same system:lemma env visible to both the in-process backend and
     # the worker subprocess. In default mock mode this may be empty; in real mode
@@ -502,6 +507,7 @@ async def full_stack(
     worker_env = {
         **os.environ,
         **env_overlay,
+        **coverage_env,
         "PYTHONPATH": ".",
         "DATABASE_URL": settings.database_url,
         "DATASTORE_DATABASE_URL": settings.datastore_database_url,

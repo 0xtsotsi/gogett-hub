@@ -255,6 +255,31 @@ async def test_whatsapp_final_answer_contract(fake_whatsapp, message_store):
     assert payload["text"] == {"body": "Contract reply"}
 
 
+async def test_chat_surfaces_skip_outbound_when_credentials_are_missing(
+    fake_slack,
+    fake_whatsapp,
+    message_store,
+):
+    slack = SlackPlatformService(
+        credentials={
+            "scope": "chat:write",
+            "api_base_url": fake_slack.base_url,
+        }
+    )
+    whatsapp = WhatsAppPlatformService(
+        {
+            "phone_number_id": "phone-contract",
+            "api_base_url": f"{fake_whatsapp.api_base}/v21.0",
+        }
+    )
+
+    await slack.send_message(event=_slack_event(), message="should not send")
+    await whatsapp.send_message(event=_whatsapp_event(), message="should not send")
+
+    assert message_store.get_all("SLACK") == []
+    assert message_store.get_all("WHATSAPP") == []
+
+
 async def test_gmail_final_answer_contract(fake_gmail, message_store):
     service = GmailPlatformService(
         {

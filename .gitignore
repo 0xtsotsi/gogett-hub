@@ -17,6 +17,7 @@ coverage.xml
 coverage-*.xml
 htmlcov/
 coverage/
+coverage-agent-surfaces/
 lcov.info
 *.lcov
 

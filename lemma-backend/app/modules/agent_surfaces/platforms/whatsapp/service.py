@@ -111,6 +111,14 @@ class WhatsAppPlatformService:
             event.reply_target.get("phone_number_id") or self._phone_number_id
         )
         sender_wa_id = event.reply_target.get("sender_wa_id") or event.sender_phone
+        if not sender_wa_id or not phone_number_id or not self._access_token:
+            logger.warning(
+                "WhatsApp send_message skipped due to missing token/phone/sender "
+                "phone_number_id=%s sender=%s",
+                phone_number_id,
+                sender_wa_id,
+            )
+            return
 
         url = f"{self._api_base}/{phone_number_id}/messages"
         payload = {

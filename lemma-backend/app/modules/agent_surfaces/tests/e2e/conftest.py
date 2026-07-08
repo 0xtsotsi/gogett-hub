@@ -64,6 +64,11 @@ async def system_lemma_worker(e2e_settings):
     skip_unless_system_lemma()
     env_overlay = system_lemma_env_overlay()
     key = system_lemma_api_key()
+    coverage_env = {
+        name: value
+        for name in ("COVERAGE_PROCESS_START", "COVERAGE_FILE")
+        if (value := os.environ.get(name))
+    }
 
     previous_setting = settings.lemma_openai_api_key
     if key:
@@ -93,6 +98,7 @@ async def system_lemma_worker(e2e_settings):
             env={
                 **os.environ,
                 **env_overlay,
+                **coverage_env,
                 "PYTHONPATH": ".",
                 "PYTHONUNBUFFERED": "1",
                 "DATABASE_URL": e2e_settings.database_url,

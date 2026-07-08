@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, Sequence
+from typing import Literal, Protocol, Sequence
 from uuid import UUID
 
 from app.modules.usage.domain.entities import UsageRecord, UsageSummary
@@ -67,6 +68,20 @@ class UsageRepositoryPort(Protocol):
     ) -> Sequence[dict[str, object]]: ...
 
 
+@dataclass(frozen=True)
+class UsageLimitValues:
+    """Resolved system-spend limits for an org/user context.
+
+    ``None`` means unlimited for that window.
+    """
+
+    org_monthly_limit_usd: float | None = None
+    user_weekly_limit_usd: float | None = None
+    user_monthly_limit_usd: float | None = None
+    user_limit_scope: Literal["organization", "global"] = "organization"
+    excluded_organization_ids: tuple[UUID, ...] = ()
+
+
 class UsageLimitPort(Protocol):
     """What usage needs from an external billing/plan provider: the spend limits
     that apply to an org+user. Implemented by the billing module (dependency
@@ -78,6 +93,6 @@ class UsageLimitPort(Protocol):
         *,
         organization_id: UUID | None,
         user_id: UUID,
-    ) -> "tuple[float | None, float | None]":
-        """Return (org_monthly_limit_usd, user_weekly_limit_usd); None = unlimited."""
+    ) -> UsageLimitValues:
+        """Return applicable spend limits; ``None`` means unlimited."""
         ...

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.modules.usage.domain.entities import UsageRecord, UsageSummary
@@ -167,6 +167,7 @@ class UsageRepository(UsageRepositoryPort):
         user_id: UUID | None,
         start: datetime,
         end: datetime,
+        exclude_organization_ids: Sequence[UUID] = (),
     ) -> float:
         stmt = select(func.coalesce(func.sum(UsageRecordModel.cost_usd), 0.0)).where(
             UsageRecordModel.occurred_at >= start,
@@ -178,6 +179,15 @@ class UsageRepository(UsageRepositoryPort):
             user_id=user_id,
             system_cost_only=True,
         )
+        if exclude_organization_ids:
+            stmt = stmt.where(
+                or_(
+                    UsageRecordModel.organization_id.is_(None),
+                    UsageRecordModel.organization_id.notin_(
+                        tuple(exclude_organization_ids)
+                    ),
+                )
+            )
         result = await self.session.execute(stmt)
         return float(result.scalar_one() or 0.0)
 

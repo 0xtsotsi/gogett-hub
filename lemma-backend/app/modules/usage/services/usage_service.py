@@ -114,12 +114,12 @@ class UsageService:
                     window_end=org_monthly["reset_at"],
                     amount_usd=amount,
                 )
-            )
+        )
         user_weekly = limits["user_weekly"]
         if user_weekly["limit_usd"] is not None:
             counter_ids.append(
                 await self.usage_repository.reserve_counter(
-                    organization_id=organization_id,
+                    organization_id=user_weekly["counter_organization_id"],
                     user_id=user_id,
                     window_kind="user_week",
                     window_start=user_weekly["window_start"],
@@ -131,7 +131,7 @@ class UsageService:
         if user_monthly["limit_usd"] is not None:
             counter_ids.append(
                 await self.usage_repository.reserve_counter(
-                    organization_id=organization_id,
+                    organization_id=user_monthly["counter_organization_id"],
                     user_id=user_id,
                     window_kind="user_month",
                     window_start=user_monthly["window_start"],
@@ -388,6 +388,16 @@ class UsageService:
             organization_id=organization_id,
             user_id=user_id,
         )
+        user_limit_organization_id = (
+            organization_id
+            if limit_values.user_limit_scope == "organization"
+            else None
+        )
+        excluded_organization_ids = (
+            limit_values.excluded_organization_ids
+            if limit_values.user_limit_scope == "global"
+            else ()
+        )
         org_used = 0.0
         org_reserved = 0.0
         if organization_id is not None:
@@ -404,25 +414,27 @@ class UsageService:
                 window_start=month_start,
             )
         user_weekly_used = await self.usage_repository.get_system_cost(
-            organization_id=organization_id,
+            organization_id=user_limit_organization_id,
             user_id=user_id,
             start=week_start,
             end=now,
+            exclude_organization_ids=excluded_organization_ids,
         )
         user_weekly_reserved = await self.usage_repository.get_reserved_cost(
-            organization_id=organization_id,
+            organization_id=user_limit_organization_id,
             user_id=user_id,
             window_kind="user_week",
             window_start=week_start,
         )
         user_monthly_used = await self.usage_repository.get_system_cost(
-            organization_id=organization_id,
+            organization_id=user_limit_organization_id,
             user_id=user_id,
             start=month_start,
             end=now,
+            exclude_organization_ids=excluded_organization_ids,
         )
         user_monthly_reserved = await self.usage_repository.get_reserved_cost(
-            organization_id=organization_id,
+            organization_id=user_limit_organization_id,
             user_id=user_id,
             window_kind="user_month",
             window_start=month_start,
@@ -433,6 +445,8 @@ class UsageService:
             reserved_usd=org_reserved,
             reset_at=self._next_month_start(now),
             window_start=month_start,
+            scope="organization",
+            counter_organization_id=organization_id,
         )
         user_weekly_scope = self._limit_scope(
             limit_usd=limit_values.user_weekly_limit_usd,
@@ -440,6 +454,8 @@ class UsageService:
             reserved_usd=user_weekly_reserved,
             reset_at=week_start + timedelta(days=7),
             window_start=week_start,
+            scope=limit_values.user_limit_scope,
+            counter_organization_id=user_limit_organization_id,
         )
         user_monthly_scope = self._limit_scope(
             limit_usd=limit_values.user_monthly_limit_usd,
@@ -447,6 +463,8 @@ class UsageService:
             reserved_usd=user_monthly_reserved,
             reset_at=self._next_month_start(now),
             window_start=month_start,
+            scope=limit_values.user_limit_scope,
+            counter_organization_id=user_limit_organization_id,
         )
         return {
             "organization_id": organization_id,
@@ -551,6 +569,7 @@ class UsageService:
                 ),
                 user_weekly_limit_usd=self.DEFAULT_USER_WEEKLY_COST_LIMIT_USD,
                 user_monthly_limit_usd=self.DEFAULT_USER_MONTHLY_COST_LIMIT_USD,
+                user_limit_scope="organization",
             )
         resolved = await self.usage_limit_port.resolve_limits(
             organization_id=organization_id,
@@ -565,6 +584,7 @@ class UsageService:
             org_monthly_limit_usd=org_monthly,
             user_weekly_limit_usd=user_weekly,
             user_monthly_limit_usd=None,
+            user_limit_scope="organization",
         )
 
     def _limit_scope(
@@ -575,17 +595,21 @@ class UsageService:
         reserved_usd: float,
         reset_at: datetime,
         window_start: datetime,
+        scope: str,
+        counter_organization_id: UUID | None,
     ) -> dict[str, object]:
         consumed = used_usd + reserved_usd
         remaining = None if limit_usd is None else max(0.0, limit_usd - consumed)
         return {
             "limit_usd": limit_usd,
+            "scope": scope,
             "used_usd": used_usd,
             "reserved_usd": reserved_usd,
             "remaining_usd": remaining,
             "allowed": limit_usd is None or consumed < limit_usd,
             "reset_at": reset_at,
             "window_start": window_start,
+            "counter_organization_id": counter_organization_id,
         }
 
     def _next_month_start(self, now: datetime) -> datetime:

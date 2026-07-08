@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, Sequence
+from typing import Literal, Protocol, Sequence
 from uuid import UUID
 
 from app.modules.usage.domain.entities import UsageRecord, UsageSummary
@@ -78,6 +78,8 @@ class UsageLimitValues:
     org_monthly_limit_usd: float | None = None
     user_weekly_limit_usd: float | None = None
     user_monthly_limit_usd: float | None = None
+    user_limit_scope: Literal["organization", "global"] = "organization"
+    excluded_organization_ids: tuple[UUID, ...] = ()
 
 
 class UsageLimitPort(Protocol):

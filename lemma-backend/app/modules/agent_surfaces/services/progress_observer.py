@@ -106,6 +106,7 @@ class SurfaceAgentRunProgressObserver:
         # Opaque handle for the live progress message on streaming platforms
         # (Telegram/Teams), threaded across edits and cleared on finish.
         self._progress_handle: dict[str, Any] | None = None
+        self._rendered_waiting_tool_calls: set[tuple[str, str]] = set()
 
     async def on_run_started(
         self,
@@ -186,6 +187,20 @@ class SurfaceAgentRunProgressObserver:
         kind = data.get("kind")
         if kind not in ("ask_user", "request_approval"):
             return
+        tool_call_id = str(data.get("tool_call_id") or "")
+        rendered_key: tuple[str, str] | None = None
+        if tool_call_id:
+            rendered_key = (str(kind), tool_call_id)
+            if rendered_key in self._rendered_waiting_tool_calls:
+                logger.info(
+                    "Surface %s render skipped because tool call was already "
+                    "rendered conversation=%s tool_call_id=%s",
+                    kind,
+                    conversation.id,
+                    tool_call_id,
+                )
+                return
+            self._rendered_waiting_tool_calls.add(rendered_key)
         await self._clear_progress(conversation.id)
         # Deliver buffered narration (the lead-in to the question) exactly once.
         if not self._final_delivered:
@@ -207,21 +222,22 @@ class SurfaceAgentRunProgressObserver:
                             conversation.id,
                             exc,
                         )
-        tool_call_id = data.get("tool_call_id")
         async with self.uow_factory() as uow:
             service = self.service_factory(uow)
             try:
                 if kind == "ask_user":
                     await service.send_questions_for_conversation(
                         conversation_id=conversation.id,
-                        tool_call_id=str(tool_call_id) if tool_call_id else None,
+                        tool_call_id=tool_call_id or None,
                     )
                 else:
                     await service.send_approval_prompt_for_conversation(
                         conversation_id=conversation.id,
-                        tool_call_id=str(tool_call_id) if tool_call_id else None,
+                        tool_call_id=tool_call_id or None,
                     )
             except Exception as exc:
+                if rendered_key is not None:
+                    self._rendered_waiting_tool_calls.discard(rendered_key)
                 logger.warning(
                     "Surface %s render failed conversation=%s error=%s",
                     kind,

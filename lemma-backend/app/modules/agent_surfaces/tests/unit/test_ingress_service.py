@@ -311,9 +311,9 @@ async def test_prepare_webhook_returns_signup_context_for_unresolved_user():
     service.conversation_service.create_conversation.assert_not_called()
 
 
-async def test_prepare_webhook_returns_pod_access_link_for_non_member():
-    """A signed-up user who isn't a pod member is pointed to the pod home page
-    (request access) on a DM system surface, instead of being dropped."""
+async def test_prepare_webhook_avoids_pod_access_link_for_system_non_member():
+    """A signed-up non-member on a shared system Telegram bot should not receive
+    a pod-specific URL, because the shared identity can front many pods."""
     surface = _telegram_surface()
     surface.credential_mode = SurfaceCredentialMode.SYSTEM
     event = ParsedInboundSurfaceEvent(
@@ -350,7 +350,52 @@ async def test_prepare_webhook_returns_pod_access_link_for_non_member():
     )
 
     assert isinstance(context, SurfaceReplyContext)
+    assert "Request access" not in (context.reply_message or "")
+    assert str(surface.pod_id) not in (context.reply_message or "")
+    assert "shared bot" in (context.reply_message or "")
+    service.conversation_service.create_conversation.assert_not_called()
+
+
+async def test_prepare_webhook_returns_pod_access_link_for_custom_non_member():
+    """A custom/bound bot maps to one configured surface, so the pod target is
+    explicit and the access link is safe to show."""
+    surface = _telegram_surface()
+    surface.credential_mode = SurfaceCredentialMode.CUSTOM
+    event = ParsedInboundSurfaceEvent(
+        platform=SurfacePlatform.TELEGRAM,
+        conversation_type=ConversationType.EXTERNAL_DM,
+        external_thread_id="123",
+        external_channel_id="123",
+        sender_external_user_id="999",
+        message_text="hi",
+        is_dm=True,
+        reply_target={"chat_id": "123"},
+    )
+    adapter = AsyncMock()
+    adapter.parse_inbound_event.return_value = event
+    adapter.unresolved_sender_reply.return_value = None
+    adapter.linked_sender_confirmation.return_value = None
+    service = _build_service(
+        adapter=adapter,
+        surfaces=[surface],
+        resolved_user=ResolvedSurfaceUser(
+            internal_user_id=uuid4(),
+            external_user_id="999",
+            email="member@example.com",
+            display_name="Member",
+        ),
+    )
+    service.pod_membership_port = SimpleNamespace(
+        get_user_pod_ids=AsyncMock(return_value=[])
+    )
+
+    context = await service.prepare_ingress(
+        SurfacePlatformWebhookIngress(source="telegram", payload={}, headers={})
+    )
+
+    assert isinstance(context, SurfaceReplyContext)
     assert "Request access" in (context.reply_message or "")
+    assert str(surface.pod_id) in (context.reply_message or "")
     service.conversation_service.create_conversation.assert_not_called()
 
 

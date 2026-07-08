@@ -69,9 +69,10 @@ async def test_telegram_webhook_surface_registers_and_replies_with_real_agent(
     fixed_test_user,
     fake_telegram,
     message_store,
-    system_lemma_worker,
+    worker,
     monkeypatch,
 ):
+    _ = worker  # real streaq worker subprocess consuming surface events
     from app.core.config import settings as app_settings
 
     # Webhook registration requires a public HTTPS api_url; the worker reaches
@@ -143,9 +144,10 @@ async def test_telegram_webhook_multi_turn_reuses_conversation_with_real_agent(
     fixed_test_user,
     fake_telegram,
     message_store,
-    system_lemma_worker,
+    worker,
     monkeypatch,
 ):
+    _ = worker  # real streaq worker subprocess consuming surface events
     from app.core.config import settings as app_settings
 
     monkeypatch.setattr(app_settings, "api_url", "https://surface-e2e.test")

@@ -147,6 +147,12 @@ coverage-agent-surfaces-combined:
 		-m "e2e and not slow and not worker and not workspace and not provider and not local_cli and not indexing" \
 		-o timeout=120 \
 		--junitxml=$(AGENT_SURFACES_COVERAGE_DIR)/junit-e2e.xml
+	# Keep real-worker surface coverage, but isolate it from the fast non-worker shard.
+	$(AGENT_SURFACES_COVERAGE_RUN_ENV) uv run coverage run --parallel-mode -m pytest \
+		app/modules/agent_surfaces/tests/e2e/test_full_real_surface_e2e.py \
+		-m e2e \
+		-o timeout=180 \
+		--junitxml=$(AGENT_SURFACES_COVERAGE_DIR)/junit-e2e-worker.xml
 	$(MAKE) coverage-agent-surfaces-report COVERAGE_PHASE=combined
 
 coverage-agent-surfaces-report:

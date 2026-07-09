@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
       issues: write
     defaults:
       run:
@@ -83,43 +83,39 @@ jobs:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      - name: Unit tests
-        run: make test-unit
+      - name: Unit tests with coverage
+        run: make coverage-backend-unit
         env:
           REDIS_URL: redis://localhost:6379
-      - name: Agent surfaces unit coverage
-        run: make coverage-agent-surfaces-unit
-        env:
-          REDIS_URL: redis://localhost:6379
-      - name: Add agent surfaces coverage to job summary
+      - name: Add backend coverage to job summary
         if: always()
         run: |
-          if [ -f coverage-agent-surfaces/comment.md ]; then
-            cat coverage-agent-surfaces/comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage-backend/comment.md ]; then
+            cat coverage-backend/comment.md >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload agent surfaces unit coverage
+      - name: Upload backend unit coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agent-surfaces-unit-coverage
+          name: backend-unit-coverage
           path: |
-            lemma-backend/coverage-agent-surfaces/comment.md
-            lemma-backend/coverage-agent-surfaces/summary.json
-            lemma-backend/coverage-agent-surfaces/coverage.json
-            lemma-backend/coverage-agent-surfaces/coverage.xml
-            lemma-backend/coverage-agent-surfaces/html
+            lemma-backend/coverage-backend/comment.md
+            lemma-backend/coverage-backend/summary.json
+            lemma-backend/coverage-backend/coverage.json
+            lemma-backend/coverage-backend/coverage.xml
+            lemma-backend/coverage-backend/html
           if-no-files-found: ignore
-      - name: Update PR agent surfaces coverage comment
+      - name: Update PR backend coverage comment
         if: >-
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
-          hashFiles('lemma-backend/coverage-agent-surfaces/comment.md') != ''
+          hashFiles('lemma-backend/coverage-backend/comment.md') != ''
         uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
-            const marker = '<!-- lemma-agent-surfaces-coverage -->';
-            const body = fs.readFileSync('lemma-backend/coverage-agent-surfaces/comment.md', 'utf8');
+            const marker = '<!-- lemma-backend-coverage:unit -->';
+            const body = fs.readFileSync('lemma-backend/coverage-backend/comment.md', 'utf8');
             const issue_number = context.payload.pull_request.number;
             const {owner, repo} = context.repo;
             try {
@@ -148,7 +144,7 @@ jobs:
                 });
               }
             } catch (error) {
-              core.warning(`Could not update agent surfaces coverage PR comment: ${error.message}`);
+              core.warning(`Could not update backend coverage PR comment: ${error.message}`);
             }
 
   backend-lint:

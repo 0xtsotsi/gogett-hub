@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
       issues: write
     strategy:
       # Run every shard even if one fails, so one red shard doesn't mask others.
@@ -53,26 +53,22 @@ jobs:
         # The fast suite is sharded across runners, each serial (E2E_WORKERS=1):
         # parallelism is across machines, not xdist workers within one machine —
         # which sidesteps the shared-container contention that makes -n2 flaky.
-        # Each shard runs `test-e2e-shard` scoped by E2E_ARGS; the union of all
-        # shard args equals the whole fast suite, with `rest` a catch-all via
-        # --ignore so a new module's e2e tests are never silently skipped.
+        # Each shard runs the normal fast e2e command under coverage, scoped by
+        # E2E_ARGS; the union of all shard args equals the whole fast suite, with
+        # `rest` a catch-all via --ignore so a new module's e2e tests are never
+        # silently skipped.
         # Shards are balanced by test count (~50-75 each); wall-clock ≈ the
         # slowest shard (~3min).
         suite:
           - name: surfaces
-            target: test-e2e-shard
             args: app/modules/agent_surfaces/tests/e2e
           - name: pod
-            target: test-e2e-shard
             args: app/modules/pod/tests/e2e
           - name: datastore
-            target: test-e2e-shard
             args: app/modules/datastore/tests/e2e app/modules/apps/tests/e2e
           - name: connectors
-            target: test-e2e-shard
             args: app/modules/connectors/tests/e2e app/modules/schedule/tests/e2e
           - name: rest
-            target: test-e2e-shard
             args: >-
               app/modules app/core
               --ignore=app/modules/agent_surfaces/tests/e2e
@@ -98,41 +94,42 @@ jobs:
       # Every shard runs serially (E2E_WORKERS=1) on its own runner; the shards
       # run in parallel, so the gate's wall-clock is the slowest shard, not their
       # sum. E2E_ARGS scopes each shard to its module paths.
-      - name: E2E tests (mocked LLM + fake AgentBox)
-        if: matrix.suite.name != 'surfaces'
-        run: make ${{ matrix.suite.target }} E2E_ARGS="${{ matrix.suite.args }}" E2E_WORKERS=1
-      - name: Agent surfaces combined coverage
-        if: matrix.suite.name == 'surfaces'
-        run: make coverage-agent-surfaces-combined E2E_WORKERS=1
-      - name: Add agent surfaces coverage to job summary
-        if: always() && matrix.suite.name == 'surfaces'
+      - name: E2E tests with coverage (mocked LLM + fake AgentBox)
+        run: >-
+          make coverage-backend-e2e-shard
+          E2E_ARGS="${{ matrix.suite.args }}"
+          E2E_WORKERS=1
+          COVERAGE_PHASE=e2e-${{ matrix.suite.name }}
+      - name: Add backend coverage to job summary
+        if: always()
         run: |
-          if [ -f coverage-agent-surfaces/comment.md ]; then
-            cat coverage-agent-surfaces/comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage-backend/comment.md ]; then
+            cat coverage-backend/comment.md >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload agent surfaces combined coverage
-        if: always() && matrix.suite.name == 'surfaces'
+      - name: Upload backend e2e coverage
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agent-surfaces-combined-coverage
+          name: backend-e2e-${{ matrix.suite.name }}-coverage
           path: |
-            lemma-backend/coverage-agent-surfaces/comment.md
-            lemma-backend/coverage-agent-surfaces/summary.json
-            lemma-backend/coverage-agent-surfaces/coverage.json
-            lemma-backend/coverage-agent-surfaces/coverage.xml
-            lemma-backend/coverage-agent-surfaces/html
+            lemma-backend/coverage-backend/comment.md
+            lemma-backend/coverage-backend/summary.json
+            lemma-backend/coverage-backend/coverage.json
+            lemma-backend/coverage-backend/coverage.xml
+            lemma-backend/coverage-backend/html
           if-no-files-found: ignore
-      - name: Update PR agent surfaces coverage comment
+      - name: Update PR backend coverage comment
         if: >-
           github.event_name == 'workflow_run' &&
-          matrix.suite.name == 'surfaces' &&
-          hashFiles('lemma-backend/coverage-agent-surfaces/comment.md') != ''
+          hashFiles('lemma-backend/coverage-backend/comment.md') != ''
         uses: actions/github-script@v8
+        env:
+          COVERAGE_PHASE: e2e-${{ matrix.suite.name }}
         with:
           script: |
             const fs = require('fs');
-            const marker = '<!-- lemma-agent-surfaces-coverage -->';
-            const body = fs.readFileSync('lemma-backend/coverage-agent-surfaces/comment.md', 'utf8');
+            const marker = `<!-- lemma-backend-coverage:${process.env.COVERAGE_PHASE} -->`;
+            const body = fs.readFileSync('lemma-backend/coverage-backend/comment.md', 'utf8');
             const pullRequests = context.payload.workflow_run.pull_requests || [];
             const pr = pullRequests[0];
             if (!pr) {
@@ -176,7 +173,7 @@ jobs:
                 });
               }
             } catch (error) {
-              core.warning(`Could not update agent surfaces coverage PR comment: ${error.message}`);
+              core.warning(`Could not update backend coverage PR comment: ${error.message}`);
             }
 
   surface-live-smoke:

@@ -10,9 +10,11 @@ from typing import Any
 from xml.etree import ElementTree
 
 
-COMMENT_MARKER = "<!-- lemma-agent-surfaces-coverage -->"
-MODULE_PREFIX = "app/modules/agent_surfaces/"
-PLATFORM_ROOT = "platforms"
+COMMENT_MARKER_PREFIX = "lemma-backend-coverage"
+
+
+def comment_marker(phase: str) -> str:
+    return f"<!-- {COMMENT_MARKER_PREFIX}:{phase} -->"
 
 
 def _pct(covered: int, statements: int) -> float:
@@ -46,49 +48,48 @@ def _load_coverage(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text())
 
 
+def _relative_app_file(filename: str) -> str:
+    return filename.split("app/", 1)[-1] if "app/" in filename else filename
+
+
 def _module_name(filename: str) -> str:
-    rel = filename.split(MODULE_PREFIX, 1)[-1]
-    if "/" not in rel:
-        return "root"
-    return rel.split("/", 1)[0]
-
-
-def _platform_name(filename: str) -> str | None:
-    rel = filename.split(MODULE_PREFIX, 1)[-1]
+    rel = _relative_app_file(filename)
     parts = rel.split("/")
-    if not parts or parts[0] != PLATFORM_ROOT:
-        return None
-    if len(parts) == 2:
-        return "platforms_core"
-    return parts[1]
+    if not parts:
+        return "root"
+    if parts[0] == "modules" and len(parts) > 1:
+        return parts[1]
+    if parts[0] == "core":
+        return "core"
+    return parts[0] or "root"
+
+
+def _should_skip_file(filename: str) -> bool:
+    rel = _relative_app_file(filename)
+    name = rel.rsplit("/", 1)[-1]
+    return "/tests/" in filename or name.startswith("test_") or name == "conftest.py"
 
 
 def _accumulate_coverage(
     coverage: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    top_level: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    platforms: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    modules: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     files: list[dict[str, Any]] = []
 
     for filename, meta in coverage.get("files", {}).items():
-        if "/tests/" in filename:
+        if _should_skip_file(filename):
             continue
         summary = meta["summary"]
         statements = int(summary["num_statements"])
         missing = int(summary["missing_lines"])
         covered = statements - missing
         module = _module_name(filename)
-        top_level[module][0] += statements
-        top_level[module][1] += missing
-
-        platform = _platform_name(filename)
-        if platform:
-            platforms[platform][0] += statements
-            platforms[platform][1] += missing
-
+        modules[module][0] += statements
+        modules[module][1] += missing
         files.append(
             {
-                "file": filename.split(MODULE_PREFIX, 1)[-1],
+                "file": _relative_app_file(filename),
+                "module": module,
                 "statements": statements,
                 "missing": missing,
                 "covered": covered,
@@ -96,23 +97,21 @@ def _accumulate_coverage(
             }
         )
 
-    def _rows(source: dict[str, list[int]]) -> list[dict[str, Any]]:
-        rows = []
-        for name, (statements, missing) in sorted(source.items()):
-            covered = statements - missing
-            rows.append(
-                {
-                    "name": name,
-                    "statements": statements,
-                    "missing": missing,
-                    "covered": covered,
-                    "coverage": _pct(covered, statements),
-                }
-            )
-        return rows
+    module_rows = []
+    for name, (statements, missing) in sorted(modules.items()):
+        covered = statements - missing
+        module_rows.append(
+            {
+                "name": name,
+                "statements": statements,
+                "missing": missing,
+                "covered": covered,
+                "coverage": _pct(covered, statements),
+            }
+        )
 
-    lowest = sorted(files, key=lambda row: (row["coverage"], -row["statements"]))[:10]
-    return _rows(top_level), _rows(platforms), lowest
+    lowest = sorted(files, key=lambda row: (row["coverage"], -row["statements"]))[:15]
+    return module_rows, lowest
 
 
 def _read_junit(path: Path) -> dict[str, float | int]:
@@ -152,34 +151,35 @@ def build_summary(
             "missing_coverage": True,
             "tests": tests,
             "totals": {},
-            "top_level": [],
-            "platforms": [],
+            "modules": [],
             "lowest_files": [],
         }
 
-    top_level, platforms, lowest = _accumulate_coverage(coverage)
+    modules, lowest = _accumulate_coverage(coverage)
     return {
         "phase": phase,
         "missing_coverage": False,
         "tests": tests,
         "totals": coverage.get("totals", {}),
-        "top_level": top_level,
-        "platforms": platforms,
+        "modules": modules,
         "lowest_files": lowest,
     }
 
 
+def _phase_title(phase: str) -> str:
+    return phase.replace("-", " ")
+
+
 def render_markdown(summary: dict[str, Any]) -> str:
     phase = summary["phase"]
-    title = "unit" if phase == "unit" else "combined unit + mocked e2e"
-    lines = [COMMENT_MARKER, f"## Agent Surfaces Coverage ({title})", ""]
+    lines = [comment_marker(phase), f"## Backend Coverage ({_phase_title(phase)})", ""]
     lines.append("_Report-only: this PR does not fail on coverage thresholds yet._")
     lines.append("")
 
     tests = summary["tests"]
     lines.append(
         "**Tests:** "
-        f"{tests['tests']} collected, "
+        f"{tests['tests']} run, "
         f"{tests['failures']} failed, "
         f"{tests['errors']} errors, "
         f"{tests['skipped']} skipped"
@@ -204,7 +204,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
         f"{missing} missing)"
     )
     lines.append("")
-    lines.append("### Top-level modules")
+    lines.append("### Module Coverage")
     lines.append(
         _table(
             ["Module", "Statements", "Missing", "Coverage"],
@@ -215,34 +215,19 @@ def render_markdown(summary: dict[str, Any]) -> str:
                     row["missing"],
                     _format_pct(row["coverage"]),
                 ]
-                for row in summary["top_level"]
+                for row in summary["modules"]
             ],
         )
     )
     lines.append("")
-    lines.append("### Platform areas")
+    lines.append("### Lowest-Covered Files")
     lines.append(
         _table(
-            ["Area", "Statements", "Missing", "Coverage"],
-            [
-                [
-                    row["name"],
-                    row["statements"],
-                    row["missing"],
-                    _format_pct(row["coverage"]),
-                ]
-                for row in summary["platforms"]
-            ],
-        )
-    )
-    lines.append("")
-    lines.append("### Lowest-covered files")
-    lines.append(
-        _table(
-            ["File", "Statements", "Missing", "Coverage"],
+            ["File", "Module", "Statements", "Missing", "Coverage"],
             [
                 [
                     row["file"],
+                    row["module"],
                     row["statements"],
                     row["missing"],
                     _format_pct(row["coverage"]),
@@ -250,11 +235,6 @@ def render_markdown(summary: dict[str, Any]) -> str:
                 for row in summary["lowest_files"]
             ],
         )
-    )
-    lines.append("")
-    lines.append(
-        "Optional live-provider smoke tests remain separate behind "
-        "`LEMMA_RUN_SURFACE_LIVE_E2E=1` / `surface-live`."
     )
     return "\n".join(lines).rstrip() + "\n"
 
@@ -269,7 +249,7 @@ def _paths_from_glob(patterns: list[str]) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--coverage-json", type=Path, required=True)
-    parser.add_argument("--phase", choices=["unit", "combined"], required=True)
+    parser.add_argument("--phase", required=True)
     parser.add_argument("--junit", action="append", type=Path, default=[])
     parser.add_argument("--junit-glob", action="append", default=[])
     parser.add_argument("--markdown-out", type=Path, required=True)

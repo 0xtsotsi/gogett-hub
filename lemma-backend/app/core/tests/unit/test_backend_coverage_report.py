@@ -6,37 +6,37 @@ from pathlib import Path
 
 
 def _load_reporter():
-    script = (
-        Path(__file__).resolve().parents[5]
-        / "scripts"
-        / "agent_surfaces_coverage_report.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "agent_surfaces_coverage_report", script
-    )
+    script = Path(__file__).resolve().parents[4] / "scripts" / "backend_coverage_report.py"
+    spec = importlib.util.spec_from_file_location("backend_coverage_report", script)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_coverage_report_groups_modules_platforms_and_escapes_markdown(tmp_path):
+def test_backend_coverage_report_groups_modules_and_escapes_markdown(tmp_path):
     reporter = _load_reporter()
     coverage = {
         "files": {
             "app/modules/agent_surfaces/services/ingress_service.py": {
                 "summary": {"num_statements": 10, "missing_lines": 2}
             },
-            "app/modules/agent_surfaces/platforms/teams/service.py": {
+            "app/modules/agent/runtime.py": {
                 "summary": {"num_statements": 20, "missing_lines": 10}
             },
-            "app/modules/agent_surfaces/platforms/slack/service.py": {
+            "app/core/web_search/search_client.py": {
                 "summary": {"num_statements": 5, "missing_lines": 0}
             },
-            "app/modules/agent_surfaces/root|odd.py": {
+            "app/standalone|odd.py": {
                 "summary": {"num_statements": 4, "missing_lines": 1}
             },
             "app/modules/agent_surfaces/tests/unit/test_ignored.py": {
+                "summary": {"num_statements": 99, "missing_lines": 99}
+            },
+            "app/core/test_ignored.py": {
+                "summary": {"num_statements": 99, "missing_lines": 99}
+            },
+            "app/modules/agent/conftest.py": {
                 "summary": {"num_statements": 99, "missing_lines": 99}
             },
         },
@@ -52,41 +52,47 @@ def test_coverage_report_groups_modules_platforms_and_escapes_markdown(tmp_path)
         '<testsuite tests="3" failures="0" errors="0" skipped="1" time="1.2" />'
     )
 
-    summary = reporter.build_summary(coverage, phase="combined", junit_paths=[junit])
+    summary = reporter.build_summary(coverage, phase="e2e-surfaces", junit_paths=[junit])
     markdown = reporter.render_markdown(summary)
 
-    assert summary["top_level"] == [
+    assert summary["modules"] == [
         {
-            "name": "platforms",
-            "statements": 25,
+            "name": "agent",
+            "statements": 20,
             "missing": 10,
-            "covered": 15,
-            "coverage": 60.0,
+            "covered": 10,
+            "coverage": 50.0,
         },
         {
-            "name": "root",
-            "statements": 4,
-            "missing": 1,
-            "covered": 3,
-            "coverage": 75.0,
-        },
-        {
-            "name": "services",
+            "name": "agent_surfaces",
             "statements": 10,
             "missing": 2,
             "covered": 8,
             "coverage": 80.0,
         },
+        {
+            "name": "core",
+            "statements": 5,
+            "missing": 0,
+            "covered": 5,
+            "coverage": 100.0,
+        },
+        {
+            "name": "standalone|odd.py",
+            "statements": 4,
+            "missing": 1,
+            "covered": 3,
+            "coverage": 75.0,
+        },
     ]
-    assert [row["name"] for row in summary["platforms"]] == ["slack", "teams"]
     assert summary["tests"]["tests"] == 3
     assert summary["tests"]["skipped"] == 1
-    assert "root\\|odd.py" in markdown
+    assert "standalone\\|odd.py" in markdown
     assert "66.7%" in markdown
-    assert reporter.COMMENT_MARKER in markdown
+    assert reporter.comment_marker("e2e-surfaces") in markdown
 
 
-def test_coverage_report_missing_artifact_fallback(tmp_path):
+def test_backend_coverage_report_missing_artifact_fallback():
     reporter = _load_reporter()
     summary = reporter.build_summary(None, phase="unit", junit_paths=[])
 
@@ -96,7 +102,7 @@ def test_coverage_report_missing_artifact_fallback(tmp_path):
     assert "Coverage artifact was not found" in markdown
 
 
-def test_coverage_report_cli_writes_markdown_and_summary(tmp_path):
+def test_backend_coverage_report_cli_writes_markdown_and_summary(tmp_path):
     reporter = _load_reporter()
     coverage_json = tmp_path / "coverage.json"
     coverage_json.write_text(
@@ -118,9 +124,6 @@ def test_coverage_report_cli_writes_markdown_and_summary(tmp_path):
     )
     markdown_out = tmp_path / "comment.md"
     summary_out = tmp_path / "summary.json"
-
-    code = reporter.main.__globals__["argparse"]  # prove module loaded normally
-    assert code is not None
 
     import subprocess
     import sys

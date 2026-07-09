@@ -4,6 +4,8 @@
 /* eslint-disable */
 import type { CreateScheduleRequest } from '../models/CreateScheduleRequest.js';
 import type { ScheduleDetailResponse } from '../models/ScheduleDetailResponse.js';
+import type { ScheduleFireListResponse } from '../models/ScheduleFireListResponse.js';
+import type { ScheduleFireResponse } from '../models/ScheduleFireResponse.js';
 import type { ScheduleListResponse } from '../models/ScheduleListResponse.js';
 import type { ScheduleType } from '../models/ScheduleType.js';
 import type { UpdateScheduleRequest } from '../models/UpdateScheduleRequest.js';
@@ -151,6 +153,60 @@ export class SchedulesService {
             },
             body: requestBody,
             mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * List Schedule Fires
+     * @param podId
+     * @param scheduleId
+     * @param limit
+     * @returns ScheduleFireListResponse Successful Response
+     * @throws ApiError
+     */
+    public static scheduleFireList(
+        podId: string,
+        scheduleId: string,
+        limit: number = 100,
+    ): CancelablePromise<ScheduleFireListResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/pods/{pod_id}/schedules/{schedule_id}/fires',
+            path: {
+                'pod_id': podId,
+                'schedule_id': scheduleId,
+            },
+            query: {
+                'limit': limit,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Retry Schedule Fire
+     * @param podId
+     * @param scheduleId
+     * @param fireId
+     * @returns ScheduleFireResponse Successful Response
+     * @throws ApiError
+     */
+    public static scheduleFireRetry(
+        podId: string,
+        scheduleId: string,
+        fireId: string,
+    ): CancelablePromise<ScheduleFireResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry',
+            path: {
+                'pod_id': podId,
+                'schedule_id': scheduleId,
+                'fire_id': fireId,
+            },
             errors: {
                 422: `Validation Error`,
             },

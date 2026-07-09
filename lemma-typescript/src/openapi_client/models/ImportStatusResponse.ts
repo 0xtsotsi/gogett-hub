@@ -9,6 +9,9 @@ import type { ImportStatus } from './ImportStatus.js';
  * Status of a pod import job (pure Redis read).
  */
 export type ImportStatusResponse = {
+    cancel_requested_at?: (string | null);
+    committed_steps?: Array<number>;
+    current_step?: (number | null);
     error?: (string | null);
     events_url: string;
     import_id: string;

@@ -9794,7 +9794,7 @@ var LemmaClient = (() => {
   }
 
   // src/version.ts
-  var SDK_VERSION = "0.5.6";
+  var SDK_VERSION = "1.0.0";
   var CLIENT_HEADER_NAME = "X-Lemma-Client";
   var CLIENT_HEADER_VALUE = `lemma-sdk-ts/${SDK_VERSION}`;
 
@@ -10196,7 +10196,7 @@ var LemmaClient = (() => {
   // src/openapi_client/core/OpenAPI.ts
   var OpenAPI = {
     BASE: "",
-    VERSION: "3.4.0",
+    VERSION: "4.0.0",
     WITH_CREDENTIALS: false,
     CREDENTIALS: "include",
     TOKEN: void 0,
@@ -12474,27 +12474,6 @@ var LemmaClient = (() => {
       });
     }
     /**
-     * Get Credentials
-     * Get the credentials for a specific account
-     * @param organizationId
-     * @param accountId
-     * @returns AccountCredentialsResponseSchema Successful Response
-     * @throws ApiError
-     */
-    static connectorAccountCredentialsGet(organizationId, accountId) {
-      return request(OpenAPI, {
-        method: "GET",
-        url: "/organizations/{organization_id}/connectors/accounts/{account_id}/credentials",
-        path: {
-          "organization_id": organizationId,
-          "account_id": accountId
-        },
-        errors: {
-          422: `Validation Error`
-        }
-      });
-    }
-    /**
      * List Auth Configs
      * @param organizationId
      * @param limit
@@ -12850,10 +12829,6 @@ var LemmaClient = (() => {
           payload
         )),
         get: (organizationId, accountId) => this.client.request(() => ConnectorsService.connectorAccountGet(
-          organizationId,
-          accountId
-        )),
-        credentials: (organizationId, accountId) => this.client.request(() => ConnectorsService.connectorAccountCredentialsGet(
           organizationId,
           accountId
         )),
@@ -13871,6 +13846,24 @@ var LemmaClient = (() => {
         }
       });
     }
+    /**
+     * Retry Pod Provisioning
+     * @param podId
+     * @returns PodResponse Successful Response
+     * @throws ApiError
+     */
+    static podProvisioningRetry(podId) {
+      return request(OpenAPI, {
+        method: "POST",
+        url: "/pods/{pod_id}/provisioning/retry",
+        path: {
+          "pod_id": podId
+        },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
   };
 
   // src/namespaces/pods.ts
@@ -14075,6 +14068,27 @@ var LemmaClient = (() => {
 
   // src/openapi_client/services/AgentSurfacesService.ts
   var AgentSurfacesService = class {
+    /**
+     * List Available Surfaces
+     * The connectable-surface catalog: every surface platform with its connector,
+     * supported credential modes, and the schema to connect an account. Platform-
+     * level (no surface need exist); the pod scopes authorization only.
+     * @param podId
+     * @returns AvailableSurfacesResponse Successful Response
+     * @throws ApiError
+     */
+    static agentSurfaceAvailable(podId) {
+      return request(OpenAPI, {
+        method: "GET",
+        url: "/pods/{pod_id}/available-surfaces",
+        path: {
+          "pod_id": podId
+        },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
     /**
      * Get Surface Setup Guide
      * The static pre-creation checklist for a platform (env/OAuth
@@ -14952,6 +14966,52 @@ var LemmaClient = (() => {
         }
       });
     }
+    /**
+     * List Schedule Fires
+     * @param podId
+     * @param scheduleId
+     * @param limit
+     * @returns ScheduleFireListResponse Successful Response
+     * @throws ApiError
+     */
+    static scheduleFireList(podId, scheduleId, limit = 100) {
+      return request(OpenAPI, {
+        method: "GET",
+        url: "/pods/{pod_id}/schedules/{schedule_id}/fires",
+        path: {
+          "pod_id": podId,
+          "schedule_id": scheduleId
+        },
+        query: {
+          "limit": limit
+        },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
+    /**
+     * Retry Schedule Fire
+     * @param podId
+     * @param scheduleId
+     * @param fireId
+     * @returns ScheduleFireResponse Successful Response
+     * @throws ApiError
+     */
+    static scheduleFireRetry(podId, scheduleId, fireId) {
+      return request(OpenAPI, {
+        method: "POST",
+        url: "/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry",
+        path: {
+          "pod_id": podId,
+          "schedule_id": scheduleId,
+          "fire_id": fireId
+        },
+        errors: {
+          422: `Validation Error`
+        }
+      });
+    }
   };
 
   // src/namespaces/schedules.ts
@@ -15404,7 +15464,7 @@ var LemmaClient = (() => {
      * Create a workflow definition. The graph (`nodes`/`edges`) can be included in this call to create a ready-to-run workflow in one step, or omitted to create a shell and upload the graph later with `workflow.graph.update`.
      * @param podId
      * @param requestBody
-     * @returns FlowDetailResponse Successful Response
+     * @returns WorkflowDetailResponse Successful Response
      * @throws ApiError
      */
     static workflowCreate(podId, requestBody) {
@@ -15447,7 +15507,7 @@ var LemmaClient = (() => {
      * Get a single workflow definition including graph and start configuration.
      * @param podId
      * @param workflowName
-     * @returns FlowDetailResponse Successful Response
+     * @returns WorkflowDetailResponse Successful Response
      * @throws ApiError
      */
     static workflowGet(podId, workflowName) {
@@ -15469,7 +15529,7 @@ var LemmaClient = (() => {
      * @param podId
      * @param workflowName
      * @param requestBody
-     * @returns FlowDetailResponse Successful Response
+     * @returns WorkflowDetailResponse Successful Response
      * @throws ApiError
      */
     static workflowUpdate(podId, workflowName, requestBody) {
@@ -15493,7 +15553,7 @@ var LemmaClient = (() => {
      * @param podId
      * @param workflowName
      * @param requestBody
-     * @returns FlowDetailResponse Successful Response
+     * @returns WorkflowDetailResponse Successful Response
      * @throws ApiError
      */
     static workflowGraphUpdate(podId, workflowName, requestBody) {

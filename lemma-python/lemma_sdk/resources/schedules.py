@@ -5,6 +5,8 @@ from uuid import UUID
 from ..openapi_client.api.schedules import (
     schedule_create,
     schedule_delete,
+    schedule_fire_list,
+    schedule_fire_retry,
     schedule_get,
     schedule_list,
     schedule_update,
@@ -12,6 +14,8 @@ from ..openapi_client.api.schedules import (
 from ..openapi_client.models.create_schedule_request import CreateScheduleRequest
 from ..openapi_client.models.schedule_detail_response import ScheduleDetailResponse
 from ..openapi_client.models.schedule_list_response import ScheduleListResponse
+from ..openapi_client.models.schedule_fire_list_response import ScheduleFireListResponse
+from ..openapi_client.models.schedule_fire_response import ScheduleFireResponse
 from ..openapi_client.models.schedule_type import ScheduleType
 from ..openapi_client.models.update_schedule_request import UpdateScheduleRequest
 from ..openapi_client.types import UNSET
@@ -68,3 +72,19 @@ class PodSchedules(BoundResource):
 
     def delete(self, schedule_id: str) -> None:
         self._call(schedule_delete, self._pod_uuid(), self._schedule_id(schedule_id))
+
+    def fires(self, schedule_id: str, *, limit: int = 100) -> ScheduleFireListResponse:
+        return self._call(
+            schedule_fire_list,
+            self._pod_uuid(),
+            self._schedule_id(schedule_id),
+            limit=limit,
+        )
+
+    def retry_fire(self, schedule_id: str, fire_id: str) -> ScheduleFireResponse:
+        return self._call(
+            schedule_fire_retry,
+            self._pod_uuid(),
+            self._schedule_id(schedule_id),
+            as_uuid(fire_id),
+        )

@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..openapi_client.api.pods import pod_create, pod_delete, pod_get, pod_list, pod_update
+from ..openapi_client.api.pods import (
+    pod_create,
+    pod_delete,
+    pod_get,
+    pod_list,
+    pod_provisioning_retry,
+    pod_update,
+)
 from ..openapi_client.models.pod_create_request import PodCreateRequest
 from ..openapi_client.models.pod_list_response import PodListResponse
 from ..openapi_client.models.pod_response import PodResponse
@@ -45,6 +52,9 @@ class BoundPods(BoundResource):
 
     def delete(self, pod_id: str) -> None:
         self._call(pod_delete, as_uuid(pod_id))
+
+    def retry_provisioning(self, pod_id: str) -> PodResponse:
+        return self._call(pod_provisioning_retry, as_uuid(pod_id))
 
     def client(self, pod_id: str) -> "Pod":
         return self._lemma.pod(pod_id)

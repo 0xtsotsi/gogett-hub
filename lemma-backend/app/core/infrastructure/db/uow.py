@@ -1,10 +1,11 @@
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
 
-from app.core.domain.message_bus import MessageBus
 from app.core.domain.uow import IUnitOfWork
-from app.core.infrastructure.events.publisher import EventPublisher
+from app.core.domain.message_bus import MessageBus
+from app.core.infrastructure.events.models import DomainEventOutbox
 from app.core.log.log import get_logger
 
 if TYPE_CHECKING:
@@ -14,19 +15,23 @@ logger = get_logger(__name__)
 
 
 class SqlAlchemyUnitOfWork(IUnitOfWork):
-    """SQLAlchemy Unit of Work with event publishing.
+    """SQLAlchemy unit of work with transactional event staging.
 
-    Collects domain events during operations and publishes them on commit.
+    Collected domain events are inserted into the outbox before the database
+    commit. A separate dispatcher publishes them, so a Redis outage cannot lose
+    a successfully committed domain change.
     Repositories call `collect_events()` after saving aggregates.
     """
 
     def __init__(self, session: AsyncSession, message_bus: MessageBus | None = None):
         self.session = session
+        # Kept as a constructor compatibility shim for callers that still pass
+        # a bus. Publication never occurs from inside the UoW.
         self._message_bus = message_bus
         self._pending_events: list["DomainEvent"] = []
 
     def set_message_bus(self, message_bus: MessageBus) -> None:
-        """Set/override message bus for event publishing."""
+        """Backward-compatible no-op setter; dispatch is outbox-driven."""
         self._message_bus = message_bus
 
     def collect_events(self, events: list["DomainEvent"]) -> None:
@@ -44,23 +49,36 @@ class SqlAlchemyUnitOfWork(IUnitOfWork):
             await self.rollback()
 
     async def commit(self) -> None:
-        """Commit transaction and publish all collected events."""
+        """Stage pending events and commit them with domain state."""
+        await self._stage_pending_events()
         await self.session.commit()
-        await self._publish_all_events()
-
-    async def _publish_all_events(self) -> None:
-        """Publish all collected events."""
-        for event in self._pending_events:
-            try:
-                stream = event.stream_name()
-                if self._message_bus:
-                    await self._message_bus.publish(stream, event)
-                else:
-                    await EventPublisher.publish(stream, event)
-                logger.debug(f"Published {event.event_type} to {stream}")
-            except Exception as e:
-                logger.error(f"Failed to publish {event.event_type}: {e}")
         self._pending_events.clear()
+
+    async def _stage_pending_events(self) -> None:
+        for event in self._pending_events:
+            payload = event.model_dump(mode="json")
+            await self.session.execute(
+                insert(DomainEventOutbox)
+                .values(
+                    id=event.event_id,
+                    stream=event.stream_name(),
+                    event_type=event.event_type,
+                    schema_version=event.schema_version,
+                    producer=event.producer,
+                    payload=payload,
+                    occurred_at=event.occurred_at,
+                    correlation_id=event.correlation_id,
+                    causation_id=event.causation_id,
+                    request_id=event.request_id,
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
+            logger.debug(
+                "Staged domain event in transactional outbox",
+                event_id=str(event.event_id),
+                event_type=event.event_type,
+                stream=event.stream_name(),
+            )
 
     async def rollback(self) -> None:
         """Rollback transaction and discard pending events."""

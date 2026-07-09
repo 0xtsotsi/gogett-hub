@@ -51,6 +51,7 @@ dependencies = [
     "fastembed>=0.7.4",
     "agentbox-client",
     "pypdfium2>=5.10.1",
+    "pillow>=12.0.0",
     "lemma-pod-bundle",
 ]
 
@@ -75,8 +76,11 @@ markitdown = [
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.39.9",
+    "diff-cover>=9.7.1",
     "kubernetes>=34.1.0",
     "nest-asyncio>=1.6.0",
+    "pip-audit>=2.9.0",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.1.0",
@@ -116,3 +120,13 @@ lemma-pod-bundle = { path = "../lemma-pod-bundle", editable = true }
 # I/O — they don't run on the worker event loop — so the ASYNC gate skips them.
 "**/tests/**" = ["ASYNC"]
 "app/modules/test_support/**" = ["ASYNC"]
+
+[tool.basedpyright]
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+exclude = [
+    "app/**/tests/**",
+    "app/modules/test_support/**",
+    "lemma-connectors/**",
+    "migrations/**",
+]

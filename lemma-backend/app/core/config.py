@@ -253,6 +253,23 @@ class Settings(BaseSettings):
         default="redis://localhost:6379",
         description="Redis connection URL",
     )
+    max_request_body_bytes: int = Field(
+        default=220 * 1024 * 1024,
+        description="Global ASGI request-body ceiling, enforced while receiving bytes.",
+    )
+    icon_upload_max_bytes: int = Field(default=5 * 1024 * 1024)
+    icon_max_dimension_pixels: int = Field(default=4096)
+    icon_max_total_pixels: int = Field(default=16_777_216)
+    datastore_upload_max_bytes: int = Field(default=100 * 1024 * 1024)
+    datastore_markdown_max_bytes: int = Field(default=25 * 1024 * 1024)
+    datastore_markdown_image_max_bytes: int = Field(default=10 * 1024 * 1024)
+    datastore_markdown_batch_max_bytes: int = Field(default=50 * 1024 * 1024)
+    app_source_archive_max_bytes: int = Field(default=100 * 1024 * 1024)
+    app_dist_archive_max_bytes: int = Field(default=100 * 1024 * 1024)
+    app_bundle_upload_max_bytes: int = Field(default=200 * 1024 * 1024)
+    app_archive_max_entries: int = Field(default=10_000)
+    app_archive_max_uncompressed_bytes: int = Field(default=400 * 1024 * 1024)
+    app_archive_max_compression_ratio: int = Field(default=200)
     redis_max_connections: int = Field(
         default=200,
         description="Maximum pooled Redis connections per process",
@@ -262,6 +279,13 @@ class Settings(BaseSettings):
         description=(
             "Polling interval in milliseconds for FastStream Redis stream consumers. "
             "Higher values reduce idle XREAD/XREADGROUP volume at the cost of slightly higher event pickup latency."
+        ),
+    )
+    redis_stream_min_idle_time_ms: int = Field(
+        default=60_000,
+        description=(
+            "Minimum pending time before a grouped Redis Stream message can be "
+            "claimed by another consumer after a worker crash."
         ),
     )
     consumer_group_reconcile_interval_seconds: float = Field(

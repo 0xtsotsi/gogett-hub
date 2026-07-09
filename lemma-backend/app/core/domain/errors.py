@@ -41,3 +41,15 @@ class BadRequestError(DomainError):
         details: object | None = None,
     ):
         super().__init__(message, code=code, status_code=400, details=details)
+
+
+class PayloadTooLargeError(DomainError):
+    """A request or multipart field exceeded its configured byte budget."""
+
+    def __init__(self, *, max_bytes: int, field: str = "request") -> None:
+        super().__init__(
+            f"{field} exceeds the maximum allowed size",
+            code="UPLOAD_TOO_LARGE",
+            status_code=413,
+            details={"field": field, "max_bytes": max_bytes},
+        )

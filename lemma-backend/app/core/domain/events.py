@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid7
 from datetime import datetime, timezone
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+from app.core.request_context import get_request_id
 
 
 class DomainEvent(BaseModel):
+    event_id: UUID = Field(default_factory=uuid7)
     event_type: str
+    schema_version: int = 1
+    producer: str = "lemma-backend"
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    correlation_id: UUID | None = None
+    causation_id: UUID | None = None
+    request_id: str | None = Field(default_factory=get_request_id)
 
     @classmethod
     def get_event_type(cls) -> str:
@@ -31,8 +41,8 @@ class DomainEvent(BaseModel):
 class RawWebhookReceivedEvent(DomainEvent):
     event_type: str = "webhook.received"
     source: str
-    payload: dict
-    headers: dict | None = None
+    payload: dict[str, Any]
+    headers: dict[str, str] | None = None
     surface_id: UUID | None = None
 
     @classmethod

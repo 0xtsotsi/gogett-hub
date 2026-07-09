@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from faststream.redis import RedisRouter
 
 from app.core.infrastructure.events import stream_subscriber as ss
 
@@ -18,6 +19,31 @@ def test_redis_stream_sub_registers_grouped_streams(monkeypatch):
     assert ss.registered_stream_groups() == {
         ("stream_a", "group_a"),
         ("stream_b", "group_b"),
+    }
+
+
+def test_reliable_subscriber_reads_new_and_reclaims_abandoned_messages():
+    router = RedisRouter()
+
+    @ss.reliable_redis_stream_subscriber(
+        router,
+        "pod_events",
+        group="pod-provisioning-events",
+        consumer="pod-provisioning-events-consumer",
+    )
+    async def handler(event: dict) -> None:
+        del event
+
+    del handler
+    streams = [subscriber.stream_sub for subscriber in router.subscribers]
+
+    assert len(streams) == 2
+    assert {
+        (stream.consumer, stream.min_idle_time)
+        for stream in streams
+    } == {
+        ("pod-provisioning-events-consumer", None),
+        ("pod-provisioning-events-consumer-reclaimer", 60_000),
     }
 
 

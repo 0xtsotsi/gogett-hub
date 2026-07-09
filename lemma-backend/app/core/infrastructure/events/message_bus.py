@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
+from typing import Any
 from pydantic import BaseModel
 from faststream.redis import RedisBroker
 
@@ -35,9 +37,16 @@ class FastStreamRedisMessageBus:
         """Eagerly initialize the shared broker connection."""
         return await self._get_broker()
 
-    async def publish(self, stream: str, event: BaseModel) -> None:
+    async def publish(
+        self, stream: str, event: BaseModel | Mapping[str, Any]
+    ) -> None:
         broker = await self._get_broker()
-        await broker.publish(event, stream=stream)
+        payload = (
+            event.model_dump(mode="json")
+            if isinstance(event, BaseModel)
+            else dict(event)
+        )
+        await broker.publish(payload, stream=stream)
 
     async def close(self) -> None:
         if not self._broker:

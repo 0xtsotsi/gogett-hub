@@ -22,14 +22,16 @@ def _normalized_path(raw_path: str, *, label: str) -> str:
     if "\\" in raw_path or raw_path.startswith(("/", "\\")):
         raise AppValidationError(f"{label} contains an invalid path")
     path = PurePosixPath(raw_path)
+    normalized = path.as_posix().rstrip("/")
     if (
         not raw_path
+        or normalized in {"", ".", ".."}
         or path.is_absolute()
         or any(part in {"", ".", ".."} for part in path.parts)
         or (path.parts and ":" in path.parts[0])
     ):
         raise AppValidationError(f"{label} contains an invalid path")
-    return path.as_posix().rstrip("/")
+    return normalized
 
 
 def inspect_app_archive(data: bytes | Path, *, label: str) -> ArchiveInspection:
@@ -52,7 +54,9 @@ def inspect_app_archive(data: bytes | Path, *, label: str) -> ArchiveInspection:
             if info.flag_bits & 0x1:
                 raise AppValidationError(f"{label} contains an encrypted entry")
             if info.compress_type not in {ZIP_STORED, ZIP_DEFLATED}:
-                raise AppValidationError(f"{label} uses an unsupported compression method")
+                raise AppValidationError(
+                    f"{label} uses an unsupported compression method"
+                )
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
                 raise AppValidationError(f"{label} contains a symbolic link")
@@ -61,13 +65,10 @@ def inspect_app_archive(data: bytes | Path, *, label: str) -> ArchiveInspection:
             total += info.file_size
             if total > settings.app_archive_max_uncompressed_bytes:
                 raise AppValidationError(f"{label} expands beyond the configured limit")
-            unsafe_ratio = (
-                info.file_size > 0
-                and (
-                    info.compress_size == 0
-                    or info.file_size / info.compress_size
-                    > settings.app_archive_max_compression_ratio
-                )
+            unsafe_ratio = info.file_size > 0 and (
+                info.compress_size == 0
+                or info.file_size / info.compress_size
+                > settings.app_archive_max_compression_ratio
             )
             if unsafe_ratio:
                 raise AppValidationError(f"{label} has an unsafe compression ratio")

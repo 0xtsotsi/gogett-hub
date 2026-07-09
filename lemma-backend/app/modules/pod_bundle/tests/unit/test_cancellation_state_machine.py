@@ -9,8 +9,13 @@ import pytest
 from app.modules.pod_bundle.domain.state import (
     BundleSource,
     BundleSourceKind,
+    ImportPlan,
     ImportState,
     ImportStatus,
+    PlanStep,
+    StepAction,
+    StepKind,
+    StepStatus,
 )
 from app.modules.pod_bundle.events import handlers
 
@@ -57,14 +62,18 @@ class _Store:
 async def test_cancellation_requested_recognizes_every_stop_state(status):
     state = _state(status)
 
-    assert await handlers._cancellation_requested(_Store(state), state.import_id) is state
+    assert (
+        await handlers._cancellation_requested(_Store(state), state.import_id) is state
+    )
 
 
 async def test_cancellation_requested_ignores_missing_and_active_states():
     import_id = uuid4()
     assert await handlers._cancellation_requested(_Store(None), import_id) is None
     active = _state(ImportStatus.APPLYING)
-    assert await handlers._cancellation_requested(_Store(active), active.import_id) is None
+    assert (
+        await handlers._cancellation_requested(_Store(active), active.import_id) is None
+    )
 
 
 async def test_raise_if_cancelled_is_a_control_flow_boundary():
@@ -215,6 +224,110 @@ async def test_apply_job_catches_midflight_cancellation(monkeypatch):
     )
 
     finalize.assert_awaited_once_with(store, staging, state)
+
+
+async def test_app_step_cancellation_checkpoints_committed_step_before_terminalizing(
+    monkeypatch,
+):
+    step = PlanStep(
+        index=0,
+        kind=StepKind.APP,
+        name="dashboard",
+        action=StepAction.CREATE,
+    )
+    state = _state(ImportStatus.APPLYING)
+    state.plan = ImportPlan(format_version=1, steps=[step])
+    store = _Store(state)
+    staging = AsyncMock()
+    staging.get_archive.return_value = b"zip-bytes"
+    finalize = AsyncMock()
+    app_runner = SimpleNamespace(run=AsyncMock())
+
+    monkeypatch.setattr(
+        handlers,
+        "streaq_worker",
+        SimpleNamespace(context=SimpleNamespace(uow_factory=object())),
+    )
+    monkeypatch.setattr(handlers, "get_pod_bundle_state_store", lambda: store)
+    monkeypatch.setattr(handlers, "BundleStagingStorage", lambda: staging)
+    monkeypatch.setattr(handlers, "_raise_if_cancelled", AsyncMock())
+    monkeypatch.setattr(
+        handlers, "_cancellation_requested", AsyncMock(return_value=state)
+    )
+    monkeypatch.setattr(handlers, "_finalize_import_cancellation", finalize)
+    monkeypatch.setattr(handlers, "publish_bundle_event", AsyncMock())
+
+    from app.modules.pod_bundle.infrastructure import app_builder
+
+    monkeypatch.setattr(app_builder, "AppStepRunner", lambda *, uow_factory: app_runner)
+    monkeypatch.setattr(
+        "lemma_pod_bundle.extract_bundle", lambda *args, **kwargs: args[1]
+    )
+
+    await handlers.apply_pod_import(
+        {
+            "import_id": str(state.import_id),
+            "pod_id": str(state.pod_id),
+            "user_id": str(state.user_id),
+        }
+    )
+
+    app_runner.run.assert_awaited_once()
+    assert state.committed_steps == [0]
+    assert step.status is StepStatus.DONE
+    finalize.assert_awaited_once_with(store, staging, state)
+
+
+@pytest.mark.parametrize(
+    ("task", "extra_context"),
+    [
+        (handlers.import_pod_github, {"owner": None, "repo": None}),
+        (
+            handlers.import_pod_url,
+            {"source_kind": "pod-exports", "source_id": str(uuid4())},
+        ),
+    ],
+)
+@pytest.mark.parametrize("state", [None, _state(ImportStatus.COMPLETED)])
+async def test_fetch_jobs_skip_missing_and_terminal_state(
+    monkeypatch, task, extra_context, state
+):
+    store = _Store(state)
+    monkeypatch.setattr(handlers, "streaq_worker", SimpleNamespace(context=object()))
+    monkeypatch.setattr(handlers, "get_pod_bundle_state_store", lambda: store)
+    monkeypatch.setattr(handlers, "BundleStagingStorage", AsyncMock)
+    import_id = state.import_id if state is not None else uuid4()
+
+    await task({"import_id": str(import_id), **extra_context})
+
+
+async def test_checkpoint_clears_current_step_and_reports_progress(monkeypatch):
+    done = PlanStep(
+        index=0,
+        kind=StepKind.TABLE,
+        name="customers",
+        action=StepAction.CREATE,
+        status=StepStatus.DONE,
+    )
+    skipped = PlanStep(
+        index=1,
+        kind=StepKind.APP,
+        name="dashboard",
+        action=StepAction.SKIP,
+        status=StepStatus.SKIPPED,
+    )
+    state = _state(ImportStatus.APPLYING)
+    state.plan = ImportPlan(format_version=1, steps=[done, skipped])
+    store = _Store(state)
+    publish = AsyncMock()
+    monkeypatch.setattr(handlers, "publish_bundle_event", publish)
+
+    await handlers._checkpoint(store, state, skipped)
+
+    assert state.progress.done == 2
+    assert state.progress.total == 2
+    assert state.current_step is None
+    assert publish.await_args.args[1]["step"]["status"] == StepStatus.SKIPPED.value
 
 
 class SimplePlan:

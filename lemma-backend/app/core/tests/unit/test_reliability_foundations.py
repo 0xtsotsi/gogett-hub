@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from fastapi import UploadFile
+from pydantic import BaseModel, ValidationError
 
 from app.app import RequestBodyLimitMiddleware
 from app.core.api.uploads import (
@@ -15,6 +18,9 @@ from app.core.api.uploads import (
     UploadBudget,
     read_upload_limited,
     stage_upload_limited,
+    upload_source_has_content,
+    upload_source_sha256,
+    upload_source_size,
 )
 from app.core.domain.errors import DomainError, PayloadTooLargeError
 from app.core.domain.events import DomainEvent
@@ -22,10 +28,16 @@ from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.core.infrastructure.events.inbox import (
     InboxConsumer,
     InboxStatus,
+    provide_domain_event_inbox,
     stable_event_id,
 )
-from app.core.infrastructure.events.outbox import ClaimedEvent, OutboxDispatcher
-from app.core.redaction import REDACTED, redact_text, redact_value
+from app.core.infrastructure.events.outbox import (
+    ClaimedEvent,
+    OutboxDispatcher,
+    outbox_dispatcher_lifespan,
+    replay_outbox_event,
+)
+from app.core.redaction import REDACTED, _redact_url, redact_text, redact_value
 
 
 class _TestEvent(DomainEvent):
@@ -87,6 +99,44 @@ class _MemoryInbox(InboxConsumer):
         self.finished.append((status, error_type))
 
 
+class _AsyncContext:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+
+class _DatabaseSessionDouble:
+    def __init__(self, *, row=None, rows=(), result=None) -> None:
+        self.row = row
+        self.rows = list(rows)
+        self.result = result or SimpleNamespace(rowcount=1)
+        self.statements: list[object] = []
+
+    def begin(self):
+        return _AsyncContext(self)
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return self.result
+
+    async def scalar(self, statement):
+        self.statements.append(statement)
+        return self.row
+
+    async def scalars(self, statement):
+        self.statements.append(statement)
+        return SimpleNamespace(all=lambda: self.rows)
+
+
+def _session_maker(session: _DatabaseSessionDouble):
+    return lambda: _AsyncContext(session)
+
+
 @pytest.mark.asyncio
 async def test_inbox_classifies_success_retry_terminal_and_dead_letter() -> None:
     event = _TestEvent(value="one")
@@ -115,6 +165,123 @@ async def test_inbox_classifies_success_retry_terminal_and_dead_letter() -> None
     dead_letter = _MemoryInbox(attempt=10)
     await dead_letter.process("consumer", event, infrastructure_failure)
     assert dead_letter.finished == [(InboxStatus.DEAD_LETTER, "RuntimeError")]
+
+
+class _ValidationProbe(BaseModel):
+    value: int
+
+
+@pytest.mark.asyncio
+async def test_inbox_covers_skip_cancellation_validation_and_retryable_domain_error() -> (
+    None
+):
+    event = _TestEvent(value="branches")
+
+    skipped = _MemoryInbox(attempt=None)  # type: ignore[arg-type]
+    assert await skipped.process("consumer", event, AsyncMock()) is False
+
+    cancelled = _MemoryInbox()
+
+    async def cancel() -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled.process("consumer", event, cancel)
+    assert cancelled.finished == []
+
+    with pytest.raises(ValidationError) as exc_info:
+        _ValidationProbe.model_validate({"value": "not-an-integer"})
+
+    async def invalid() -> None:
+        raise exc_info.value
+
+    terminal = _MemoryInbox()
+    assert await terminal.process("consumer", event, invalid) is True
+    assert terminal.finished == [(InboxStatus.TERMINAL, "ValidationError")]
+
+    retryable = _MemoryInbox()
+
+    async def dependency_failure() -> None:
+        raise DomainError("dependency unavailable", status_code=503)
+
+    with pytest.raises(DomainError):
+        await retryable.process("consumer", event, dependency_failure)
+    assert retryable.finished == [(InboxStatus.RETRYING, "DomainError")]
+
+
+@pytest.mark.asyncio
+async def test_inbox_claim_and_finish_persist_all_state_transitions() -> None:
+    now = datetime.now(timezone.utc)
+    event_id = uuid4()
+    claimable = SimpleNamespace(
+        status=InboxStatus.RETRYING.value,
+        attempts=2,
+        last_received_at=now - timedelta(minutes=2),
+        last_error_type="OldError",
+        last_error="old",
+    )
+    session = _DatabaseSessionDouble(row=claimable)
+    inbox = InboxConsumer(_session_maker(session), abandon_after_seconds=60)
+
+    assert await inbox._claim("worker", event_id, "test.created") == 3
+    assert claimable.status == InboxStatus.PROCESSING.value
+    assert claimable.last_error_type is None
+    assert claimable.last_error is None
+
+    for row in (
+        None,
+        SimpleNamespace(
+            status=InboxStatus.COMPLETED.value,
+            attempts=1,
+            last_received_at=now,
+        ),
+        SimpleNamespace(
+            status=InboxStatus.PROCESSING.value,
+            attempts=1,
+            last_received_at=now,
+        ),
+    ):
+        candidate = InboxConsumer(_session_maker(_DatabaseSessionDouble(row=row)))
+        assert await candidate._claim("worker", event_id, "test.created") is None
+
+    abandoned = SimpleNamespace(
+        status=InboxStatus.PROCESSING.value,
+        attempts=10,
+        last_received_at=now - timedelta(minutes=2),
+        last_error_type="WorkerLost",
+        last_error="abandoned",
+    )
+    reclaiming = InboxConsumer(_session_maker(_DatabaseSessionDouble(row=abandoned)))
+    assert await reclaiming._claim("worker", event_id, "test.created") == 11
+
+    finish_row = SimpleNamespace(
+        status=None,
+        last_received_at=None,
+        completed_at=None,
+        dead_lettered_at=None,
+        last_error_type=None,
+        last_error=None,
+    )
+    finisher = InboxConsumer(_session_maker(_DatabaseSessionDouble(row=finish_row)))
+    await finisher._finish(
+        "worker",
+        event_id,
+        InboxStatus.DEAD_LETTER,
+        error_type="X" * 300,
+    )
+    assert finish_row.dead_lettered_at is not None
+    assert finish_row.completed_at is None
+    assert len(finish_row.last_error_type) == 200
+    assert "trace" in finish_row.last_error
+
+    await finisher._finish("worker", event_id, InboxStatus.COMPLETED)
+    assert finish_row.completed_at is not None
+    assert finish_row.dead_lettered_at is None
+    assert finish_row.last_error is None
+
+    missing = InboxConsumer(_session_maker(_DatabaseSessionDouble(row=None)))
+    await missing._finish("worker", event_id, InboxStatus.COMPLETED)
+    assert provide_domain_event_inbox() is not None
 
 
 def test_legacy_event_id_is_deterministic() -> None:
@@ -181,6 +348,65 @@ async def test_outbox_run_recovers_from_infrastructure_failure(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_outbox_claim_state_updates_replay_and_lifespan(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(
+        id=uuid4(),
+        stream="test_events",
+        event_type="test.created",
+        payload={"value": "one"},
+        attempts=0,
+        occurred_at=now,
+        lease_owner=None,
+        lease_until=None,
+    )
+    session = _DatabaseSessionDouble(rows=[row])
+    dispatcher = OutboxDispatcher(
+        _session_maker(session), AsyncMock(), owner="test-owner", lease_seconds=30
+    )
+
+    claimed = await dispatcher._claim_batch()
+    assert claimed == [
+        ClaimedEvent(
+            id=row.id,
+            stream="test_events",
+            event_type="test.created",
+            payload={"value": "one"},
+            attempts=1,
+            occurred_at=now,
+        )
+    ]
+    assert row.lease_owner == "test-owner"
+    assert row.lease_until is not None
+
+    await dispatcher._mark_published(row.id)
+    await dispatcher._mark_failed(claimed[0], RuntimeError("redis unavailable"))
+    terminal = ClaimedEvent(
+        id=row.id,
+        stream=row.stream,
+        event_type=row.event_type,
+        payload=row.payload,
+        attempts=10,
+        occurred_at=row.occurred_at,
+    )
+    await dispatcher._mark_failed(terminal, RuntimeError("redis unavailable"))
+    assert len(session.statements) == 4
+
+    replay_session = _DatabaseSessionDouble(result=SimpleNamespace(rowcount=1))
+    assert await replay_outbox_event(_session_maker(replay_session), row.id) is True
+
+    started = asyncio.Event()
+
+    async def running(self) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(OutboxDispatcher, "run", running)
+    async with outbox_dispatcher_lifespan(_session_maker(session), AsyncMock()):
+        await started.wait()
+
+
+@pytest.mark.asyncio
 async def test_upload_reader_enforces_field_and_batch_limits() -> None:
     upload = UploadFile(filename="sample.bin", file=BytesIO(b"abcdef"))
     result = await read_upload_limited(upload, max_bytes=6, field="file")
@@ -198,11 +424,11 @@ async def test_upload_reader_enforces_field_and_batch_limits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_upload_staging_spills_and_always_cleans_up(tmp_path, monkeypatch) -> None:
+async def test_upload_staging_spills_and_always_cleans_up(
+    tmp_path, monkeypatch
+) -> None:
     staged_path = tmp_path / "upload.staged"
-    monkeypatch.setattr(
-        "app.core.api.uploads._new_staging_path", lambda: staged_path
-    )
+    monkeypatch.setattr("app.core.api.uploads._new_staging_path", lambda: staged_path)
     content = b"x" * (UPLOAD_MEMORY_SPOOL_BYTES + 1)
     upload = UploadFile(filename="large.bin", file=BytesIO(content))
 
@@ -219,6 +445,40 @@ async def test_upload_staging_spills_and_always_cleans_up(tmp_path, monkeypatch)
             raise RuntimeError("storage failed")
 
     assert not staged_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_helpers_cover_empty_path_and_append_spooling(
+    tmp_path, monkeypatch
+) -> None:
+    blank = tmp_path / "blank.bin"
+    blank.write_bytes(b" \n\t")
+    assert upload_source_size(blank) == 3
+    assert upload_source_has_content(blank) is False
+    assert upload_source_has_content(b" \t") is False
+
+    content_path = tmp_path / "content.bin"
+    content_path.write_bytes(b" \nvalue")
+    assert upload_source_has_content(content_path) is True
+    assert upload_source_sha256(content_path) == upload_source_sha256(b" \nvalue")
+
+    empty_stage = tmp_path / "empty.staged"
+    monkeypatch.setattr("app.core.api.uploads._new_staging_path", lambda: empty_stage)
+    empty = UploadFile(filename="empty.bin", file=BytesIO(b""))
+    async with stage_upload_limited(empty, max_bytes=0, field="file") as staged:
+        assert staged.path == empty_stage
+        assert staged.size == 0
+
+    appended_stage = tmp_path / "appended.staged"
+    monkeypatch.setattr(
+        "app.core.api.uploads._new_staging_path", lambda: appended_stage
+    )
+    content = b"x" * (UPLOAD_MEMORY_SPOOL_BYTES + 2 * 1024 * 1024)
+    upload = UploadFile(filename="append.bin", file=BytesIO(content))
+    async with stage_upload_limited(
+        upload, max_bytes=len(content), field="file"
+    ) as staged:
+        assert staged.path.read_bytes() == content
 
 
 @pytest.mark.asyncio
@@ -254,6 +514,50 @@ async def test_request_body_limit_rejects_chunked_body_without_content_length() 
     assert body["code"] == "UPLOAD_TOO_LARGE"
 
 
+@pytest.mark.asyncio
+async def test_request_body_limit_handles_header_fast_path_and_passthrough() -> None:
+    app = AsyncMock()
+    receive = AsyncMock()
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = RequestBodyLimitMiddleware(app, max_bytes=5)
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/upload",
+            "headers": [(b"content-length", b"6"), (b"x-request-id", b"req-1")],
+        },
+        receive,
+        send,
+    )
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["request_id"] == "req-1"
+    app.assert_not_awaited()
+
+    async def valid_app(scope, receive, send):
+        del scope, receive, send
+
+    valid = RequestBodyLimitMiddleware(valid_app, max_bytes=5)
+    await valid(
+        {
+            "type": "http",
+            "headers": [(b"content-length", b"invalid")],
+        },
+        AsyncMock(),
+        AsyncMock(),
+    )
+
+    disabled_app = AsyncMock()
+    disabled = RequestBodyLimitMiddleware(disabled_app, max_bytes=0)
+    scope = {"type": "websocket", "headers": []}
+    await disabled(scope, receive, send)
+    disabled_app.assert_awaited_once_with(scope, receive, send)
+
+
 def test_canary_secrets_are_redacted_recursively_and_in_text() -> None:
     canary = "CANARY-SECRET-123"
     value = {
@@ -270,3 +574,24 @@ def test_canary_secrets_are_redacted_recursively_and_in_text() -> None:
     assert canary not in redact_text(
         f"GET https://provider.test/cb?code={canary} failed"
     )
+
+
+def test_redaction_handles_urls_exceptions_sequences_and_binary_values() -> None:
+    rendered = redact_value(
+        [
+            RuntimeError("provider secret"),
+            b"binary-secret",
+            "Bearer token-value",
+            {"ordinary": "eyJabc.def.ghi"},
+        ]
+    )
+    assert rendered[0] == {"type": "RuntimeError"}
+    assert rendered[1] == "<bytes:13>"
+    assert REDACTED in rendered[2]
+    assert REDACTED in rendered[3]["ordinary"]
+    assert (
+        _redact_url("https://user:password@example.test:8443/cb?state=secret&ok=yes")
+        == "https://[REDACTED]@example.test:8443/cb?state=%5BREDACTED%5D&ok=yes"
+    )
+    assert _redact_url("not a url") == "not a url"
+    assert redact_value(7) == 7

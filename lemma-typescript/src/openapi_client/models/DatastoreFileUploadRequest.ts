@@ -10,4 +10,3 @@ export type DatastoreFileUploadRequest = {
     search_enabled?: boolean;
     visibility?: (string | null);
 };
-

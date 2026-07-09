@@ -18,4 +18,3 @@ export type WorkflowRunWaitResponse = {
     wait_type: WorkflowRunWaitType;
     workflow_id: string;
 };
-

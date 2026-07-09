@@ -7,4 +7,3 @@ export type attach = {
     images?: Array<string>;
     path: string;
 };
-

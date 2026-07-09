@@ -30,4 +30,3 @@ export type WorkflowRunResponse = {
     user_id: string;
     workflow_id: string;
 };
-

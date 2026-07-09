@@ -25,4 +25,3 @@ export type WorkflowSummaryResponse = {
     updated_at?: (string | null);
     visibility?: string;
 };
-

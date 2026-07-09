@@ -10,4 +10,3 @@ export type update = {
     search_enabled?: (boolean | null);
     visibility?: (string | null);
 };
-

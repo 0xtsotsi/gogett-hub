@@ -15,4 +15,3 @@ export type ErrorResponse = {
     message: string;
     request_id?: (string | null);
 };
-

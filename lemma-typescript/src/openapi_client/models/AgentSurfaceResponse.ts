@@ -25,4 +25,3 @@ export type AgentSurfaceResponse = {
     uses_default_agent?: boolean;
     webhook_url?: (string | null);
 };
-

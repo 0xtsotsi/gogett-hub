@@ -17,4 +17,3 @@ export type CreateAppFromWidgetRequest = {
     tool_call_id: string;
     visibility?: (string | null);
 };
-

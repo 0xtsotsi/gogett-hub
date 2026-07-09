@@ -13,4 +13,3 @@ export type ScheduledWorkflowStartInput = {
      */
     type?: string;
 };
-

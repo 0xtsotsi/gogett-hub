@@ -24,4 +24,3 @@ export type PodResponse = {
     updated_at: string;
     user_id: string;
 };
-

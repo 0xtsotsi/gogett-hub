@@ -9,4 +9,3 @@ export type ScheduledWorkflowStartConfigOutput = {
      */
     schedule_type: ScheduledWorkflowStartConfigType;
 };
-

@@ -13,4 +13,3 @@ export type EventWorkflowStartInput = {
      */
     type?: string;
 };
-

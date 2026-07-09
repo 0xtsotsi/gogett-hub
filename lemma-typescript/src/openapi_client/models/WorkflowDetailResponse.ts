@@ -31,4 +31,3 @@ export type WorkflowDetailResponse = {
     updated_at?: (string | null);
     visibility?: string;
 };
-

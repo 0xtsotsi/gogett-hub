@@ -21,7 +21,9 @@ name: Backend E2E (mocked)
 on:
   workflow_dispatch:
   pull_request:
-    types: [labeled, synchronize, reopened]
+    # Direct PR events exist only for the opt-in live-surface smoke below.
+    # Mocked E2E is launched by workflow_run after CI succeeds.
+    types: [labeled]
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -180,10 +182,9 @@ jobs:
 
   aggregate-coverage:
     name: backend aggregate coverage gate
-    if: >-
-      always() &&
-      !contains(needs.backend-e2e.result, 'failure') &&
-      !contains(needs.backend-e2e.result, 'cancelled')
+    # A skipped producer has no coverage artifacts. Requiring success prevents
+    # label-only/direct PR events from running an empty aggregation job.
+    if: needs.backend-e2e.result == 'success'
     needs: backend-e2e
     runs-on: ubuntu-latest
     permissions:
@@ -227,7 +228,10 @@ jobs:
           mkdir -p coverage-artifacts/combined coverage-backend
           index=0
           while IFS= read -r coverage_file; do
-            cp "$coverage_file" "coverage-artifacts/combined/.coverage.$index"
+            # Coverage.py discovers parallel inputs by appending a suffix to
+            # the configured data-file basename. COVERAGE_FILE below is
+            # `.coverage.backend`, so retain that basename here.
+            cp "$coverage_file" "coverage-artifacts/combined/.coverage.backend.$index"
             index=$((index + 1))
           done < <(find coverage-artifacts -type f -name '.coverage.backend*')
           if [ "$index" -eq 0 ]; then

@@ -157,6 +157,7 @@ def _close_shared_contexts() -> None:
 
 
 def _reset_supertokens_testing_state() -> None:
+    from supertokens_python.recipe.accountlinking.recipe import AccountLinkingRecipe
     from supertokens_python.recipe.dashboard.recipe import DashboardRecipe
     from supertokens_python.recipe.emailpassword.recipe import EmailPasswordRecipe
     from supertokens_python.recipe.jwt.recipe import JWTRecipe
@@ -171,6 +172,7 @@ def _reset_supertokens_testing_state() -> None:
     Supertokens.reset()
     for recipe in (
         SessionRecipe,
+        AccountLinkingRecipe,
         EmailPasswordRecipe,
         DashboardRecipe,
         ThirdPartyRecipe,

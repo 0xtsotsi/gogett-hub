@@ -19,4 +19,3 @@ export type WorkflowRunSummaryResponse = {
     user_id: string;
     workflow_id: string;
 };
-

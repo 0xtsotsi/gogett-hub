@@ -6,4 +6,3 @@ export type AppBundleUploadRequest = {
     dist_archive?: (string | null);
     source_archive?: (string | null);
 };
-

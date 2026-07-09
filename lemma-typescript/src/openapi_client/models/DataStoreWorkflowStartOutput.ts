@@ -13,4 +13,3 @@ export type DataStoreWorkflowStartOutput = {
      */
     type?: string;
 };
-

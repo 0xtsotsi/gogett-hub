@@ -13,4 +13,3 @@ export type DataStoreWorkflowStartConfigOutput = {
      */
     table_name: string;
 };
-

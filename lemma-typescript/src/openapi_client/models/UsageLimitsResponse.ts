@@ -11,4 +11,3 @@ export type UsageLimitsResponse = {
     user_monthly: UsageLimitScopeResponse;
     user_weekly: UsageLimitScopeResponse;
 };
-

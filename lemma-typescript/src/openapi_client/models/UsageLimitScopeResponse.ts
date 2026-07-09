@@ -12,4 +12,3 @@ export type UsageLimitScopeResponse = {
     used_usd: number;
     window_start: string;
 };
-

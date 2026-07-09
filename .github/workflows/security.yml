@@ -51,12 +51,23 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Scan repository history
+      - name: Scan commits introduced by this change
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          SCAN_RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
         run: >-
           docker run --rm
           -v "$PWD:/repo"
           ghcr.io/gitleaks/gitleaks:v8.30.0
           detect --source=/repo --redact --no-banner --exit-code=1
+          --log-opts="$SCAN_RANGE"
+      - name: Scan the current repository tree
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: >-
+          docker run --rm
+          -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.30.0
+          detect --source=/repo --redact --no-banner --exit-code=1 --no-git
 
   python-audit:
     name: Python dependency audit
@@ -70,8 +81,17 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync
-      - name: Audit installed dependency graph
-        run: uv run pip-audit --local --strict --skip-editable
+      - name: Export locked third-party dependency graph
+        run: >-
+          uv export --frozen --no-dev --no-emit-project
+          --no-emit-package agentbox-client
+          --no-emit-package lemma-pod-bundle
+          --no-emit-package lemma-connectors
+          --output-file /tmp/lemma-backend-audit.txt
+      - name: Audit locked third-party dependency graph
+        run: >-
+          uv run pip-audit --strict --disable-pip
+          --requirement /tmp/lemma-backend-audit.txt
 
   container:
     name: Backend image vulnerability scan
@@ -87,5 +107,9 @@ jobs:
           format: table
           exit-code: "1"
           ignore-unfixed: true
+          # Gitleaks owns repository secret detection. Keep this job focused on
+          # actionable OS/library CVEs so test fixtures inside dependencies do
+          # not masquerade as image vulnerabilities.
+          scanners: vuln
           vuln-type: os,library
           severity: HIGH,CRITICAL

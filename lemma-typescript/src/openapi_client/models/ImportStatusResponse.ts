@@ -21,4 +21,3 @@ export type ImportStatusResponse = {
     source_kind: string;
     status: ImportStatus;
 };
-

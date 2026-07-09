@@ -17,4 +17,3 @@ export type VariableSpecResponse = {
     provider?: (string | null);
     required?: boolean;
 };
-

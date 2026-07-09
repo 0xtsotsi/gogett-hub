@@ -13,4 +13,3 @@ export type EventWorkflowStartConfigInput = {
     connector_trigger_id: string;
     trigger_config?: Record<string, any>;
 };
-

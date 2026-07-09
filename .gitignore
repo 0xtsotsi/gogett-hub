@@ -19,6 +19,8 @@ htmlcov/
 coverage/
 coverage-agent-surfaces/
 coverage-backend/
+lemma-backend/coverage-agent-surfaces/
+lemma-backend/coverage-backend/
 lcov.info
 *.lcov
 

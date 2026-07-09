@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flow Visualization</title>
+    <title>Workflow Visualization</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
@@ -24,8 +24,8 @@
 </head>
 <body>
     <div class="header">
-        <h2 style="margin:0;">{{ flow.name }}</h2>
-        <p style="margin:5px 0 0 0; color:#666; font-size:0.9em;">ID: {{ flow.id }}</p>
+        <h2 style="margin:0;">{{ workflow.name }}</h2>
+        <p style="margin:5px 0 0 0; color:#666; font-size:0.9em;">ID: {{ workflow.id }}</p>
     </div>
     <div id="cy"></div>
     <div id="sidebar">
@@ -51,8 +51,8 @@
     </div>
 
     <script>
-        const flowData = {{ flow | tojson }};
-        const nodeDataMap = {}; // Map flow node id to extra details if needed
+        const flowData = {{ workflow | tojson }};
+        const nodeDataMap = {}; // Map workflow node id to extra details if needed
 
         // Transform nodes
         const elements = [];

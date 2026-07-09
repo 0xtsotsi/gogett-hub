@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flow Run Visualization</title>
+    <title>Workflow Run Visualization</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
@@ -123,7 +123,7 @@
     <div id="sidebar">
         <div id="run-info">
             <h3>Run Overview</h3>
-            <p><strong>Flow ID:</strong> {{ flow.id }}</p>
+            <p><strong>Workflow ID:</strong> {{ workflow.id }}</p>
             <p><strong>Started:</strong> {{ run.created_at }}</p>
             <p><strong>Updated:</strong> {{ run.updated_at }}</p>
         </div>
@@ -147,7 +147,7 @@
     </div>
 
     <script>
-        const flowData = {{ flow | tojson }};
+        const flowData = {{ workflow | tojson }};
         const runData = {{ run | tojson }};
         const executionContext = runData.execution_context || {};
         const stepHistory = runData.step_history || [];

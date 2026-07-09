@@ -11,10 +11,10 @@ from app.core.authorization.context import (
 from app.core.authorization.permissions import Permissions
 from app.core.helpers.slug import normalize_resource_name
 from app.modules.icon.services.icon_service import IconService
-from app.modules.workflow.domain.flow import (
-    FlowEntity,
-    FlowSummaryEntity,
-    FlowUpdateEntity,
+from app.modules.workflow.domain.workflow import (
+    WorkflowEntity,
+    WorkflowSummaryEntity,
+    WorkflowUpdateEntity,
     WorkflowMode,
 )
 from app.modules.workflow.domain.graph import WorkflowEdge
@@ -23,12 +23,12 @@ from app.modules.workflow.domain.errors import (
     WorkflowConflictError,
     WorkflowValidationError,
 )
-from app.modules.workflow.domain.start import FlowStart
-from app.modules.workflow.infrastructure.repositories import SqlAlchemyFlowRepository
+from app.modules.workflow.domain.start import WorkflowStart
+from app.modules.workflow.infrastructure.repositories import SqlAlchemyWorkflowRepository
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 
 
-class FlowService:
+class WorkflowService:
     def __init__(
         self,
         uow: SqlAlchemyUnitOfWork,
@@ -37,7 +37,7 @@ class FlowService:
         icon_service: IconService | None = None,
     ):
         self.uow = uow
-        self.flow_repo = SqlAlchemyFlowRepository(uow)
+        self.flow_repo = SqlAlchemyWorkflowRepository(uow)
         self.authorization_service = authorization_service
         self.icon_service = icon_service
 
@@ -64,20 +64,20 @@ class FlowService:
         if requester_user_id is not None:
             raise RuntimeError("Context is required for workflow authorization")
 
-    async def create_flow(
+    async def create_workflow(
         self,
         pod_id: UUID,
         name: str,
         description: str | None = None,
         icon_url: str | None = None,
-        start: FlowStart | None = None,
+        start: WorkflowStart | None = None,
         mode: WorkflowMode = WorkflowMode.GLOBAL,
         visibility: ResourceVisibility | str | None = None,
         nodes: List[WorkflowNode] | None = None,
         edges: List[WorkflowEdge] | None = None,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> FlowEntity:
+    ) -> WorkflowEntity:
         await self._require_action(
             requester_user_id=requester_user_id,
             action=Permissions.WORKFLOW_CREATE,
@@ -91,7 +91,7 @@ class FlowService:
                 f"Workflow with name '{normalized_name}' already exists in pod {pod_id}"
             )
         normalized_visibility = self._normalize_workflow_visibility(visibility)
-        flow = FlowEntity(
+        flow = WorkflowEntity(
             pod_id=pod_id,
             user_id=requester_user_id,
             name=normalized_name,
@@ -105,17 +105,17 @@ class FlowService:
         )
         # Validation raises GraphValidationError (422) listing every issue and
         # stamps entry_node_id. Empty shells skip validation until a graph is
-        # uploaded via update_flow_graph.
+        # uploaded via update_workflow_graph.
         flow.validate_graph()
         return await self.flow_repo.create(flow)
 
-    async def get_flow_by_name(
+    async def get_workflow_by_name(
         self,
         pod_id: UUID,
         name: str,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> FlowEntity | None:
+    ) -> WorkflowEntity | None:
         flow = await self.flow_repo.get_by_name(pod_id, name, ctx=ctx)
         if flow and requester_user_id is not None:
             await self._require_action(
@@ -127,12 +127,12 @@ class FlowService:
             )
         return flow
 
-    async def get_flow(
+    async def get_workflow(
         self,
         flow_id: UUID,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> FlowEntity | None:
+    ) -> WorkflowEntity | None:
         flow = await self.flow_repo.get(flow_id, ctx=ctx)
         if flow and requester_user_id is not None:
             await self._require_action(
@@ -144,16 +144,16 @@ class FlowService:
             )
         return flow
 
-    async def update_flow(
+    async def update_workflow(
         self,
         flow_id: UUID,
-        update_data: FlowUpdateEntity,
+        update_data: WorkflowUpdateEntity,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> FlowEntity:
+    ) -> WorkflowEntity:
         flow = await self.flow_repo.get(flow_id, ctx=ctx)
         if not flow:
-            raise ValueError("Flow not found")
+            raise ValueError("Workflow not found")
         await self._require_action(
             requester_user_id=requester_user_id,
             action=Permissions.WORKFLOW_UPDATE,
@@ -190,18 +190,18 @@ class FlowService:
             raise WorkflowValidationError(f"Invalid visibility: {value}") from exc
         return visibility.value
 
-    async def update_flow_graph(
+    async def update_workflow_graph(
         self,
         flow_id: UUID,
         nodes: List[WorkflowNode],
         edges: List[WorkflowEdge],
-        start: FlowStart | None = None,
+        start: WorkflowStart | None = None,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> FlowEntity:
+    ) -> WorkflowEntity:
         flow = await self.flow_repo.get(flow_id, ctx=ctx)
         if not flow:
-            raise ValueError("Flow not found")
+            raise ValueError("Workflow not found")
         await self._require_action(
             requester_user_id=requester_user_id,
             action=Permissions.WORKFLOW_UPDATE,
@@ -220,7 +220,7 @@ class FlowService:
 
         return await self.flow_repo.update(flow)
 
-    async def list_flows(
+    async def list_workflows(
         self,
         pod_id: UUID,
         *,
@@ -228,7 +228,7 @@ class FlowService:
         cursor: UUID | None = None,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> tuple[List[FlowEntity], UUID | None]:
+    ) -> tuple[List[WorkflowEntity], UUID | None]:
         if ctx is None:
             raise RuntimeError("Context is required for workflow listing")
         await self._require_action(
@@ -244,7 +244,7 @@ class FlowService:
             cursor=cursor,
         )
 
-    async def list_flow_summaries(
+    async def list_workflow_summaries(
         self,
         pod_id: UUID,
         *,
@@ -252,7 +252,7 @@ class FlowService:
         cursor: UUID | None = None,
         requester_user_id: UUID | None = None,
         ctx: Context | None = None,
-    ) -> tuple[List["FlowSummaryEntity"], UUID | None]:
+    ) -> tuple[List["WorkflowSummaryEntity"], UUID | None]:
         if ctx is None:
             raise RuntimeError("Context is required for workflow listing")
         await self._require_action(
@@ -268,7 +268,7 @@ class FlowService:
             cursor=cursor,
         )
 
-    async def delete_flow(
+    async def delete_workflow(
         self,
         flow_id: UUID,
         requester_user_id: UUID | None = None,

@@ -9,7 +9,7 @@ from app.core.authorization.current import reset_current_context, set_current_co
 from app.core.authorization.factory import create_authorization_data_service
 from app.modules.workflow.domain.context import TriggerContext
 from app.modules.workflow.domain.errors import WorkflowConflictError
-from app.modules.workflow.domain.start import FlowStartType
+from app.modules.workflow.domain.start import WorkflowStartType
 from app.modules.workflow.domain.wait import WorkflowRunWaitType
 from app.modules.workflow.execution.engine import WorkflowEngine
 from app.core.log.log import get_logger
@@ -43,6 +43,9 @@ class ScheduleStartService:
             ScheduleRepository,
         )
         from app.modules.schedule.domain.schedule import ScheduleFireStatus
+        from app.modules.schedule.repositories.schedule_fire_repository import (
+            ScheduleFireRepository,
+        )
 
         # 1. A wake for a specific run (wait_until timers carry the run id, and —
         # for timers scheduled after the per-wait-token change — a wait_ref that
@@ -69,6 +72,25 @@ class ScheduleStartService:
         if not schedule.is_active:
             logger.info("Schedule %s is inactive. Skipping.", schedule.id)
             return
+        if not schedule_event_id:
+            raise ValueError("schedule_event_id is required for durable delivery")
+
+        fire_repo = ScheduleFireRepository(self._uow)
+        fire = await fire_repo.claim(
+            schedule_id=schedule.id,
+            source_event_id=schedule_event_id,
+            target_kind="WORKFLOW" if schedule.workflow_id is not None else "AGENT",
+            payload=payload,
+            metadata=metadata,
+            llm_output=llm_output,
+        )
+        if fire is None:
+            logger.info(
+                "Duplicate or terminal schedule fire %s:%s — skipping dispatch",
+                schedule.id,
+                schedule_event_id,
+            )
+            return
 
         trigger = self._build_trigger(
             schedule.schedule_type.value if schedule.schedule_type else None,
@@ -78,36 +100,26 @@ class ScheduleStartService:
         )
 
         if schedule.workflow_id is not None:
-            run_id = await self._start_workflow_for_schedule(
-                schedule=schedule,
-                trigger=trigger,
-                schedule_event_id=schedule_event_id,
-            )
-            if run_id is not None:
+            try:
+                run_id = await self._start_workflow_for_schedule(
+                    schedule=schedule,
+                    trigger=trigger,
+                    schedule_event_id=schedule_event_id,
+                )
+                await fire_repo.mark_delivered(fire.id, target_run_id=run_id)
                 await self._record_fire(schedule_repo, schedule, run_id=run_id)
+            except Exception as exc:
+                await fire_repo.mark_failed(fire.id, exc)
+                await self._record_fire(
+                    schedule_repo,
+                    schedule,
+                    status=ScheduleFireStatus.ERROR,
+                    error=f"{type(exc).__name__}: target dispatch failed",
+                )
+                raise
             return
 
         if schedule.agent_id is not None:
-            # Durable dedup for agent-target fires: unlike the workflow path (gated
-            # by the run's (flow_id, user_id, schedule_event_id) unique constraint),
-            # starting an agent conversation has no DB uniqueness guard, so a
-            # redelivered schedule.fired after the task already completed would start
-            # a second conversation. Claim the fire in Redis first; a duplicate skips.
-            from app.modules.schedule.services.schedule_fire_store import (
-                get_schedule_fire_store,
-            )
-
-            claimed = await get_schedule_fire_store().claim_agent_fire(
-                schedule_id=schedule.id, event_id=schedule_event_id
-            )
-            if not claimed:
-                logger.info(
-                    "Duplicate agent schedule fire %s:%s — skipping dispatch",
-                    schedule_id,
-                    schedule_event_id,
-                )
-                return
-
             try:
                 conversation_id = await self._engine.agent_adapter.run_agent_by_id(
                     agent_id=schedule.agent_id,
@@ -117,22 +129,26 @@ class ScheduleStartService:
                     source="SCHEDULE",
                     conversation_metadata={"schedule_id": str(schedule_id)},
                 )
+                await fire_repo.mark_delivered(
+                    fire.id, target_run_id=str(conversation_id)
+                )
                 await self._record_fire(
                     schedule_repo, schedule, run_id=str(conversation_id)
                 )
             except Exception as exc:
-                logger.error(
-                    "Failed to start agent %s for schedule %s: %s",
-                    schedule.agent_id,
-                    schedule_id,
-                    exc,
+                await fire_repo.mark_failed(fire.id, exc)
+                logger.exception(
+                    "Failed to start agent for schedule",
+                    agent_id=str(schedule.agent_id),
+                    schedule_id=schedule_id,
                 )
                 await self._record_fire(
                     schedule_repo,
                     schedule,
                     status=ScheduleFireStatus.ERROR,
-                    error=str(exc),
+                    error=f"{type(exc).__name__}: target dispatch failed",
                 )
+                raise
 
     # -- internals ---------------------------------------------------------------
 
@@ -145,10 +161,10 @@ class ScheduleStartService:
         llm_output: dict | None,
     ) -> TriggerContext:
         trigger_type = {
-            "TIME": FlowStartType.SCHEDULED,
-            "WEBHOOK": FlowStartType.EVENT,
-            "DATASTORE": FlowStartType.DATASTORE_EVENT,
-        }.get(schedule_type or "", FlowStartType.SCHEDULED)
+            "TIME": WorkflowStartType.SCHEDULED,
+            "WEBHOOK": WorkflowStartType.EVENT,
+            "DATASTORE": WorkflowStartType.DATASTORE_EVENT,
+        }.get(schedule_type or "", WorkflowStartType.SCHEDULED)
         return TriggerContext(
             trigger_type=trigger_type,
             payload=payload or {},
@@ -197,8 +213,6 @@ class ScheduleStartService:
         trigger: TriggerContext,
         schedule_event_id: str | None,
     ) -> str | None:
-        from app.modules.schedule.domain.schedule import ScheduleFireStatus
-
         workflow_schedule_event_id = (
             f"{schedule.id}:{schedule_event_id}" if schedule_event_id else None
         )
@@ -223,24 +237,6 @@ class ScheduleStartService:
             logger.info(
                 "Workflow run already exists for schedule event %s",
                 schedule_event_id,
-            )
-            return None
-        except Exception as exc:
-            logger.error(
-                "Failed to start flow %s for schedule %s: %s",
-                schedule.workflow_id,
-                schedule.id,
-                exc,
-            )
-            from app.modules.schedule.repositories.schedule_repository import (
-                ScheduleRepository,
-            )
-
-            await self._record_fire(
-                ScheduleRepository(self._uow),
-                schedule,
-                status=ScheduleFireStatus.ERROR,
-                error=str(exc),
             )
             return None
 
@@ -282,25 +278,20 @@ class ScheduleStartService:
     async def _apply_failure_policy(self, schedule_repo, schedule, status) -> int | None:
         """Circuit breaker: count consecutive failures and deactivate on threshold.
 
-        ERROR increments the Redis counter; a success (TRIGGERED) resets it;
+        ERROR increments the PostgreSQL counter; a success (TRIGGERED) resets it;
         anything else (e.g. FILTERED, which never reaches this execution choke
         point anyway) is a no-op. Returns the failure count when it trips the
-        breaker, else None. Best-effort — the Redis store swallows its own errors.
+        breaker, else None.
         """
         from app.core.config import settings
         from app.modules.schedule.domain.schedule import ScheduleFireStatus
-        from app.modules.schedule.services.schedule_fire_store import (
-            get_schedule_fire_store,
-        )
-
-        store = get_schedule_fire_store()
         if status == ScheduleFireStatus.TRIGGERED:
-            await store.reset_failures(schedule_id=schedule.id)
+            await schedule_repo.reset_consecutive_failures(schedule.id)
             return None
         if status != ScheduleFireStatus.ERROR:
             return None
 
-        count = await store.record_failure(schedule_id=schedule.id)
+        count = await schedule_repo.increment_consecutive_failures(schedule.id)
         threshold = settings.schedule_max_consecutive_failures
         if threshold <= 0 or count < threshold:
             return None
@@ -308,7 +299,7 @@ class ScheduleStartService:
         # Trip: stop the schedule from firing (all matcher queries filter is_active)
         # and clear the counter so a later reactivation starts clean.
         await schedule_repo.update(schedule.id, is_active=False)
-        await store.reset_failures(schedule_id=schedule.id)
+        await schedule_repo.reset_consecutive_failures(schedule.id)
         logger.warning(
             "Circuit breaker deactivated schedule %s after %d consecutive failures",
             schedule.id,

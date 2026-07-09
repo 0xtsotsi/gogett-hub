@@ -9,7 +9,7 @@ from starlette.requests import Request
 from app.core.api.dependencies import CurrentUser, UoWDep
 from app.core.authorization.dependencies import PodContextDep
 from app.modules.workflow.api.dependencies import (
-    FlowServiceDep,
+    WorkflowServiceDep,
     WorkflowResourceDeleteDep,
     WorkflowResourceEditorDep,
     WorkflowResourceExecuteDep,
@@ -18,19 +18,19 @@ from app.modules.workflow.api.dependencies import (
 )
 from app.core.api.pagination import parse_uuid_page_token
 from app.modules.workflow.api.schemas import (
-    FlowDetailResponse,
-    FlowSummaryResponse,
+    WorkflowDetailResponse,
+    WorkflowSummaryResponse,
     WorkflowCreateRequest,
     WorkflowGraphUpdateRequest,
     WorkflowListResponse,
     WorkflowRunListResponse,
     WorkflowRunResponse,
     WorkflowUpdateRequest,
-    flow_response_from_domain,
+    workflow_response_from_domain,
     run_response_from_domain,
     workflow_start_input_to_domain,
 )
-from app.modules.workflow.domain.flow import FlowEntity, FlowUpdateEntity
+from app.modules.workflow.domain.workflow import WorkflowEntity, WorkflowUpdateEntity
 from app.modules.workflow.execution.engine import WorkflowEngine
 
 # Setup templates
@@ -40,7 +40,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 router = APIRouter(prefix="/pods/{pod_id}/workflows", tags=["workflows"])
 
 
-def _verify_pod(workflow: FlowEntity | None, pod_id: UUID):
+def _verify_pod(workflow: WorkflowEntity | None, pod_id: UUID):
     if not workflow:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
@@ -53,10 +53,10 @@ def _verify_pod(workflow: FlowEntity | None, pod_id: UUID):
 
 
 async def _flow_detail_response(
-    workflow: FlowEntity,
-) -> FlowDetailResponse:
-    return FlowDetailResponse(
-        **flow_response_from_domain(workflow).model_dump(),
+    workflow: WorkflowEntity,
+) -> WorkflowDetailResponse:
+    return WorkflowDetailResponse(
+        **workflow_response_from_domain(workflow).model_dump(),
         allowed_actions=workflow.allowed_actions,
     )
 
@@ -64,7 +64,7 @@ async def _flow_detail_response(
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
-    response_model=FlowDetailResponse,
+    response_model=WorkflowDetailResponse,
     operation_id="workflow.create",
     summary="Create Workflow",
     description=(
@@ -77,10 +77,10 @@ async def create_workflow(
     user: CurrentUser,
     pod_id: UUID,
     data: WorkflowCreateRequest,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
-) -> FlowDetailResponse:
-    workflow = await service.create_flow(
+) -> WorkflowDetailResponse:
+    workflow = await service.create_workflow(
         pod_id,
         data.name,
         data.description,
@@ -93,7 +93,7 @@ async def create_workflow(
         requester_user_id=user.id,
         ctx=ctx,
     )
-    workflow = await service.get_flow_by_name(
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow.name,
         requester_user_id=user.id,
@@ -105,7 +105,7 @@ async def create_workflow(
 
 @router.get(
     "/{workflow_name}",
-    response_model=FlowDetailResponse,
+    response_model=WorkflowDetailResponse,
     operation_id="workflow.get",
     summary="Get Workflow",
     description="Get a single workflow definition including graph and start configuration.",
@@ -115,10 +115,10 @@ async def get_workflow(
     user: CurrentUser,
     pod_id: UUID,
     workflow_name: str,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
-) -> FlowDetailResponse:
-    workflow = await service.get_flow_by_name(
+) -> WorkflowDetailResponse:
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -131,7 +131,7 @@ async def get_workflow(
 
 @router.patch(
     "/{workflow_name}",
-    response_model=FlowDetailResponse,
+    response_model=WorkflowDetailResponse,
     operation_id="workflow.update",
     summary="Update Workflow Metadata",
     description=(
@@ -145,10 +145,10 @@ async def update_workflow(
     pod_id: UUID,
     workflow_name: str,
     data: WorkflowUpdateRequest,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
-) -> FlowDetailResponse:
-    workflow = await service.get_flow_by_name(
+) -> WorkflowDetailResponse:
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -161,19 +161,19 @@ async def update_workflow(
     if "start" in data.model_fields_set:
         update_payload["start"] = workflow_start_input_to_domain(data.start)
 
-    updated = await service.update_flow(
+    updated = await service.update_workflow(
         workflow.id,
-        FlowUpdateEntity(**update_payload),
+        WorkflowUpdateEntity(**update_payload),
         requester_user_id=user.id,
         ctx=ctx,
     )
-    updated = await service.get_flow(workflow.id, requester_user_id=user.id, ctx=ctx) or updated
+    updated = await service.get_workflow(workflow.id, requester_user_id=user.id, ctx=ctx) or updated
     return await _flow_detail_response(updated)
 
 
 @router.put(
     "/{workflow_name}/graph",
-    response_model=FlowDetailResponse,
+    response_model=WorkflowDetailResponse,
     operation_id="workflow.graph.update",
     summary="Update Workflow Graph",
     description=(
@@ -189,10 +189,10 @@ async def update_workflow_graph(
     pod_id: UUID,
     workflow_name: str,
     data: WorkflowGraphUpdateRequest,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
-) -> FlowDetailResponse:
-    workflow = await service.get_flow_by_name(
+) -> WorkflowDetailResponse:
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -201,7 +201,7 @@ async def update_workflow_graph(
     _verify_pod(workflow, pod_id)
     assert workflow is not None
 
-    updated = await service.update_flow_graph(
+    updated = await service.update_workflow_graph(
         workflow.id,
         data.nodes,
         data.edges,
@@ -209,7 +209,7 @@ async def update_workflow_graph(
         requester_user_id=user.id,
         ctx=ctx,
     )
-    updated = await service.get_flow(workflow.id, requester_user_id=user.id, ctx=ctx) or updated
+    updated = await service.get_workflow(workflow.id, requester_user_id=user.id, ctx=ctx) or updated
     return await _flow_detail_response(updated)
 
 
@@ -224,14 +224,14 @@ async def update_workflow_graph(
 async def list_workflows(
     user: CurrentUser,
     pod_id: UUID,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
     limit: int = 100,
     page_token: str | None = None,
 ) -> WorkflowListResponse:
     cursor = parse_uuid_page_token(page_token)
 
-    summaries, next_cursor = await service.list_flow_summaries(
+    summaries, next_cursor = await service.list_workflow_summaries(
         pod_id,
         limit=limit,
         cursor=cursor,
@@ -239,7 +239,7 @@ async def list_workflows(
         ctx=ctx,
     )
     return WorkflowListResponse(
-        items=[FlowSummaryResponse.model_validate(summary) for summary in summaries],
+        items=[WorkflowSummaryResponse.model_validate(summary) for summary in summaries],
         limit=limit,
         next_page_token=str(next_cursor) if next_cursor else None,
     )
@@ -257,10 +257,10 @@ async def delete_workflow(
     user: CurrentUser,
     pod_id: UUID,
     workflow_name: str,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
 ) -> None:
-    workflow = await service.get_flow_by_name(
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -268,7 +268,7 @@ async def delete_workflow(
     )
     _verify_pod(workflow, pod_id)
     assert workflow is not None
-    await service.delete_flow(workflow.id, requester_user_id=user.id, ctx=ctx)
+    await service.delete_workflow(workflow.id, requester_user_id=user.id, ctx=ctx)
 
 
 @router.post(
@@ -292,10 +292,10 @@ async def create_workflow_run(
     user: CurrentUser,
     pod_id: UUID,
     workflow_name: str,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
 ) -> WorkflowRunResponse:
-    workflow = await service.get_flow_by_name(
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -324,11 +324,11 @@ async def list_workflow_runs(
     ctx: PodContextDep,
     pod_id: UUID,
     workflow_name: str,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     limit: int = 100,
     page_token: str | None = None,
 ) -> WorkflowRunListResponse:
-    workflow = await service.get_flow_by_name(
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -367,10 +367,10 @@ async def visualize_workflow(
     user: CurrentUser,
     pod_id: UUID,
     workflow_name: str,
-    service: FlowServiceDep,
+    service: WorkflowServiceDep,
     ctx: PodContextDep,
 ):
-    workflow = await service.get_flow_by_name(
+    workflow = await service.get_workflow_by_name(
         pod_id,
         workflow_name,
         requester_user_id=user.id,
@@ -379,6 +379,6 @@ async def visualize_workflow(
     _verify_pod(workflow, pod_id)
 
     return templates.TemplateResponse(
-        "flow_view.html",
-        {"request": request, "flow": workflow.model_dump(mode="json")},
+        "workflow_view.html",
+        {"request": request, "workflow": workflow.model_dump(mode="json")},
     )

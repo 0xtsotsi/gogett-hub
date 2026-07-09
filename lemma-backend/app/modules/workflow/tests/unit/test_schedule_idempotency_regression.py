@@ -3,8 +3,8 @@
 Covers:
 - C1 (LP-057): start_run persists the run row BEFORE advancing, so the
   schedule-event unique constraint gates node side effects.
-- C3 (LP-102): a duplicate agent-target schedule fire is skipped via the Redis
-  claim, so the agent conversation is not started twice.
+- C3 (LP-102): a duplicate agent-target schedule fire is skipped via the durable
+  PostgreSQL ledger, so the agent conversation is not started twice.
 - E: the failure circuit breaker counts ERROR fires, resets on success, and
   deactivates the schedule at the threshold.
 """
@@ -72,7 +72,7 @@ async def test_start_run_persists_row_before_advancing():
 
 @pytest.mark.anyio
 async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
-    """A redelivered agent-target fire whose Redis claim fails must not start a
+    """A redelivered agent-target fire whose ledger claim fails must not start a
     second conversation (LP-102)."""
     engine = _engine_with_mocks()
     engine.agent_adapter.run_agent_by_id = AsyncMock(return_value=uuid4())
@@ -96,12 +96,14 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
         repo_mod, "ScheduleRepository", lambda uow: Mock(get=AsyncMock(return_value=schedule))
     )
 
-    # The dedup claim reports "already fired".
-    import app.modules.schedule.services.schedule_fire_store as store_mod
+    # The durable dedup claim reports "already delivered".
+    import app.modules.schedule.repositories.schedule_fire_repository as fire_repo_mod
 
-    store = Mock()
-    store.claim_agent_fire = AsyncMock(return_value=False)
-    monkeypatch.setattr(store_mod, "get_schedule_fire_store", lambda: store)
+    fire_repo = Mock()
+    fire_repo.claim = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        fire_repo_mod, "ScheduleFireRepository", lambda uow: fire_repo
+    )
 
     await svc.handle_schedule_fired(
         schedule_id=str(schedule.id),
@@ -109,7 +111,7 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
         schedule_event_id="evt-1",
     )
 
-    store.claim_agent_fire.assert_awaited_once()
+    fire_repo.claim.assert_awaited_once()
     engine.agent_adapter.run_agent_by_id.assert_not_awaited()
 
 
@@ -128,25 +130,21 @@ async def test_failure_circuit_breaker(monkeypatch, status, counts, expect_deact
         "app.core.config.settings.schedule_max_consecutive_failures", 3
     )
 
-    import app.modules.schedule.services.schedule_fire_store as store_mod
-
-    store = Mock()
-    store.record_failure = AsyncMock(return_value=counts or 0)
-    store.reset_failures = AsyncMock()
-    monkeypatch.setattr(store_mod, "get_schedule_fire_store", lambda: store)
-
     svc = ScheduleStartService(_engine_with_mocks())
     schedule = SimpleNamespace(id=uuid4(), user_id=uuid4(), schedule_type="TIME")
     schedule_repo = Mock()
     schedule_repo.update = AsyncMock()
+    schedule_repo.increment_consecutive_failures = AsyncMock(return_value=counts or 0)
+    schedule_repo.reset_consecutive_failures = AsyncMock()
 
     tripped = await svc._apply_failure_policy(schedule_repo, schedule, status)
 
     if status == ScheduleFireStatus.TRIGGERED:
-        store.reset_failures.assert_awaited_once()
+        schedule_repo.reset_consecutive_failures.assert_awaited_once_with(schedule.id)
         assert tripped is None
     elif expect_deactivate:
         schedule_repo.update.assert_awaited_once_with(schedule.id, is_active=False)
+        schedule_repo.reset_consecutive_failures.assert_awaited_once_with(schedule.id)
         assert tripped == counts
     else:
         schedule_repo.update.assert_not_awaited()

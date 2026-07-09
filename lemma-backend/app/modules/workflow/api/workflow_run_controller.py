@@ -19,12 +19,12 @@ from app.modules.workflow.api.schemas import (
     WorkflowRunWaitResponse,
     run_response_from_domain,
 )
-from app.modules.workflow.domain.run import FlowRunEntity
+from app.modules.workflow.domain.run import WorkflowRunEntity
 from app.modules.workflow.execution.engine import WorkflowEngine
 from app.modules.workflow.infrastructure.repositories import (
     SqlAlchemyWorkflowRunWaitRepository,
 )
-from app.modules.workflow.services.flow_service import FlowService
+from app.modules.workflow.services.workflow_service import WorkflowService
 
 # Setup templates (Adjust path relative to this file location)
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -33,7 +33,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 router = APIRouter(prefix="/pods/{pod_id}/workflow-runs", tags=["workflows"])
 
 
-def _verify_pod(run: FlowRunEntity | None, pod_id: UUID):
+def _verify_pod(run: WorkflowRunEntity | None, pod_id: UUID):
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
@@ -204,14 +204,16 @@ async def visualize_flow_run(
     _verify_pod(run, pod_id)
 
     # We need the workflow definition to draw the graph
-    flow_service = FlowService(uow)
-    flow = await flow_service.get_flow(run.flow_id, requester_user_id=user.id, ctx=ctx)
+    workflow_service = WorkflowService(uow)
+    workflow = await workflow_service.get_workflow(
+        run.flow_id, requester_user_id=user.id, ctx=ctx
+    )
 
     return templates.TemplateResponse(
-        "flow_run_view.html",
+        "workflow_run_view.html",
         {
             "request": request,
             "run": run.model_dump(mode="json"),
-            "flow": flow.model_dump(mode="json") if flow else None,
+            "workflow": workflow.model_dump(mode="json") if workflow else None,
         },
     )

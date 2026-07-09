@@ -58,6 +58,14 @@ class _SurfaceService:
         self.messages.append({"display_resource": kwargs})
         return self.send_result
 
+    async def send_questions_for_conversation(self, **kwargs):
+        self.messages.append({"questions": kwargs})
+        return self.send_result
+
+    async def send_approval_prompt_for_conversation(self, **kwargs):
+        self.messages.append({"approval": kwargs})
+        return self.send_result
+
 
 def _observer(service: _SurfaceService) -> SurfaceAgentRunProgressObserver:
     return SurfaceAgentRunProgressObserver(
@@ -489,5 +497,29 @@ async def test_progress_observer_stops_when_indicator_cannot_be_sent(monkeypatch
         {
             "conversation_id": conversation.id,
             "metadata": None,
+        }
+    ]
+
+
+async def test_progress_observer_renders_waiting_tool_call_once():
+    """A repeated WAITING event for the same ask_user tool call must not send
+    the same native surface prompt several times."""
+    service = _SurfaceService()
+    observer = _observer(service)
+    conversation = SimpleNamespace(id=uuid4(), metadata={"surface_platform": "TELEGRAM"})
+    waiting = AgentEvent(
+        type=AgentEventType.WAITING,
+        data={"kind": "ask_user", "tool_call_id": "ask-1"},
+    )
+
+    await observer.on_event(waiting, conversation, SimpleNamespace())
+    await observer.on_event(waiting, conversation, SimpleNamespace())
+
+    assert service.messages == [
+        {
+            "questions": {
+                "conversation_id": conversation.id,
+                "tool_call_id": "ask-1",
+            }
         }
     ]

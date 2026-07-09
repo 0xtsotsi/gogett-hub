@@ -149,6 +149,22 @@ def _slack_channel_event(*, channel_id: str = "C999") -> ParsedInboundSurfaceEve
     )
 
 
+def _telegram_event(*, chat_id: str, message_id: str) -> ParsedInboundSurfaceEvent:
+    return ParsedInboundSurfaceEvent(
+        platform="TELEGRAM",
+        conversation_type=ConversationType.EXTERNAL_DM,
+        external_channel_id=chat_id,
+        external_thread_id=chat_id,
+        external_message_id=message_id,
+        sender_external_user_id="777",
+        sender_display_name="Telegram User",
+        message_text="Hello from Telegram",
+        is_dm=True,
+        mentioned_agent=True,
+        reply_target={"chat_id": chat_id, "message_id": message_id},
+    )
+
+
 def _conversation(surface: AgentSurfaceEntity, user_id: UUID) -> Conversation:
     return Conversation(
         id=uuid4(),
@@ -311,9 +327,9 @@ async def test_prepare_webhook_returns_signup_context_for_unresolved_user():
     service.conversation_service.create_conversation.assert_not_called()
 
 
-async def test_prepare_webhook_returns_pod_access_link_for_non_member():
-    """A signed-up user who isn't a pod member is pointed to the pod home page
-    (request access) on a DM system surface, instead of being dropped."""
+async def test_prepare_webhook_avoids_pod_access_link_for_system_non_member():
+    """A signed-up non-member on a shared system Telegram bot should not receive
+    a pod-specific URL, because the shared identity can front many pods."""
     surface = _telegram_surface()
     surface.credential_mode = SurfaceCredentialMode.SYSTEM
     event = ParsedInboundSurfaceEvent(
@@ -350,7 +366,57 @@ async def test_prepare_webhook_returns_pod_access_link_for_non_member():
     )
 
     assert isinstance(context, SurfaceReplyContext)
+    assert "Request access" not in (context.reply_message or "")
+    assert str(surface.pod_id) not in (context.reply_message or "")
+    assert "shared bot" in (context.reply_message or "")
+    service.conversation_service.create_conversation.assert_not_called()
+
+
+async def test_prepare_webhook_returns_pod_access_link_for_custom_non_member():
+    """A custom/bound bot maps to one configured surface, so the pod target is
+    explicit and the access link is safe to show."""
+    surface = _telegram_surface()
+    surface.credential_mode = SurfaceCredentialMode.CUSTOM
+    event = ParsedInboundSurfaceEvent(
+        platform=SurfacePlatform.TELEGRAM,
+        conversation_type=ConversationType.EXTERNAL_DM,
+        external_thread_id="123",
+        external_channel_id="123",
+        sender_external_user_id="999",
+        message_text="hi",
+        is_dm=True,
+        reply_target={"chat_id": "123"},
+    )
+    adapter = AsyncMock()
+    adapter.parse_inbound_event.return_value = event
+    adapter.unresolved_sender_reply.return_value = None
+    adapter.linked_sender_confirmation.return_value = None
+    service = _build_service(
+        adapter=adapter,
+        surfaces=[surface],
+        resolved_user=ResolvedSurfaceUser(
+            internal_user_id=uuid4(),
+            external_user_id="999",
+            email="member@example.com",
+            display_name="Member",
+        ),
+    )
+    service.pod_membership_port = SimpleNamespace(
+        get_user_pod_ids=AsyncMock(return_value=[])
+    )
+
+    context = await service.prepare_ingress(
+        SurfacePlatformWebhookIngress(
+            source="telegram",
+            payload={},
+            headers={},
+            receiver_surface_ids=[surface.id],
+        )
+    )
+
+    assert isinstance(context, SurfaceReplyContext)
     assert "Request access" in (context.reply_message or "")
+    assert str(surface.pod_id) in (context.reply_message or "")
     service.conversation_service.create_conversation.assert_not_called()
 
 
@@ -1292,6 +1358,138 @@ async def test_send_to_member_reuses_existing_thread():
     )
     assert sent is True
     assert "Your report is ready." in adapter.send_message.await_args.kwargs["message"]
+
+
+async def test_send_to_member_uses_requested_surface_latest_thread():
+    surface = _telegram_surface()
+    user_id = uuid4()
+    older_link = AgentSurfaceConversationLink(
+        surface_id=surface.id,
+        conversation_id=uuid4(),
+        platform="TELEGRAM",
+        external_channel_id="older-chat",
+        external_thread_id="older-chat",
+        external_user_id="777",
+        last_event=_telegram_event(
+            chat_id="older-chat", message_id="older-message"
+        ).model_dump(mode="json"),
+    )
+    latest_link = AgentSurfaceConversationLink(
+        surface_id=surface.id,
+        conversation_id=uuid4(),
+        platform="TELEGRAM",
+        external_channel_id="latest-chat",
+        external_thread_id="latest-chat",
+        external_user_id="777",
+        last_event=_telegram_event(
+            chat_id="latest-chat", message_id="latest-message"
+        ).model_dump(mode="json"),
+    )
+    adapter = AsyncMock()
+    service = _build_service(adapter=adapter, surfaces=[surface], existing_link=older_link)
+    service.pod_membership_port = SimpleNamespace(
+        get_user_pod_ids=AsyncMock(return_value=[surface.pod_id])
+    )
+    service.external_user_repository = AsyncMock(
+        get_by_resolved_user=AsyncMock(
+            return_value=SimpleNamespace(external_user_id="777")
+        )
+    )
+    service.conversation_link_repository.get_latest_by_surface_and_external_user = (
+        AsyncMock(return_value=latest_link)
+    )
+    service.conversation_link_repository.get_by_conversation_id.return_value = latest_link
+
+    sent = await service.send_to_member(
+        surface=surface,
+        user_id=user_id,
+        message="Use the newest thread.",
+    )
+
+    assert sent is True
+    service.conversation_link_repository.get_latest_by_surface_and_external_user.assert_awaited_once_with(
+        surface_id=surface.id,
+        external_user_id="777",
+    )
+    event = adapter.send_message.await_args.kwargs["event"]
+    assert event.external_thread_id == "latest-chat"
+    assert event.reply_target["chat_id"] == "latest-chat"
+
+
+async def test_send_to_member_does_not_confuse_system_and_custom_threads():
+    system_surface = _telegram_surface()
+    custom_surface = _telegram_surface()
+    user_id = uuid4()
+    system_link = AgentSurfaceConversationLink(
+        surface_id=system_surface.id,
+        conversation_id=uuid4(),
+        platform="TELEGRAM",
+        external_channel_id="system-chat",
+        external_thread_id="system-chat",
+        external_user_id="777",
+        last_event=_telegram_event(
+            chat_id="system-chat", message_id="system-message"
+        ).model_dump(mode="json"),
+    )
+    custom_link = AgentSurfaceConversationLink(
+        surface_id=custom_surface.id,
+        conversation_id=uuid4(),
+        platform="TELEGRAM",
+        external_channel_id="custom-chat",
+        external_thread_id="custom-chat",
+        external_user_id="777",
+        last_event=_telegram_event(
+            chat_id="custom-chat", message_id="custom-message"
+        ).model_dump(mode="json"),
+    )
+    links_by_surface = {
+        system_surface.id: system_link,
+        custom_surface.id: custom_link,
+    }
+    links_by_conversation = {
+        system_link.conversation_id: system_link,
+        custom_link.conversation_id: custom_link,
+    }
+    adapter = AsyncMock()
+    service = _build_service(
+        adapter=adapter,
+        surfaces=[system_surface, custom_surface],
+        existing_link=system_link,
+    )
+    service.pod_membership_port = SimpleNamespace(
+        get_user_pod_ids=AsyncMock(
+            return_value=[system_surface.pod_id, custom_surface.pod_id]
+        )
+    )
+    service.external_user_repository = AsyncMock(
+        get_by_resolved_user=AsyncMock(
+            return_value=SimpleNamespace(external_user_id="777")
+        )
+    )
+    service.conversation_link_repository.get_latest_by_surface_and_external_user = (
+        AsyncMock(side_effect=lambda *, surface_id, external_user_id: links_by_surface[surface_id])
+    )
+    service.conversation_link_repository.get_by_conversation_id.side_effect = (
+        lambda conversation_id: links_by_conversation[conversation_id]
+    )
+
+    custom_sent = await service.send_to_member(
+        surface=custom_surface,
+        user_id=user_id,
+        message="custom only",
+    )
+    system_sent = await service.send_to_member(
+        surface=system_surface,
+        user_id=user_id,
+        message="system only",
+    )
+
+    assert custom_sent is True
+    assert system_sent is True
+    first_event = adapter.send_message.await_args_list[0].kwargs["event"]
+    second_event = adapter.send_message.await_args_list[1].kwargs["event"]
+    assert first_event.external_thread_id == "custom-chat"
+    assert second_event.external_thread_id == "system-chat"
 
 
 async def test_send_to_member_rejects_non_member():

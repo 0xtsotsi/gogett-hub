@@ -171,7 +171,32 @@ async def test_teams_handle_config_fallback(monkeypatch):
     assert surface.surface_identity_username == "Lemma (config)"
 
 
-async def test_whatsapp_falls_back_to_account_display_name():
+async def test_whatsapp_handle_resolves_display_phone_and_persists():
+    surface = _surface(
+        surface_type=SurfacePlatform.WHATSAPP,
+        surface_identity_id=None,
+    )
+    repo = FakeSurfaceRepository()
+
+    reach = await SurfaceReachResolver().resolve(
+        surface,
+        credential_resolver=FakeCredentialResolver(
+            {
+                "access_token": "wa-token",
+                "phone_number_id": "PN42",
+                "display_phone_number": "+1 555 0100",
+            }
+        ),
+        connector_service=FakeConnectorService("WhatsApp Account Label"),
+        surface_repository=repo,
+    )
+
+    assert reach.handle == "+1 555 0100"
+    assert surface.surface_identity_username == "+1 555 0100"
+    assert repo.updated == [surface]
+
+
+async def test_whatsapp_falls_back_to_account_display_name_when_number_unavailable():
     surface = _surface(
         surface_type=SurfacePlatform.WHATSAPP, surface_identity_id=None
     )

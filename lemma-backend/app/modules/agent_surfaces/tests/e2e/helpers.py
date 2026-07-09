@@ -226,8 +226,7 @@ async def _create_agent(
             "name": name or f"Surface Agent {uuid4().hex[:8]}",
             "instruction": "Reply briefly. Surface e2e will emulate the model.",
             "agent_runtime": {
-                "profile_id": "system:fireworks",
-                "model_name": "kimi-k2.6",
+                "profile_id": "system:lemma",
             },
             "toolsets": toolsets if toolsets is not None else [],
         },
@@ -254,6 +253,8 @@ async def _create_surface(
         payload["name"] = name
     if config.get("account_id"):
         payload["account_id"] = config["account_id"]
+    if config.get("credential_mode"):
+        payload["credential_mode"] = config["credential_mode"]
     if allowed_channel_ids:
         payload["config"] = {
             "channels": [{"channel_id": allowed_channel_ids[0]}]

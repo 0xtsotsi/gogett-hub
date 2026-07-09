@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from app.modules.agent_surfaces.domain.models import (
     SurfaceQuestion,
     SurfaceQuestionOption,
     SurfaceQuestionRenderPlan,
+)
+from app.modules.agent_surfaces.domain.entities import (
+    ConversationType,
+    ParsedInboundSurfaceEvent,
+    SurfacePlatform,
 )
 from app.modules.agent_surfaces.platforms.slack.service import _question_blocks
 from app.modules.agent_surfaces.platforms.slack.parser import SlackMessageParser
@@ -15,6 +24,9 @@ from app.modules.agent_surfaces.platforms.teams.parser import (
 from app.modules.agent_surfaces.api.controllers.webhook_controller import (
     _decode_webhook_payload,
 )
+from app.modules.agent_surfaces.platforms.telegram.adapter import TelegramSurfaceAdapter
+from app.modules.agent_surfaces.platforms.telegram.service import _OTHER_CALLBACK_VALUE
+from app.modules.agent_surfaces.platforms.whatsapp.adapter import WhatsAppSurfaceAdapter
 
 
 def _plan() -> SurfaceQuestionRenderPlan:
@@ -191,18 +203,6 @@ def test_decode_webhook_payload_handles_form_encoded_and_json():
 
 # ── Telegram native inline keyboards ─────────────────────────────────────────
 
-import pytest
-from unittest.mock import AsyncMock, patch
-
-from app.modules.agent_surfaces.domain.entities import (
-    ConversationType,
-    ParsedInboundSurfaceEvent,
-    SurfacePlatform,
-)
-from app.modules.agent_surfaces.platforms.telegram.adapter import TelegramSurfaceAdapter
-from app.modules.agent_surfaces.platforms.telegram.service import _OTHER_CALLBACK_VALUE
-
-
 def _single_question_plan() -> SurfaceQuestionRenderPlan:
     return SurfaceQuestionRenderPlan(
         title="Which country?",
@@ -327,9 +327,6 @@ async def test_telegram_parse_inbound_interaction_other_and_unknown_return_none(
 
 
 # ── WhatsApp native interactive replies ──────────────────────────────────────
-
-from app.modules.agent_surfaces.platforms.whatsapp.adapter import WhatsAppSurfaceAdapter
-
 
 def _whatsapp_event() -> ParsedInboundSurfaceEvent:
     return ParsedInboundSurfaceEvent(

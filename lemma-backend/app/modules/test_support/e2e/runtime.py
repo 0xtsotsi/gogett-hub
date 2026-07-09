@@ -20,6 +20,11 @@ import httpx
 import uvicorn
 
 from app.core.config import settings
+from app.modules.agent.tests.e2e.system_lemma_helpers import (
+    skip_unless_system_lemma,
+    system_lemma_api_key,
+    system_lemma_env_overlay,
+)
 
 
 def _available_port() -> int:
@@ -459,36 +464,34 @@ async def full_stack(
 
     Combines the real backend + local Docker AgentBox (``configure_workspace_api_url``)
     and a real scheduler (``scheduler_api_server``) with the **production streaq
-    worker subprocess** wired to the AgentBox and the Fireworks-backed
-    ``system:lemma`` agent runtime. The worker is a fresh subprocess per test
-    (no shared in-process singletons), so triggered runs execute real functions
-    in Docker and real agents on Fireworks autonomously.
+    worker subprocess** wired to the AgentBox and the ``system:lemma`` agent
+    runtime. The worker is a fresh subprocess per test (no shared in-process
+    singletons), so triggered runs execute real functions in Docker and
+    deterministic mock agents by default. Set ``E2E_LLM_MODE=real`` to use the
+    configured live system:lemma provider.
 
-    Skips when the Fireworks credential is unavailable.
+    Skips only in real-LLM mode when system:lemma credentials are unavailable.
     """
     import redis.asyncio as redis
 
-    fireworks_key = (
-        os.getenv("FIREWORKS_API_KEY")
-        or _read_root_env_value("FIREWORKS_API_KEY")
-        or _read_root_env_value("lemma_openai_api_key")
-    )
-    if not fireworks_key:
-        pytest.skip(
-            "Fireworks credential unavailable; export FIREWORKS_API_KEY to run "
-            "fully-real agent e2e tests."
-        )
+    skip_unless_system_lemma()
+    env_overlay = system_lemma_env_overlay()
+    system_lemma_key = system_lemma_api_key()
+    coverage_env = {
+        name: value
+        for name in ("COVERAGE_PROCESS_START", "COVERAGE_FILE")
+        if (value := os.environ.get(name))
+    }
 
-    # Inject the Fireworks key so both the in-process backend and the worker
-    # subprocess resolve the system:lemma OpenAI-compatible profile. The model
-    # catalog has no built-in default, so the real-LLM env (.env / exported
-    # LEMMA_OPENAI_* vars) must provide LEMMA_OPENAI_BASE_URL + LEMMA_OPENAI_MODEL_NAMES.
-    cred_env_keys = ("LEMMA_OPENAI_API_KEY", "lemma_openai_api_key")
-    original_cred_env = {key: os.environ.get(key) for key in cred_env_keys}
+    # Make the same system:lemma env visible to both the in-process backend and
+    # the worker subprocess. In default mock mode this may be empty; in real mode
+    # the helper has already verified that the key exists.
+    original_overlay_env = {key: os.environ.get(key) for key in env_overlay}
     original_cred_setting = settings.lemma_openai_api_key
-    for key in cred_env_keys:
-        os.environ[key] = fireworks_key
-    settings.lemma_openai_api_key = fireworks_key
+    for key, value in env_overlay.items():
+        os.environ[key] = value
+    if system_lemma_key:
+        settings.lemma_openai_api_key = system_lemma_key
 
     redis_url = settings.redis_url
     redis_client = redis.from_url(redis_url, decode_responses=False)
@@ -500,10 +503,11 @@ async def full_stack(
 
     # The worker subprocess inherits os.environ, which now carries AGENTBOX_API_URL/
     # KEY and API_URL (from configure_workspace_api_url), SCHEDULER_API_URL (from
-    # scheduler_api_server), and the Fireworks key. So it runs functions in the
-    # local Docker AgentBox and agents on Fireworks for real.
+    # scheduler_api_server), and any system:lemma provider env from .env/CI.
     worker_env = {
         **os.environ,
+        **env_overlay,
+        **coverage_env,
         "PYTHONPATH": ".",
         "DATABASE_URL": settings.database_url,
         "DATASTORE_DATABASE_URL": settings.datastore_database_url,
@@ -578,7 +582,7 @@ async def full_stack(
             await redis_client.flushdb()
             await redis_client.aclose()
             settings.lemma_openai_api_key = original_cred_setting
-            for key, value in original_cred_env.items():
+            for key, value in original_overlay_env.items():
                 if value is None:
                     os.environ.pop(key, None)
                 else:

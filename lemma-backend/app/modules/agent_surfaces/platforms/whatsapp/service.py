@@ -101,6 +101,39 @@ class WhatsAppPlatformService:
             display_name=event.sender_display_name,
         )
 
+    async def get_display_phone_number(self) -> str | None:
+        """Return the human-messageable WhatsApp number for this phone_number_id.
+
+        ``phone_number_id`` is Meta's opaque Graph id; users need the display
+        phone number in surfaces list UI. Prefer already-stored account
+        credential metadata, then resolve it through Graph best-effort.
+        """
+        for key in ("display_phone_number", "phone_number"):
+            value = str(self.credentials.get(key) or "").strip()
+            if value:
+                return value
+        if not self._access_token or not self._phone_number_id:
+            return None
+
+        url = f"{self._api_base}/{self._phone_number_id}"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    params={"fields": "display_phone_number"},
+                    headers={"Authorization": f"Bearer {self._access_token}"},
+                )
+                response.raise_for_status()
+                body = response.json() or {}
+        except Exception as exc:
+            logger.debug(
+                "WhatsApp display phone lookup failed phone_number_id=%s: %s",
+                self._phone_number_id,
+                exc,
+            )
+            return None
+        return str(body.get("display_phone_number") or "").strip() or None
+
     async def send_message(
         self,
         event: ParsedInboundSurfaceEvent,
@@ -111,6 +144,14 @@ class WhatsAppPlatformService:
             event.reply_target.get("phone_number_id") or self._phone_number_id
         )
         sender_wa_id = event.reply_target.get("sender_wa_id") or event.sender_phone
+        if not sender_wa_id or not phone_number_id or not self._access_token:
+            logger.warning(
+                "WhatsApp send_message skipped due to missing token/phone/sender "
+                "phone_number_id=%s sender=%s",
+                phone_number_id,
+                sender_wa_id,
+            )
+            return
 
         url = f"{self._api_base}/{phone_number_id}/messages"
         payload = {

@@ -92,6 +92,8 @@ class SurfaceReachResolver:
             coro = self._teams_handle(surface)
         elif surface.surface_type is SurfacePlatform.TELEGRAM:
             coro = self._telegram_handle(surface, credential_resolver)
+        elif surface.surface_type is SurfacePlatform.WHATSAPP:
+            coro = self._whatsapp_handle(surface, credential_resolver)
         else:
             return None
         try:
@@ -135,6 +137,20 @@ class SurfaceReachResolver:
         credentials = await credential_resolver.for_surface(surface)
         username = await TelegramPlatformService(credentials).get_bot_username()
         return f"@{username}" if username else None
+
+    async def _whatsapp_handle(
+        self,
+        surface: AgentSurfaceEntity,
+        credential_resolver: "SurfaceCredentialResolver | None",
+    ) -> str | None:
+        if credential_resolver is None:
+            return None
+        from app.modules.agent_surfaces.platforms.whatsapp.service import (
+            WhatsAppPlatformService,
+        )
+
+        credentials = await credential_resolver.for_surface(surface)
+        return await WhatsAppPlatformService(credentials).get_display_phone_number()
 
     async def _teams_handle(self, surface: AgentSurfaceEntity) -> str | None:
         app_id = surface_settings.microsoft_bot_app_id

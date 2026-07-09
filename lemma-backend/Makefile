@@ -27,7 +27,12 @@ MAX_USERS         ?= 100
 THINK_MS          ?= 500
 LEMMA_API_URL     ?= http://localhost:8000
 
-.PHONY: help test test-unit test-e2e test-e2e-real test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-sse load-test-journey load-test-monitor load-test-down load-test
+BACKEND_COVERAGE_DIR ?= coverage-backend
+BACKEND_COVERAGE_FILE ?= $(CURDIR)/.coverage.backend
+BACKEND_COVERAGE_RUN_ENV = COVERAGE_PROCESS_START=$(CURDIR)/.coveragerc COVERAGE_FILE=$(BACKEND_COVERAGE_FILE)
+BACKEND_COVERAGE_DATA_ENV = COVERAGE_FILE=$(BACKEND_COVERAGE_FILE)
+
+.PHONY: help test test-unit test-e2e test-e2e-real test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e coverage-backend-unit coverage-backend-e2e-shard coverage-backend-report test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-sse load-test-journey load-test-monitor load-test-down load-test
 
 help:
 	@echo "Lemma backend:"
@@ -40,6 +45,8 @@ help:
 	@echo "  make test-module MODULE=pod"
 	@echo "  make coverage-unit     # unit coverage"
 	@echo "  make coverage-e2e      # e2e coverage"
+	@echo "  make coverage-backend-unit     # backend unit coverage + markdown"
+	@echo "  make coverage-backend-e2e-shard # backend e2e shard coverage + markdown"
 	@echo "  make lint              # run ruff checks"
 	@echo "  make migrate           # apply database migrations"
 	@echo "  make docker-build-cloud  # build the lemma-cloud image"
@@ -120,6 +127,43 @@ coverage-unit:
 
 coverage-e2e:
 	uv run pytest -m e2e --cov=app --cov-report=term-missing --cov-report=xml:coverage-e2e.xml
+
+coverage-backend-unit:
+	@mkdir -p $(BACKEND_COVERAGE_DIR)
+	@rm -f $(BACKEND_COVERAGE_DIR)/junit-*.xml $(BACKEND_COVERAGE_DIR)/comment.md $(BACKEND_COVERAGE_DIR)/summary.json $(BACKEND_COVERAGE_DIR)/coverage.json $(BACKEND_COVERAGE_DIR)/coverage.xml
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage erase
+	$(BACKEND_COVERAGE_RUN_ENV) uv run coverage run --parallel-mode -m pytest \
+		-m "not e2e" \
+		--junitxml=$(BACKEND_COVERAGE_DIR)/junit-unit.xml
+	$(MAKE) coverage-backend-report COVERAGE_PHASE=unit
+
+coverage-backend-e2e-shard:
+	@test -n "$(E2E_ARGS)" || (echo "E2E_ARGS is required" && exit 1)
+	@test -n "$(COVERAGE_PHASE)" || (echo "COVERAGE_PHASE is required, e.g. e2e-surfaces" && exit 1)
+	@mkdir -p $(BACKEND_COVERAGE_DIR)
+	@rm -f $(BACKEND_COVERAGE_DIR)/junit-*.xml $(BACKEND_COVERAGE_DIR)/comment.md $(BACKEND_COVERAGE_DIR)/summary.json $(BACKEND_COVERAGE_DIR)/coverage.json $(BACKEND_COVERAGE_DIR)/coverage.xml
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage erase
+	$(BACKEND_COVERAGE_RUN_ENV) uv run coverage run --parallel-mode -m pytest \
+		$(E2E_PARALLEL) $(E2E_ARGS) \
+		-m "e2e and not slow and not worker and not workspace and not provider and not local_cli and not indexing" \
+		-o timeout=120 \
+		--junitxml=$(BACKEND_COVERAGE_DIR)/junit-$(COVERAGE_PHASE).xml
+	$(MAKE) coverage-backend-report COVERAGE_PHASE=$(COVERAGE_PHASE)
+
+coverage-backend-report:
+	@test -n "$(COVERAGE_PHASE)" || (echo "COVERAGE_PHASE is required" && exit 1)
+	@mkdir -p $(BACKEND_COVERAGE_DIR)
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage combine
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage report --skip-covered --sort=cover
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage json -o $(BACKEND_COVERAGE_DIR)/coverage.json
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage xml -o $(BACKEND_COVERAGE_DIR)/coverage.xml
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage html -d $(BACKEND_COVERAGE_DIR)/html
+	uv run python scripts/backend_coverage_report.py \
+		--phase $(COVERAGE_PHASE) \
+		--coverage-json $(BACKEND_COVERAGE_DIR)/coverage.json \
+		--junit-glob "$(BACKEND_COVERAGE_DIR)/junit-*.xml" \
+		--markdown-out $(BACKEND_COVERAGE_DIR)/comment.md \
+		--summary-json-out $(BACKEND_COVERAGE_DIR)/summary.json
 
 coverage-module:
 	@test -n "$(MODULE)" || (echo "MODULE is required, e.g. make coverage-module MODULE=agent" && exit 1)
@@ -248,4 +292,3 @@ load-test-down:
 load-test: load-test-build load-test-up load-test-migrate load-test-setup load-test-run
 	@echo ""
 	@echo "Done. Run 'make load-test-down' to remove containers and credentials."
-

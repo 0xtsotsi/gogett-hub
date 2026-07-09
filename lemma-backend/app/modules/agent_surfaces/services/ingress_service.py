@@ -30,6 +30,7 @@ from app.modules.agent_surfaces.domain.entities import (
     ParsedSurfaceInteraction,
     ResolvedSurfaceUser,
     SurfaceChannelRoute,
+    SurfaceCredentialMode,
     SurfaceMode,
     SurfacePlatform,
 )
@@ -221,6 +222,21 @@ class AgentSurfaceIngressService:
                     platform,
                 )
                 return None
+        elif platform in {
+            SurfacePlatform.TELEGRAM.value,
+            SurfacePlatform.WHATSAPP.value,
+        }:
+            # Platform-wide webhooks are shared system credentials. Custom/bound
+            # bots must arrive with receiver_surface_ids (native receiver) or via
+            # a direct surface webhook; otherwise continuity for the same external
+            # user/thread can accidentally pull a system-bot message into a
+            # custom-bot conversation.
+            surfaces = [
+                surface
+                for surface in surfaces
+                if surface.account_id is None
+                and surface.credential_mode is SurfaceCredentialMode.SYSTEM
+            ]
 
         # Mention verification for Telegram groups: the parser records any
         # @username / text_mention entities but does NOT set mentioned_agent for
@@ -1525,6 +1541,30 @@ class AgentSurfaceIngressService:
             f"Request access here: {base}/pods/{pod_id}"
         )
 
+    def _ambiguous_system_surface_access_message(self) -> str:
+        return (
+            "You're signed up, but this shared bot can't determine which "
+            "workspace to connect you to. Ask a workspace admin to add you, or "
+            "open Lemma and choose the workspace there."
+        )
+
+    def _can_disclose_pod_access_link(self, surface: AgentSurfaceEntity) -> bool:
+        """Whether a non-member DM can safely receive a pod-specific link.
+
+        Shared system chat identities (Telegram/WhatsApp) can fan into many pod
+        surfaces. Sending a pod-specific URL to a signed-up non-member on those
+        shared identities can disclose an unrelated pod id. A custom/bound
+        account has a surface-specific credential, so its pod target is clear.
+        """
+        if surface.credential_mode is not SurfaceCredentialMode.SYSTEM:
+            return True
+        if surface.account_id is not None:
+            return True
+        return surface.surface_type not in {
+            SurfacePlatform.TELEGRAM,
+            SurfacePlatform.WHATSAPP,
+        }
+
     def _reply_context(
         self,
         *,
@@ -1679,16 +1719,21 @@ class AgentSurfaceIngressService:
                 resolved_user.internal_user_id,
                 surface.pod_id,
             )
-            # Signed up but not a pod member: on any DM surface, point them to the
-            # pod home page to request access (instead of dropping). Safe for both
-            # system bots and custom/personal bots — a custom bot's token maps to
-            # exactly one surface (one pod), so the join target is unambiguous.
+            # Signed up but not a pod member: on a pod-specific DM surface,
+            # point them to the pod home page to request access. Shared system
+            # Telegram/WhatsApp identities can front many pods, so they receive
+            # a generic message that does not disclose this pod id.
             if parsed.is_dm:
+                reply_message = (
+                    self._pod_access_message(surface.pod_id)
+                    if self._can_disclose_pod_access_link(surface)
+                    else self._ambiguous_system_surface_access_message()
+                )
                 return self._reply_context(
                     surface=surface,
                     parsed=parsed,
                     agent_display_name=fallback_agent_display_name,
-                    reply=(self._pod_access_message(surface.pod_id), {}),
+                    reply=(reply_message, {}),
                 )
             return None
         if not surface.config.identity.allows_email(resolved_user.email):

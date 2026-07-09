@@ -17,6 +17,8 @@ coverage.xml
 coverage-*.xml
 htmlcov/
 coverage/
+lemma-backend/coverage-agent-surfaces/
+lemma-backend/coverage-backend/
 lcov.info
 *.lcov
 

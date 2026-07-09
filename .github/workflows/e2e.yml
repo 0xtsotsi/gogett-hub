@@ -111,7 +111,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-e2e-${{ matrix.suite.name }}-coverage
+          include-hidden-files: true
           path: |
+            lemma-backend/.coverage.backend
             lemma-backend/coverage-backend/comment.md
             lemma-backend/coverage-backend/summary.json
             lemma-backend/coverage-backend/coverage.json
@@ -175,6 +177,86 @@ jobs:
             } catch (error) {
               core.warning(`Could not update backend coverage PR comment: ${error.message}`);
             }
+
+  aggregate-coverage:
+    name: backend aggregate coverage gate
+    if: >-
+      always() &&
+      !contains(needs.backend-e2e.result, 'failure') &&
+      !contains(needs.backend-e2e.result, 'cancelled')
+    needs: backend-e2e
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        working-directory: lemma-backend
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync
+      - name: Download E2E coverage shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backend-e2e-*-coverage
+          path: lemma-backend/coverage-artifacts/e2e
+      - name: Download validated unit coverage
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: backend-unit-coverage
+          path: lemma-backend/coverage-artifacts/unit
+      - name: Produce unit coverage for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          make coverage-backend-unit
+          mkdir -p coverage-artifacts/unit
+          cp .coverage.backend coverage-artifacts/unit/.coverage.backend
+      - name: Combine unit and E2E coverage
+        shell: bash
+        run: |
+          mkdir -p coverage-artifacts/combined coverage-backend
+          index=0
+          while IFS= read -r coverage_file; do
+            cp "$coverage_file" "coverage-artifacts/combined/.coverage.$index"
+            index=$((index + 1))
+          done < <(find coverage-artifacts -type f -name '.coverage.backend*')
+          if [ "$index" -eq 0 ]; then
+            echo "::error::No raw coverage artifacts were downloaded"
+            exit 1
+          fi
+          COVERAGE_FILE="$PWD/.coverage.backend" uv run coverage combine coverage-artifacts/combined
+          COVERAGE_FILE="$PWD/.coverage.backend" uv run coverage json -o coverage-backend/coverage.json
+          COVERAGE_FILE="$PWD/.coverage.backend" uv run coverage xml -o coverage-backend/coverage.xml
+      - name: Enforce total and module floors
+        run: >-
+          uv run python scripts/check_coverage_thresholds.py
+          coverage-backend/coverage.json
+          --min-total 70
+          --min-module schedule=65
+      - name: Enforce changed-code coverage
+        run: >-
+          uv run diff-cover coverage-backend/coverage.xml
+          --compare-branch origin/main
+          --fail-under=90
+      - name: Upload aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-aggregate-coverage
+          path: |
+            lemma-backend/coverage-backend/coverage.json
+            lemma-backend/coverage-backend/coverage.xml
+          if-no-files-found: error
 
   surface-live-smoke:
     name: agent surfaces live smoke

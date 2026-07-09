@@ -98,7 +98,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-unit-coverage
+          include-hidden-files: true
           path: |
+            lemma-backend/.coverage.backend
             lemma-backend/coverage-backend/comment.md
             lemma-backend/coverage-backend/summary.json
             lemma-backend/coverage-backend/coverage.json
@@ -148,7 +150,7 @@ jobs:
             }
 
   backend-lint:
-    name: lemma-backend async-safety lint
+    name: lemma-backend quality gates
     needs: changes
     if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
@@ -162,8 +164,47 @@ jobs:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      - name: Async-safety lint (flake8-async on app/)
+      - name: Ruff handwritten backend
+        run: make lint
+      - name: Async-safety lint
         run: make lint-async
+      - name: Critical domain type safety
+        run: make typecheck-critical
+      - name: Architecture, complexity, and broad-catch ratchet
+        run: make architecture
+
+  backend-migration:
+    name: lemma-backend migration upgrade/downgrade
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lemma-backend
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.3-pg15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d migration_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Verify consolidated reliability migration
+        run: uv run python scripts/verify_reliability_migration.py
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/migration_test
 
   python-sdk:
     name: Python SDK + CLI tests
@@ -386,6 +427,7 @@ jobs:
       - changes
       - backend-unit
       - backend-lint
+      - backend-migration
       - python-sdk
       - typescript-sdk
       - codegen-drift

@@ -173,7 +173,10 @@ def _phase_title(phase: str) -> str:
 def render_markdown(summary: dict[str, Any]) -> str:
     phase = summary["phase"]
     lines = [comment_marker(phase), f"## Backend Coverage ({_phase_title(phase)})", ""]
-    lines.append("_Report-only: this PR does not fail on coverage thresholds yet._")
+    lines.append(
+        "_The aggregate PR gate requires 70% overall, 65% for schedule, and "
+        "90% changed-code coverage._"
+    )
     lines.append("")
 
     tests = summary["tests"]

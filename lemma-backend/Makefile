@@ -32,7 +32,7 @@ BACKEND_COVERAGE_FILE ?= $(CURDIR)/.coverage.backend
 BACKEND_COVERAGE_RUN_ENV = COVERAGE_PROCESS_START=$(CURDIR)/.coveragerc COVERAGE_FILE=$(BACKEND_COVERAGE_FILE)
 BACKEND_COVERAGE_DATA_ENV = COVERAGE_FILE=$(BACKEND_COVERAGE_FILE)
 
-.PHONY: help test test-unit test-e2e test-e2e-real test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e coverage-backend-unit coverage-backend-e2e-shard coverage-backend-report test-collect lint migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-sse load-test-journey load-test-monitor load-test-down load-test
+.PHONY: help test test-unit test-e2e test-e2e-real test-e2e-fast test-e2e-runtime test-module coverage coverage-unit coverage-e2e coverage-backend-unit coverage-backend-e2e-shard coverage-backend-report coverage-backend-gate test-collect lint lint-async typecheck-critical architecture migrate docker-build docker-build-cloud docker-build-arm64 docker-build-amd64 agentbox-build teams-manifest-zip load-test-build load-test-up load-test-migrate load-test-setup load-test-run load-test-sse load-test-journey load-test-monitor load-test-down load-test
 
 help:
 	@echo "Lemma backend:"
@@ -48,6 +48,8 @@ help:
 	@echo "  make coverage-backend-unit     # backend unit coverage + markdown"
 	@echo "  make coverage-backend-e2e-shard # backend e2e shard coverage + markdown"
 	@echo "  make lint              # run ruff checks"
+	@echo "  make typecheck-critical # strict reliability/domain type gate"
+	@echo "  make architecture      # dependency/complexity/exception ratchet"
 	@echo "  make migrate           # apply database migrations"
 	@echo "  make docker-build-cloud  # build the lemma-cloud image"
 	@echo "  (full dev workflow: use 'make dev STACK=cloud|oss' from the repo root)"
@@ -165,6 +167,16 @@ coverage-backend-report:
 		--markdown-out $(BACKEND_COVERAGE_DIR)/comment.md \
 		--summary-json-out $(BACKEND_COVERAGE_DIR)/summary.json
 
+coverage-backend-gate:
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage combine
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage json -o $(BACKEND_COVERAGE_DIR)/coverage.json
+	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage xml -o $(BACKEND_COVERAGE_DIR)/coverage.xml
+	uv run python scripts/check_coverage_thresholds.py \
+		$(BACKEND_COVERAGE_DIR)/coverage.json \
+		--min-total 70 --min-module schedule=65
+	uv run diff-cover $(BACKEND_COVERAGE_DIR)/coverage.xml \
+		--compare-branch origin/main --fail-under=90
+
 coverage-module:
 	@test -n "$(MODULE)" || (echo "MODULE is required, e.g. make coverage-module MODULE=agent" && exit 1)
 	uv run pytest app/modules/$(MODULE) \
@@ -176,7 +188,23 @@ test-collect:
 	uv run pytest --collect-only -q
 
 lint:
-	uv run ruff check .
+	uv run ruff check app migrations scripts
+
+typecheck-critical:
+	uv run basedpyright --level error \
+		app/core/domain/events.py \
+		app/core/domain/errors.py \
+		app/core/api/schemas.py \
+		app/core/api/uploads.py \
+		app/core/infrastructure/events \
+		app/modules/pod/domain \
+		app/modules/pod_bundle/domain \
+		app/modules/schedule/domain \
+		app/modules/usage/domain
+
+architecture:
+	uv run python scripts/check_architecture.py
+	uv run python scripts/generate_route_inventory.py --check
 
 # Async-safety gate (enforced in CI). Catches blocking calls newly introduced
 # into async production code. Scoped to app/ with the noisy/stylistic ASYNC

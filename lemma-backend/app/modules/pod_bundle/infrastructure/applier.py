@@ -457,13 +457,13 @@ class BundleApplier:
     # --- workflows (best-effort) -----------------------------------------
 
     async def _apply_workflow(self, step: PlanStep) -> None:
-        from app.modules.workflow.api.dependencies import get_flow_service
+        from app.modules.workflow.api.dependencies import get_workflow_service
 
-        service = get_flow_service(self._uow)
+        service = get_workflow_service(self._uow)
         payload = self._load("workflows", step.name)
         if await _flow_exists(service, self._pod_id, step.name, self._ctx):
             return
-        await service.create_flow(
+        await service.create_workflow(
             pod_id=self._pod_id,
             name=step.name,
             description=payload.get("description"),
@@ -758,10 +758,10 @@ async def _get_schedule(service, pod_id, name, ctx):
 
 
 async def _flow_exists(service, pod_id, name, ctx) -> bool:
-    # get_flow_by_name RETURNS None for a missing flow (it does not raise), so a
+    # get_workflow_by_name RETURNS None for a missing flow (it does not raise), so a
     # bare try/except would treat "not found" as "exists" and skip the create.
     try:
-        return await service.get_flow_by_name(pod_id, name, ctx=ctx) is not None
+        return await service.get_workflow_by_name(pod_id, name, ctx=ctx) is not None
     except Exception:
         return False
 

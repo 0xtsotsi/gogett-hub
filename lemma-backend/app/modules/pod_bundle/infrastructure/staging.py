@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
@@ -40,9 +41,17 @@ class BundleStagingStorage:
             bucket_name=settings.gcs_storage_bucket,
         )
 
-    async def put_archive(self, kind: StagingKind, job_id: UUID, data: bytes) -> str:
+    async def put_archive(
+        self, kind: StagingKind, job_id: UUID, data: bytes | Path
+    ) -> str:
         key = archive_key(kind, job_id)
-        await obs.put_async(self.store, key, data)
+        await obs.put_async(
+            self.store,
+            key,
+            data,
+            use_multipart=isinstance(data, Path),
+            chunk_size=1024 * 1024,
+        )
         return key
 
     async def get_archive(self, kind: StagingKind, job_id: UUID) -> bytes | None:

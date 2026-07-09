@@ -37,16 +37,10 @@ async def execute_scheduled_job(schedule_id: str, payload: dict | None = None):
 
     emitter = get_event_emitter()
 
-    try:
-        schedule_uuid = UUID(schedule_id)
-        await emitter.emit_scheduled_job_event(
-            schedule_id=schedule_uuid, payload=payload or {}
-        )
-    except Exception as e:
-        logger.error(
-            f"Failed to execute scheduled job for schedule {schedule_id}: {e}",
-            exc_info=True,
-        )
+    schedule_uuid = UUID(schedule_id)
+    await emitter.emit_scheduled_job_event(
+        schedule_id=schedule_uuid, payload=payload or {}
+    )
 
 
 class SchedulerService:

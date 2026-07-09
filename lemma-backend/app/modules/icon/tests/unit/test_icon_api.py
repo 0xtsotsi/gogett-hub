@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from io import BytesIO
 from uuid import UUID
 
 import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 
 from app.core.api.dependencies import get_current_user
 from app.core.config import settings
@@ -13,6 +15,12 @@ from app.modules.identity.domain.user_entities import UserEntity
 
 
 TEST_USER_ID = UUID("11111111-1111-4111-8111-111111111111")
+
+
+def _png_bytes(*, width: int = 1, height: int = 1) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (width, height), color=(20, 40, 60)).save(output, format="PNG")
+    return output.getvalue()
 
 
 @pytest.fixture
@@ -42,7 +50,7 @@ async def client(icon_app: FastAPI):
 
 @pytest.mark.asyncio
 async def test_upload_icon_persists_file_and_public_endpoint_serves_it(client: AsyncClient):
-    image_bytes = b"\x89PNG\r\n\x1a\nicon-bytes"
+    image_bytes = _png_bytes()
 
     upload_response = await client.post(
         "/icons/upload",
@@ -96,7 +104,7 @@ async def test_upload_icon_rejects_svg(client: AsyncClient):
 async def test_upload_icon_ignores_client_filename_extension(client: AsyncClient):
     """Real PNG bytes sent with a .svg filename are stored as .png — the stored
     extension comes from the verified bytes, never the untrusted filename."""
-    png = b"\x89PNG\r\n\x1a\nicon-bytes"
+    png = _png_bytes()
     response = await client.post(
         "/icons/upload",
         files={"file": ("logo.svg", png, "image/svg+xml")},
@@ -117,6 +125,21 @@ async def test_upload_icon_rejects_empty_image_upload(client: AsyncClient):
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["detail"] == "Uploaded icon is empty"
+
+
+@pytest.mark.asyncio
+async def test_upload_icon_rejects_malformed_and_polyglot_raster(client: AsyncClient):
+    malformed = await client.post(
+        "/icons/upload",
+        files={"file": ("broken.png", b"\x89PNG\r\n\x1a\nbroken", "image/png")},
+    )
+    assert malformed.status_code == status.HTTP_400_BAD_REQUEST
+
+    polyglot = await client.post(
+        "/icons/upload",
+        files={"file": ("polyglot.png", _png_bytes() + b"<script>x</script>", "image/png")},
+    )
+    assert polyglot.status_code == status.HTTP_400_BAD_REQUEST
 
 
 @pytest.mark.asyncio

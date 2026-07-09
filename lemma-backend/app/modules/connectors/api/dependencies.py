@@ -26,9 +26,6 @@ from app.modules.connectors.infrastructure.adapters.routing_operation_gateway im
 from app.modules.connectors.infrastructure.adapters.oauth_redirect_uri_builder import (
     OAuthRedirectUriBuilder,
 )
-from app.modules.connectors.infrastructure.adapters.schema_compiler import (
-    PydanticCodeSchemaCompiler,
-)
 from app.modules.connectors.infrastructure.repositories.account_repository import (
     AccountRepository,
 )
@@ -146,7 +143,6 @@ def build_connector_operation_service(
         operation_gateway=RoutingOperationGateway(
             connector_repository=connector_repository
         ),
-        schema_compiler=PydanticCodeSchemaCompiler(),
         account_resolution_service=get_account_resolution_service(uow),
         connector_service=get_connector_service(uow),
     )

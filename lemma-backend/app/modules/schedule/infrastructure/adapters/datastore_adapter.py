@@ -44,6 +44,7 @@ class DatastoreAdapter:
                     "record_id": event.record_id,
                     "operation": operation.value,
                 },
+                source_event_id=str(event.event_id),
             )
             if fired:
                 fired_schedule_ids.append(schedule.id)

@@ -60,6 +60,49 @@ from app.modules.pod_bundle.infrastructure.state_store import (
 logger = get_logger(__name__)
 
 
+class _ImportCancellation(Exception):
+    pass
+
+
+async def _cancellation_requested(store, import_id: UUID) -> ImportState | None:
+    current = await store.get_import(import_id)
+    if current is not None and current.status in {
+        ImportStatus.CANCELLING,
+        ImportStatus.CANCELLED,
+        ImportStatus.PARTIALLY_CANCELLED,
+    }:
+        return current
+    return None
+
+
+async def _raise_if_cancelled(store, import_id: UUID) -> None:
+    if await _cancellation_requested(store, import_id) is not None:
+        raise _ImportCancellation
+
+
+async def _finalize_import_cancellation(store, staging, state: ImportState) -> None:
+    current = await store.get_import(state.import_id) or state
+    current.current_step = None
+    current.status = (
+        ImportStatus.PARTIALLY_CANCELLED
+        if current.committed_steps
+        else ImportStatus.CANCELLED
+    )
+    current.completed_at = _now()
+    await store.save_import(current)
+    await publish_bundle_event(
+        current.import_id,
+        completed_payload(current.status.value, current.seq),
+    )
+    try:
+        await staging.delete_archive("pod-imports", current.import_id)
+    except Exception:  # cleanup is backstopped by the sweep job
+        logger.warning(
+            "Failed to clean staging for cancelled import",
+            import_id=str(current.import_id),
+        )
+
+
 @streaq_task(name="export_pod_bundle")
 async def export_pod_bundle(context: dict[str, str | None]) -> None:
     worker_ctx: AppWorkerContext = streaq_worker.context
@@ -197,6 +240,8 @@ async def plan_pod_import(context: dict[str, str | None]) -> None:
 
     try:
         await _plan_from_staging(worker_ctx, store, staging, state)
+    except _ImportCancellation:
+        await _finalize_import_cancellation(store, staging, state)
     except DomainError as exc:
         await _fail_import(store, state, str(exc))
         logger.warning("Pod bundle plan %s failed (terminal): %s", import_id, exc)
@@ -211,6 +256,7 @@ async def _plan_from_staging(worker_ctx, store, staging, state: ImportState) -> 
     imports). Sets ``PLANNING`` → ``AWAITING_CONFIRMATION``; raises a domain error
     the caller maps to a terminal FAILED state."""
     import_id = state.import_id
+    await _raise_if_cancelled(store, import_id)
     state.status = ImportStatus.PLANNING
     await store.save_import(state)
     await publish_bundle_event(import_id, status_payload(state.status.value, state.seq))
@@ -218,6 +264,7 @@ async def _plan_from_staging(worker_ctx, store, staging, state: ImportState) -> 
     archive = await staging.get_archive("pod-imports", import_id)
     if archive is None:
         raise BundleStagingMissingError()
+    await _raise_if_cancelled(store, import_id)
 
     with tempfile.TemporaryDirectory(prefix="lemma-pod-import-") as tmp:
         from lemma_pod_bundle import extract_bundle
@@ -246,6 +293,7 @@ async def _plan_from_staging(worker_ctx, store, staging, state: ImportState) -> 
                 )
                 plan = await PlanBuilder(existing).build_plan(bundle_root=bundle_root)
 
+    await _raise_if_cancelled(store, import_id)
     state.plan = plan
     state.progress.total = len(plan.steps)
     state.progress.done = 0
@@ -276,6 +324,7 @@ async def import_pod_github(context: dict[str, str | None]) -> None:
         return
 
     try:
+        await _raise_if_cancelled(store, import_id)
         state.status = ImportStatus.FETCHING
         await store.save_import(state)
         await publish_bundle_event(import_id, status_payload(state.status.value, state.seq))
@@ -293,10 +342,13 @@ async def import_pod_github(context: dict[str, str | None]) -> None:
         zip_bytes = await GithubBundleFetcher().fetch_zipball(
             owner=owner, repo=repo, ref=state.source.ref
         )
+        await _raise_if_cancelled(store, import_id)
         state.staging_key = await staging.put_archive("pod-imports", import_id, zip_bytes)
         await store.save_import(state)
 
         await _plan_from_staging(worker_ctx, store, staging, state)
+    except _ImportCancellation:
+        await _finalize_import_cancellation(store, staging, state)
     except DomainError as exc:
         await _fail_import(store, state, str(exc))
         logger.warning("GitHub import %s failed (terminal): %s", import_id, exc)
@@ -329,6 +381,7 @@ async def import_pod_url(context: dict[str, str | None]) -> None:
         return
 
     try:
+        await _raise_if_cancelled(store, import_id)
         state.status = ImportStatus.FETCHING
         await store.save_import(state)
         await publish_bundle_event(import_id, status_payload(state.status.value, state.seq))
@@ -338,10 +391,13 @@ async def import_pod_url(context: dict[str, str | None]) -> None:
             raise BundleStagingMissingError(
                 "The source bundle is no longer available; export or upload it again."
             )
+        await _raise_if_cancelled(store, import_id)
         state.staging_key = await staging.put_archive("pod-imports", import_id, data)
         await store.save_import(state)
 
         await _plan_from_staging(worker_ctx, store, staging, state)
+    except _ImportCancellation:
+        await _finalize_import_cancellation(store, staging, state)
     except DomainError as exc:
         await _fail_import(store, state, str(exc))
         logger.warning("URL import %s failed (terminal): %s", import_id, exc)
@@ -371,6 +427,9 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
         return
     if state.status == ImportStatus.COMPLETED:
         return
+    if state.status == ImportStatus.CANCELLING:
+        await _finalize_import_cancellation(store, staging, state)
+        return
 
     from app.modules.pod_bundle.infrastructure.app_builder import AppStepRunner
     from app.modules.pod_bundle.infrastructure.applier import (
@@ -380,6 +439,7 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
     from app.modules.pod_bundle.domain.state import StepKind, StepStatus
 
     try:
+        await _raise_if_cancelled(store, import_id)
         state.status = ImportStatus.APPLYING
         await store.save_import(state)
         await publish_bundle_event(import_id, status_payload(state.status.value, state.seq))
@@ -431,7 +491,10 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
                 raise BundleInvalidError(str(exc)) from exc
 
             while (step := state.plan.next_pending_step()) is not None:
+                await _raise_if_cancelled(store, import_id)
                 step.status = StepStatus.RUNNING
+                state.current_step = step.index
+                await store.save_import(state)
                 try:
                     if step.kind is StepKind.APP:
                         # Self-scoped: creates the app, builds it in the agentbox
@@ -445,6 +508,25 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
                             bundle_root=bundle_root,
                             replacements=replacements,
                         )
+                        cancelled = await _cancellation_requested(store, import_id)
+                        if cancelled is not None:
+                            if step.index not in cancelled.committed_steps:
+                                cancelled.committed_steps.append(step.index)
+                            if cancelled.plan is not None:
+                                cancelled_step = next(
+                                    (
+                                        item
+                                        for item in cancelled.plan.steps
+                                        if item.index == step.index
+                                    ),
+                                    None,
+                                )
+                                if cancelled_step is not None:
+                                    cancelled_step.status = StepStatus.DONE
+                            await _finalize_import_cancellation(
+                                store, staging, cancelled
+                            )
+                            return
                     else:
                         async with uow_scope(worker_ctx.uow_factory) as uow:
                             ctx = await AuthorizationDataService(
@@ -460,6 +542,7 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
                                     replacements=replacements,
                                 )
                                 await applier.apply_step(step)
+                                await _raise_if_cancelled(store, import_id)
                                 # Commit the step before checkpointing it DONE: the
                                 # bare UoW rolls back on error but does NOT auto-commit
                                 # on success, so uncommitted writes (e.g. a workflow a
@@ -469,6 +552,8 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
                                 # committed internally.
                                 await uow.commit()
                     step.status = StepStatus.DONE
+                    if step.index not in state.committed_steps:
+                        state.committed_steps.append(step.index)
                 except StepNotApplicableError as exc:
                     # Deferred kind (app/surface/grants) — skip, don't fail.
                     step.status = StepStatus.SKIPPED
@@ -484,7 +569,9 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
                     return
                 await _checkpoint(store, state, step)
 
+        await _raise_if_cancelled(store, import_id)
         await _record_recipe(worker_ctx, state)
+        await _raise_if_cancelled(store, import_id)
         state.status = ImportStatus.COMPLETED
         state.completed_at = _now()
         await store.save_import(state)
@@ -496,6 +583,8 @@ async def apply_pod_import(context: dict[str, str | None]) -> None:
             await staging.delete_archive("pod-imports", import_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to delete staged import %s: %s", import_id, exc)
+    except _ImportCancellation:
+        await _finalize_import_cancellation(store, staging, state)
     except DomainError as exc:
         await _fail_import(store, state, str(exc))
         logger.warning("Pod bundle apply %s failed (terminal): %s", import_id, exc)
@@ -509,6 +598,7 @@ async def _checkpoint(store, state: ImportState, step) -> None:
     done = sum(1 for s in state.plan.steps if s.status.value in ("DONE", "SKIPPED"))
     state.progress.done = done
     state.progress.total = len(state.plan.steps)
+    state.current_step = None
     await store.save_import(state)
     await publish_bundle_event(
         state.import_id,

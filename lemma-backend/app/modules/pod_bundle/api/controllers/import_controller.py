@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.core.api.dependencies import CurrentUser, get_uow_factory
+from app.core.api.uploads import stage_upload_limited
 from app.core.authorization.scope import pod_context_scope
 from app.core.infrastructure.channels.channel_service import (
     ChannelService,
@@ -29,6 +30,7 @@ from app.core.infrastructure.channels.channel_service import (
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.pod.api.dependencies import PodEditorDep, PodViewerDep
 from app.modules.pod_bundle.api.dependencies import ImportUseCasesDep
+from app.modules.pod_bundle.config import pod_bundle_settings
 from app.modules.pod_bundle.api.schemas import (
     ApplyImportRequest,
     ImportStartRequest,
@@ -101,10 +103,17 @@ async def upload_bundle(
     use_cases: ImportUseCasesDep,
     data: UploadFile = File(...),
 ) -> UploadResponse:
-    content = await data.read()
-    url, expires_at = await use_cases.stage_upload(
-        pod_id=pod_id, user_id=user.id, filename=data.filename, data=content
-    )
+    async with stage_upload_limited(
+        data,
+        max_bytes=pod_bundle_settings.pod_bundle_max_archive_bytes,
+        field="pod bundle",
+    ) as staged:
+        url, expires_at = await use_cases.stage_upload(
+            pod_id=pod_id,
+            user_id=user.id,
+            filename=data.filename,
+            data=staged.path,
+        )
     return UploadResponse(url=url, expires_at=expires_at)
 
 
@@ -182,7 +191,8 @@ async def replan_import(
 
 @router.delete(
     "/{pod_id}/bundle/imports/{import_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=ImportStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="pod.bundle.import.cancel",
     summary="Cancel Pod Import",
     description="Abort a running import and delete its state + staged archive.",
@@ -193,8 +203,11 @@ async def cancel_import(
     import_id: UUID,
     user: CurrentUser,
     use_cases: ImportUseCasesDep,
-) -> None:
-    await use_cases.cancel_import(pod_id=pod_id, import_id=import_id, user_id=user.id)
+) -> ImportStatusResponse:
+    state = await use_cases.cancel_import(
+        pod_id=pod_id, import_id=import_id, user_id=user.id
+    )
+    return ImportStatusResponse.from_state(state)
 
 
 @router.get(

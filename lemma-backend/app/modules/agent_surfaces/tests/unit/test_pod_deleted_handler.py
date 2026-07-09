@@ -18,6 +18,7 @@ from app.modules.agent_surfaces.domain.entities import (
 from app.modules.agent_surfaces.domain.events import SurfaceWebhookReceivedEvent
 from app.modules.agent_surfaces.domain.ingress_context import SurfaceReplyContext
 from app.modules.agent_surfaces.events import handlers
+from app.modules.test_support.fakes import PassthroughEventInbox
 
 
 @asynccontextmanager
@@ -43,6 +44,7 @@ async def test_on_pod_deleted_removes_pod_surfaces(monkeypatch):
         event,
         logging.getLogger("test"),
         uow_factory=partial(_mock_uow_factory, uow_mock),
+        inbox=PassthroughEventInbox(),
     )
 
     service.delete_all_surfaces_for_pod.assert_awaited_once_with(pod_id)
@@ -64,6 +66,7 @@ async def test_on_pod_deleted_ignores_non_delete_events(monkeypatch):
         event,
         logging.getLogger("test"),
         uow_factory=partial(_mock_uow_factory, uow_mock),
+        inbox=PassthroughEventInbox(),
     )
 
     service.delete_all_surfaces_for_pod.assert_not_awaited()
@@ -84,6 +87,7 @@ async def test_handle_surface_webhook_enqueues_prepared_context(monkeypatch):
         logging.getLogger("test"),
         uow_factory=partial(_mock_uow_factory, uow_mock),
         job_queue=job_queue,
+        inbox=PassthroughEventInbox(),
     )
 
     handler.try_handle_interaction.assert_awaited_once()
@@ -107,6 +111,7 @@ async def test_handle_surface_webhook_skips_queue_when_interaction_was_handled(
         logging.getLogger("test"),
         uow_factory=partial(_mock_uow_factory, uow_mock),
         job_queue=job_queue,
+        inbox=PassthroughEventInbox(),
     )
 
     handler.prepare_ingress.assert_not_awaited()
@@ -127,6 +132,7 @@ async def test_handle_surface_webhook_skips_queue_when_no_context(monkeypatch):
         logging.getLogger("test"),
         uow_factory=partial(_mock_uow_factory, uow_mock),
         job_queue=job_queue,
+        inbox=PassthroughEventInbox(),
     )
 
     handler.prepare_ingress.assert_awaited_once()

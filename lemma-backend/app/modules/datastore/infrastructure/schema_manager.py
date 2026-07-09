@@ -215,6 +215,15 @@ class SchemaManager:
             await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
         logger.info(f"Created schema {schema_name} for pod {pod_id}")
 
+    async def datastore_schema_exists(self, pod_id: UUID) -> bool:
+        schema_name = self._get_schema_name(pod_id)
+        async with self._engine.connect() as conn:
+            result = await conn.scalar(
+                text("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :name)"),
+                {"name": schema_name},
+            )
+        return bool(result)
+
     async def drop_datastore_schema(self, pod_id: UUID) -> None:
         schema_name = self._get_schema_name(pod_id)
         async with self._engine.begin() as conn:

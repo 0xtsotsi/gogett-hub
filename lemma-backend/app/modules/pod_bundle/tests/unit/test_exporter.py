@@ -112,7 +112,7 @@ class _FakeAgentService:
 
 
 class _EmptyListService:
-    async def list_flows(self, pod_id, limit=100, cursor=None, requester_user_id=None, ctx=None):
+    async def list_workflows(self, pod_id, limit=100, cursor=None, requester_user_id=None, ctx=None):
         return [], None
 
     async def list_schedules(self, pod_id=None, limit=100, cursor=None, ctx=None):
@@ -210,7 +210,7 @@ def patched_exporter(monkeypatch):
         lambda uow: _FakeAgentService(agents),
     )
     monkeypatch.setattr(
-        "app.modules.workflow.api.dependencies.get_flow_service",
+        "app.modules.workflow.api.dependencies.get_workflow_service",
         lambda uow: empty,
     )
     monkeypatch.setattr(

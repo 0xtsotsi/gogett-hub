@@ -15,9 +15,9 @@ from app.modules.schedule.domain.errors import (
 )
 from app.modules.schedule.services.schedule_service import ScheduleService
 from app.modules.workflow.domain.start import (
-    EventFlowStart,
-    FlowStart,
-    FlowStartType,
+    EventWorkflowStartConfig,
+    WorkflowStart,
+    WorkflowStartType,
 )
 
 
@@ -174,9 +174,9 @@ async def test_workflow_webhook_schedule_derives_trigger_from_workflow_start():
     workflow_id = uuid4()
     workflow = SimpleNamespace(
         id=workflow_id,
-        start=FlowStart(
-            type=FlowStartType.EVENT,
-            config=EventFlowStart(
+        start=WorkflowStart(
+            type=WorkflowStartType.EVENT,
+            config=EventWorkflowStartConfig(
                 connector_id="gmail",
                 connector_trigger_id="gmail:gmail_new_gmail_message",
                 trigger_config={"labelIds": "INBOX"},
@@ -218,9 +218,9 @@ async def test_workflow_webhook_schedule_rejects_trigger_mismatch():
     )
     workflow = SimpleNamespace(
         id=uuid4(),
-        start=FlowStart(
-            type=FlowStartType.EVENT,
-            config=EventFlowStart(
+        start=WorkflowStart(
+            type=WorkflowStartType.EVENT,
+            config=EventWorkflowStartConfig(
                 connector_id="gmail",
                 connector_trigger_id="gmail:gmail_new_gmail_message",
                 trigger_config={},

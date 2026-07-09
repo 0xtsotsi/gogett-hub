@@ -346,26 +346,29 @@ async def test_apply_missing_required_variable():
         await uc.apply_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
 
 
-async def test_cancel_aborts_and_deletes():
-    uc, store, staging, queue = _use_cases()
+async def test_cancel_idle_import_persists_terminal_tombstone():
+    uc, store, staging, _ = _use_cases()
     pod_id, user_id = uuid4(), uuid4()
     state = _awaiting_state(pod_id, user_id)
     await store.save_import(state)
 
-    # FakeQueue has no abort; give it one that records calls.
-    aborted = []
-    queue.abort = lambda job_id, **kw: aborted.append(job_id) or True
+    deleted = []
 
-    async def _abort(job_id, **kw):
-        aborted.append(job_id)
-        return True
+    async def _delete(kind, import_id):
+        deleted.append((kind, import_id))
 
-    queue.abort = _abort
-    staging.delete_archive = _noop_delete = _make_async_noop()
+    staging.delete_archive = _delete
 
-    await uc.cancel_import(pod_id=pod_id, import_id=state.import_id, user_id=user_id)
-    assert await store.get_import(state.import_id) is None
-    assert len(aborted) == 2  # plan + apply dedup ids
+    result = await uc.cancel_import(
+        pod_id=pod_id, import_id=state.import_id, user_id=user_id
+    )
+    persisted = await store.get_import(state.import_id)
+    assert result.status == ImportStatus.CANCELLING
+    assert persisted is not None
+    assert persisted.status == ImportStatus.CANCELLED
+    assert persisted.cancel_requested_at is not None
+    assert persisted.completed_at is not None
+    assert deleted == [("pod-imports", state.import_id)]
 
 
 def _make_async_noop():

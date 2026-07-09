@@ -37,6 +37,14 @@ async def _backfill_query_role(app):
     """Ensure the RLS-subject role can read every existing pod schema, so ad-hoc
     datastore queries (run under that role) are scoped. Non-fatal: new tables
     also grant on creation, and queries fail closed."""
+    from app.modules.datastore.infrastructure.transactional_events import (
+        ensure_datastore_event_outbox,
+    )
+
+    # Fail startup when the durable event table cannot be established. Record
+    # mutation must never degrade to post-commit best-effort publication.
+    await ensure_datastore_event_outbox()
+
     try:
         from app.modules.datastore.api.dependencies import get_schema_manager
 
@@ -45,6 +53,31 @@ async def _backfill_query_role(app):
     except Exception:  # noqa: BLE001
         logger.warning("Failed to ensure datastore query role grants", exc_info=True)
     yield
+
+
+@asynccontextmanager
+async def _datastore_outbox_dispatcher(context):
+    """Dispatch the second outbox when pod schemas use a separate database."""
+    from app.core.config import settings
+    from app.core.infrastructure.events.message_bus import get_message_bus
+    from app.core.infrastructure.events.outbox import outbox_dispatcher_lifespan
+    from app.modules.datastore.infrastructure.session import (
+        get_datastore_session_maker,
+    )
+    from app.modules.datastore.infrastructure.transactional_events import (
+        ensure_datastore_event_outbox,
+    )
+
+    del context
+    datastore_url = settings.datastore_database_url or settings.database_url
+    if datastore_url == settings.database_url:
+        yield
+        return
+    await ensure_datastore_event_outbox()
+    async with outbox_dispatcher_lifespan(
+        get_datastore_session_maker(), get_message_bus()
+    ):
+        yield
 
 
 @asynccontextmanager
@@ -64,5 +97,5 @@ module = LemmaModule(
     routers=_routers,
     event_routers=_event_routers,
     api_lifespans=(_backfill_query_role,),
-    worker_lifespans=(_close_reindex_queue,),
+    worker_lifespans=(_datastore_outbox_dispatcher, _close_reindex_queue),
 )

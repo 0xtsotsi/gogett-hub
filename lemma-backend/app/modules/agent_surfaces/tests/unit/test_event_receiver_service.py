@@ -98,14 +98,13 @@ async def test_telegram_polling_retries_transient_conflict_after_resetting_webho
 async def test_publish_native_receiver_event_emits_surface_webhook_event(monkeypatch):
     published = []
 
-    class MessageBus:
-        async def publish(self, *, stream, event):
-            published.append((stream, event))
+    async def publish(stream, event):
+        published.append((stream, event))
 
     monkeypatch.setattr(
-        event_receiver_service,
-        "get_message_bus",
-        lambda: MessageBus(),
+        event_receiver_service.EventPublisher,
+        "publish",
+        publish,
     )
 
     await _publish_native_receiver_event(

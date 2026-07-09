@@ -14,7 +14,10 @@ from app.modules.connectors.domain.connect_request import (
 )
 
 if TYPE_CHECKING:
+    from app.modules.connectors.infrastructure.models.auth_config import AuthConfig
     from .connector import Connector
+    from app.modules.identity.infrastructure.models.organization_models import Organization
+    from app.modules.identity.infrastructure.models.user_models import User
 
 
 class ConnectRequest(UUIDAuditBase):

@@ -6,6 +6,7 @@ from app.modules.connectors.domain.connector_trigger import ConnectorTriggerEnti
 from app.modules.schedule.domain.schedule import ScheduleEntity, ScheduleType
 from app.modules.schedule.services.webhook_handler import WebhookHandler
 from app.modules.schedule.services.webhook_schedule_matcher import WebhookScheduleMatcher
+from app.modules.schedule.domain.errors import ScheduleSourceEventIdRequiredError
 
 
 @pytest.mark.asyncio
@@ -38,6 +39,7 @@ async def test_handle_webhook_composio_success(composio_gmail_event):
     )
     schedule_repo.find_by_config.return_value = [schedule_entity]
 
+    composio_gmail_event["id"] = "evt_fixture_123"
     result_ids = await handler.handle_webhook(
         source="composio", payload=composio_gmail_event
     )
@@ -66,9 +68,9 @@ async def test_handle_webhook_composio_missing_provider_id():
     )
 
     payload = {"type": "some_event", "data": {}}
-    result_ids = await handler.handle_webhook(source="composio", payload=payload)
+    with pytest.raises(ScheduleSourceEventIdRequiredError):
+        await handler.handle_webhook(source="composio", payload=payload)
 
-    assert result_ids == []
     schedule_repo.find_by_config.assert_not_called()
 
 
@@ -129,6 +131,7 @@ async def test_handle_webhook_composio_v3_success():
         publish_call["metadata"]["webhook_event_type"]
         == "composio.trigger.message"
     )
+    assert publish_call["source_event_id"] == "evt_123"
 
 
 @pytest.mark.asyncio
@@ -193,3 +196,4 @@ async def test_handle_webhook_slack_envelope_payload(slack_public_channel_event)
     event_publisher.publish_schedule_fired.assert_called_once()
     publish_call = event_publisher.publish_schedule_fired.call_args.kwargs
     assert publish_call["payload"] == slack_public_channel_event["payload"]
+    assert publish_call["source_event_id"] == "1766236791.639079"

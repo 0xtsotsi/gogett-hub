@@ -25,6 +25,10 @@ from app.modules.schedule.domain.schedule import (
     ScheduleUpdateEntity,
     normalize_datastore_schedule_config,
 )
+from app.modules.schedule.domain.events.schedule import ScheduleFired
+from app.modules.schedule.repositories.schedule_fire_repository import (
+    ScheduleFireRepository,
+)
 from app.modules.schedule.infrastructure.adapters.external_schedule_writer import (
     ExternalScheduleWriterAdapter,
 )
@@ -62,6 +66,58 @@ class ScheduleService:
             )
         )
         self.authorization_service = authorization_service
+        self.fire_repository = ScheduleFireRepository(uow)
+
+    async def list_schedule_fires(
+        self,
+        *,
+        pod_id: UUID,
+        schedule_id: UUID,
+        ctx: Context,
+        limit: int,
+    ):
+        schedule = await self.get_schedule(schedule_id, ctx=ctx)
+        if schedule is None or schedule.pod_id != pod_id:
+            return None
+        await ctx.require(Permissions.SCHEDULE_READ, ResourceRef.schedule(pod_id, schedule_id))
+        return await self.fire_repository.list_for_schedule(schedule_id, limit=limit)
+
+    async def retry_schedule_fire(
+        self,
+        *,
+        pod_id: UUID,
+        schedule_id: UUID,
+        fire_id: UUID,
+        ctx: Context,
+    ):
+        schedule = await self.get_schedule(schedule_id, ctx=ctx)
+        if schedule is None or schedule.pod_id != pod_id:
+            return None
+        await ctx.require(
+            Permissions.SCHEDULE_UPDATE, ResourceRef.schedule(pod_id, schedule_id)
+        )
+        fire = await self.fire_repository.reset_for_retry(
+            schedule_id=schedule_id, fire_id=fire_id
+        )
+        if fire is None:
+            return None
+        self.uow.collect_events(
+            [
+                ScheduleFired(
+                    schedule_id=schedule.id,
+                    user_id=schedule.user_id,
+                    schedule_type=schedule.schedule_type,
+                    pod_id=schedule.pod_id,
+                    account_id=schedule.account_id,
+                    payload=fire.payload,
+                    metadata=fire.metadata,
+                    llm_output=fire.llm_output,
+                    source_event_id=fire.source_event_id,
+                    causation_id=fire.id,
+                )
+            ]
+        )
+        return fire
 
     async def create_schedule(
         self,
@@ -158,16 +214,16 @@ class ScheduleService:
         requested_connector_trigger_id: str | None,
     ) -> dict:
         from app.modules.workflow.domain.start import (
-            EventFlowStart,
-            FlowStartType,
+            EventWorkflowStartConfig,
+            WorkflowStartType,
         )
 
         start = getattr(workflow, "start", None)
-        if start is None or start.type != FlowStartType.EVENT:
+        if start is None or start.type != WorkflowStartType.EVENT:
             raise ScheduleValidationError(
                 "Webhook workflow schedules require an EVENT workflow start"
             )
-        if not isinstance(start.config, EventFlowStart):
+        if not isinstance(start.config, EventWorkflowStartConfig):
             raise ScheduleValidationError(
                 "Webhook workflow schedules require event start configuration"
             )
@@ -284,20 +340,20 @@ class ScheduleService:
     ) -> bool:
         if schedule_create.workflow_id is None:
             return False
-        from app.modules.workflow.domain.flow import WorkflowMode
+        from app.modules.workflow.domain.workflow import WorkflowMode
         from app.modules.workflow.infrastructure.repositories import (
-            SqlAlchemyFlowRepository,
+            SqlAlchemyWorkflowRepository,
         )
 
-        flow = await SqlAlchemyFlowRepository(self.uow).get(schedule_create.workflow_id)
+        flow = await SqlAlchemyWorkflowRepository(self.uow).get(schedule_create.workflow_id)
         return flow is not None and flow.mode == WorkflowMode.GLOBAL
 
     async def _get_workflow_by_name(self, *, pod_id: UUID, workflow_name: str):
         from app.modules.workflow.infrastructure.repositories import (
-            SqlAlchemyFlowRepository,
+            SqlAlchemyWorkflowRepository,
         )
 
-        flow_repo = SqlAlchemyFlowRepository(self.uow)
+        flow_repo = SqlAlchemyWorkflowRepository(self.uow)
         flow = await flow_repo.get_by_name(
             pod_id, normalize_resource_name(workflow_name)
         )
@@ -331,12 +387,12 @@ class ScheduleService:
             raise ScheduleValidationError("pod_id is required for target schedules")
 
         if schedule_create.workflow_id is not None:
-            from app.modules.workflow.domain.flow import WorkflowMode
+            from app.modules.workflow.domain.workflow import WorkflowMode
             from app.modules.workflow.infrastructure.repositories import (
-                SqlAlchemyFlowRepository,
+                SqlAlchemyWorkflowRepository,
             )
 
-            flow = await SqlAlchemyFlowRepository(self.uow).get(
+            flow = await SqlAlchemyWorkflowRepository(self.uow).get(
                 schedule_create.workflow_id
             )
             if flow is None or flow.pod_id != schedule_create.pod_id:
@@ -420,12 +476,12 @@ class ScheduleService:
             candidate = existing.model_copy(update=update_data)
             await self._require_target_execute(candidate, ctx=ctx)
         if "workflow_id" in update_data and update_data["workflow_id"] is not None:
-            from app.modules.workflow.domain.flow import WorkflowMode
+            from app.modules.workflow.domain.workflow import WorkflowMode
             from app.modules.workflow.infrastructure.repositories import (
-                SqlAlchemyFlowRepository,
+                SqlAlchemyWorkflowRepository,
             )
 
-            workflow = await SqlAlchemyFlowRepository(self.uow).get(
+            workflow = await SqlAlchemyWorkflowRepository(self.uow).get(
                 update_data["workflow_id"]
             )
             if workflow and workflow.mode == WorkflowMode.GLOBAL:
@@ -453,11 +509,7 @@ class ScheduleService:
             # Reactivating a schedule clears its circuit-breaker failure streak so
             # a re-enabled schedule starts fresh instead of tripping again on the
             # next failure.
-            from app.modules.schedule.services.schedule_fire_store import (
-                get_schedule_fire_store,
-            )
-
-            await get_schedule_fire_store().reset_failures(schedule_id=schedule_id)
+            await self.schedule_repository.reset_consecutive_failures(schedule_id)
 
         if updated and updated.schedule_type == ScheduleType.TIME:
             if "config" in update_data or "is_active" in update_data:

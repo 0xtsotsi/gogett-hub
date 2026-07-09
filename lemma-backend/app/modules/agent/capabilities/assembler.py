@@ -34,19 +34,6 @@ from app.modules.agent.capabilities.instructed_toolset import (
     InstructedToolsetCapability,
 )
 from app.modules.agent.capabilities.prompt_caching import PromptCachingCapability
-
-_caching_capability_cls: type[PromptCachingCapability] = PromptCachingCapability
-
-
-def configure_caching_capability(cls: type[PromptCachingCapability]) -> None:
-    """Override the caching capability class used when prompt caching is enabled.
-
-    Call at application startup (e.g. from a cloud module) to inject a
-    provider-specific subclass (e.g. one that adds an ``x-session-affinity``
-    header for Fireworks session routing).
-    """
-    global _caching_capability_cls
-    _caching_capability_cls = cls
 from app.modules.agent.capabilities.surface_platform import SurfacePlatformCapability
 from app.modules.agent.capabilities.todo import TODO_TOOLSET_ID, TodoCapability
 from app.modules.agent.capabilities.web_search import WebSearchCapability
@@ -71,6 +58,19 @@ from app.modules.agent_surfaces.platforms.platform_capabilities import (
 )
 
 logger = get_logger(__name__)
+
+_caching_capability_cls: type[PromptCachingCapability] = PromptCachingCapability
+
+
+def configure_caching_capability(cls: type[PromptCachingCapability]) -> None:
+    """Override the caching capability class used when prompt caching is enabled.
+
+    Call at application startup (e.g. from a cloud module) to inject a
+    provider-specific subclass (e.g. one that adds an ``x-session-affinity``
+    header for Fireworks session routing).
+    """
+    global _caching_capability_cls
+    _caching_capability_cls = cls
 
 _EXTRA_TOOLSET_IDS = frozenset(id(obj) for obj in EXTRA_TOOLSET_OBJECTS)
 

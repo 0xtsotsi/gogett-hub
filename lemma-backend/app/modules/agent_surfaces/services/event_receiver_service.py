@@ -18,7 +18,8 @@ from app.modules.agent_surfaces.config import surface_settings
 from app.core.infrastructure.channels.channel_service import channel_service
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import SessionUnitOfWorkFactory
-from app.core.infrastructure.events.message_bus import get_message_bus
+from app.core.infrastructure.events.inbox import stable_event_id
+from app.core.infrastructure.events.publisher import EventPublisher
 from app.core.log.log import get_logger
 from app.modules.agent_surfaces.domain.entities import (
     AgentSurfaceEntity,
@@ -615,14 +616,24 @@ async def _publish_native_receiver_event(
     headers = {"x-lemma-surface-event-mode": "native_receiver"}
     if receiver_key:
         headers["x-lemma-surface-receiver-key"] = receiver_key
+    provider_id = (
+        payload.get("event_id")
+        or payload.get("update_id")
+        or payload.get("id")
+        or hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+    )
+    source_event_id = f"{source}:native:{provider_id}"
     event = SurfaceWebhookReceivedEvent(
+        event_id=stable_event_id({"event_id": source_event_id}),
         source=source,
         payload=payload,
         headers=headers,
+        source_event_id=source_event_id,
         # Scope downstream ingress to the surfaces this bot actually serves, so a
         # custom bot's update can't be mis-attributed to another bot's surface.
         receiver_surface_ids=list(surface_ids) if surface_ids else None,
     )
-    await get_message_bus().publish(stream=event.stream_name(), event=event)
-
+    await EventPublisher.publish(event.stream_name(), event)
 

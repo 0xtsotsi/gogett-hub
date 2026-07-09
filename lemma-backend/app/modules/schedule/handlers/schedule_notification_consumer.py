@@ -17,7 +17,9 @@ from app.core.infrastructure.db.uow_factory import (
     SessionUnitOfWorkFactory,
     UnitOfWorkFactory,
 )
-from app.core.infrastructure.events.stream_subscriber import redis_stream_sub
+from app.core.infrastructure.events.stream_subscriber import (
+    reliable_redis_stream_subscriber,
+)
 from app.modules.schedule.domain.events.schedule import (
     ScheduleDeactivated,
     ScheduleEvents,
@@ -30,12 +32,11 @@ def provide_uow_factory() -> UnitOfWorkFactory:
     return SessionUnitOfWorkFactory(async_session_maker)
 
 
-@router.subscriber(
-    stream=redis_stream_sub(
-        ScheduleEvents.STREAM,
-        group="schedule-notifications",
-        consumer="schedule-notifications-consumer",
-    )
+@reliable_redis_stream_subscriber(
+    router,
+    ScheduleEvents.STREAM,
+    group="schedule-notifications",
+    consumer="schedule-notifications-consumer",
 )
 async def on_schedule_deactivated(
     event: dict,

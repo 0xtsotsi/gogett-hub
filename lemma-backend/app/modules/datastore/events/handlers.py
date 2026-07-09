@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from faststream import Logger
+from faststream import Depends, Logger
 from faststream.redis import RedisRouter
 
 from app.core.config import settings
@@ -14,7 +14,13 @@ from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import (
     SessionUnitOfWorkFactory,
 )
-from app.core.infrastructure.events.stream_subscriber import redis_stream_sub
+from app.core.infrastructure.events.stream_subscriber import (
+    reliable_redis_stream_subscriber,
+)
+from app.core.infrastructure.events.inbox import (
+    EventInboxPort,
+    provide_domain_event_inbox,
+)
 from app.modules.datastore.api.dependencies import (
     build_file_service,
 )
@@ -99,22 +105,36 @@ async def _enqueue_file_processing(
         )
 
 
-@router.subscriber(stream=redis_stream_sub(DATASTORE_EVENTS_STREAM))
-async def on_datastore_file_event(event: dict, fs_logger: Logger):
+@reliable_redis_stream_subscriber(
+    router,
+    DATASTORE_EVENTS_STREAM,
+    group="datastore-file-events",
+    consumer="datastore-file-events-consumer",
+)
+async def on_datastore_file_event(
+    event: dict,
+    fs_logger: Logger,
+    inbox: EventInboxPort = Depends(provide_domain_event_inbox),
+):
     # The unified datastore stream also carries table/record events; ignore
     # everything that is not a file event.
     event_type = event.get("event_type")
-    try:
-        if event_type == DatastoreFileCreatedEvent.get_event_type():
-            parsed = DatastoreFileCreatedEvent.model_validate(event)
-            await _enqueue_file_processing(parsed, fs_logger)
-            return
+    if event_type not in {
+        DatastoreFileCreatedEvent.get_event_type(),
+        DatastoreFileUpdatedEvent.get_event_type(),
+    }:
+        return
 
-        if event_type == DatastoreFileUpdatedEvent.get_event_type():
-            parsed = DatastoreFileUpdatedEvent.model_validate(event)
-            await _enqueue_file_processing(parsed, fs_logger)
-    except Exception as exc:
-        fs_logger.error("Failed to handle datastore file event %s: %s", event_type, exc)
+    async def process() -> None:
+        event_class = (
+            DatastoreFileCreatedEvent
+            if event_type == DatastoreFileCreatedEvent.get_event_type()
+            else DatastoreFileUpdatedEvent
+        )
+        parsed = event_class.model_validate(event)
+        await _enqueue_file_processing(parsed, fs_logger)
+
+    await inbox.process("datastore.file-processing", event, process)
 
 
 @streaq_task(name="process_datastore_file_task")

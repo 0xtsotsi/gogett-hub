@@ -19,6 +19,8 @@ from app.modules.schedule.api.schemas.schedule_schemas import (
     ScheduleListResponse,
     UpdateScheduleRequest,
     ScheduleResponse,
+    ScheduleFireListResponse,
+    ScheduleFireResponse,
 )
 from app.modules.schedule.domain.schedule import (
     ScheduleCreateEntity,
@@ -107,6 +109,59 @@ async def list_schedules(
         limit=limit,
         next_page_token=str(next_cursor) if next_cursor else None,
     )
+
+
+@router.get(
+    "/{schedule_id}/fires",
+    response_model=ScheduleFireListResponse,
+    operation_id="schedule.fire.list",
+)
+async def list_schedule_fires(
+    pod_id: UUID,
+    schedule_id: UUID,
+    service: ScheduleServiceDep,
+    ctx: PodContextDep,
+    limit: int = 100,
+) -> ScheduleFireListResponse:
+    fires = await service.list_schedule_fires(
+        pod_id=pod_id,
+        schedule_id=schedule_id,
+        ctx=ctx,
+        limit=max(1, min(limit, 1000)),
+    )
+    if fires is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return ScheduleFireListResponse(
+        items=[ScheduleFireResponse.model_validate(item) for item in fires],
+        limit=max(1, min(limit, 1000)),
+    )
+
+
+@router.post(
+    "/{schedule_id}/fires/{fire_id}/retry",
+    response_model=ScheduleFireResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="schedule.fire.retry",
+)
+async def retry_schedule_fire(
+    pod_id: UUID,
+    schedule_id: UUID,
+    fire_id: UUID,
+    service: ScheduleServiceDep,
+    ctx: PodContextDep,
+) -> ScheduleFireResponse:
+    fire = await service.retry_schedule_fire(
+        pod_id=pod_id,
+        schedule_id=schedule_id,
+        fire_id=fire_id,
+        ctx=ctx,
+    )
+    if fire is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Schedule fire is not failed, dead-lettered, or does not exist",
+        )
+    return ScheduleFireResponse.model_validate(fire)
 
 
 @router.get(

@@ -172,7 +172,7 @@ async def cli_refresh_session(
             detail={
                 "code": "INVALID_REFRESH_TOKEN",
                 "message": "Unable to refresh CLI session.",
-                "details": str(exc),
+                "details": {"error_type": type(exc).__name__},
             },
         ) from exc
 

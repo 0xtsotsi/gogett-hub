@@ -1,16 +1,9 @@
-"""Ephemeral job-state documents for pod bundle operations.
+"""Job-state models for pod bundle operations.
 
-These pydantic models ARE the Redis JSON schema (see
-``docs/design/pod-bundle-share-import.md``). They are a UI/progress cache with
-a TTL, never a source of truth: losing one is always recoverable by
-re-uploading and re-planning, because the plan is a diff against the pod's
-current resources and apply steps are idempotent upserts.
-
-Write discipline: the API process writes the initial document (and a
-cancellation marker); after the job is enqueued the worker is the single
-writer — guaranteed by the streaq dedup job id — so read-modify-write needs no
-locking. Every write bumps ``seq`` (monotonic per document) so SSE consumers
-can order a replayed snapshot against live events.
+Import snapshots and step checkpoints are durable PostgreSQL records mirrored
+to Redis. Export and publish states retain the existing Redis lifecycle. Every
+write bumps ``seq`` so SSE consumers can order a replayed snapshot against
+live events.
 """
 
 from __future__ import annotations
@@ -33,9 +26,11 @@ class ImportStatus(str, Enum):
     PLANNING = "PLANNING"
     AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
     APPLYING = "APPLYING"
+    CANCELLING = "CANCELLING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    PARTIALLY_CANCELLED = "PARTIALLY_CANCELLED"
 
 
 class ExportStatus(str, Enum):
@@ -54,7 +49,12 @@ class PublishStatus(str, Enum):
 
 
 IMPORT_TERMINAL_STATUSES = frozenset(
-    {ImportStatus.COMPLETED, ImportStatus.FAILED, ImportStatus.CANCELLED}
+    {
+        ImportStatus.COMPLETED,
+        ImportStatus.FAILED,
+        ImportStatus.CANCELLED,
+        ImportStatus.PARTIALLY_CANCELLED,
+    }
 )
 
 
@@ -196,6 +196,9 @@ class ImportState(_BundleJobState):
     progress: Progress = Field(default_factory=Progress)
     variables_provided: dict[str, str] = Field(default_factory=dict)
     confirm_destructive: bool = False
+    cancel_requested_at: datetime | None = None
+    current_step: int | None = None
+    committed_steps: list[int] = Field(default_factory=list)
 
     @property
     def is_terminal(self) -> bool:

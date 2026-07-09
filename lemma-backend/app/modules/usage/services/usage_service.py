@@ -10,7 +10,11 @@ from uuid import UUID
 from app.core.log.log import get_logger
 from app.modules.agent.domain.runtime_profiles import RuntimeProfileScope
 from app.modules.agent.domain.value_objects import AgentRunUsage
-from app.modules.usage.domain.entities import UsageRecord, UsageReservation
+from app.modules.usage.domain.entities import (
+    UsageLimitCounterScope,
+    UsageRecord,
+    UsageReservation,
+)
 from app.modules.usage.domain.ports import UsageLimitPort, UsageLimitValues
 from app.modules.usage.domain.errors import UsageLimitExceededError
 from app.modules.usage.domain.events import ModelUsageEvent, UsageLimitDeniedEvent
@@ -92,7 +96,52 @@ class UsageService:
             user_id=user_id,
             now=now,
         )
-        if not limits["allowed"]:
+        scopes: list[UsageLimitCounterScope] = []
+        org_monthly = limits["org_monthly"]
+        if organization_id is not None and org_monthly["limit_usd"] is not None:
+            scopes.append(
+                UsageLimitCounterScope(
+                    organization_id=organization_id,
+                    user_id=None,
+                    window_kind="org_month",
+                    window_start=org_monthly["window_start"],
+                    window_end=org_monthly["reset_at"],
+                    limit_usd=org_monthly["limit_usd"],
+                    initial_used_usd=org_monthly["used_usd"],
+                )
+            )
+        user_weekly = limits["user_weekly"]
+        if user_weekly["limit_usd"] is not None:
+            scopes.append(
+                UsageLimitCounterScope(
+                    organization_id=user_weekly["counter_organization_id"],
+                    user_id=user_id,
+                    window_kind="user_week",
+                    window_start=user_weekly["window_start"],
+                    window_end=user_weekly["reset_at"],
+                    limit_usd=user_weekly["limit_usd"],
+                    initial_used_usd=user_weekly["used_usd"],
+                )
+            )
+        user_monthly = limits["user_monthly"]
+        if user_monthly["limit_usd"] is not None:
+            scopes.append(
+                UsageLimitCounterScope(
+                    organization_id=user_monthly["counter_organization_id"],
+                    user_id=user_id,
+                    window_kind="user_month",
+                    window_start=user_monthly["window_start"],
+                    window_end=user_monthly["reset_at"],
+                    limit_usd=user_monthly["limit_usd"],
+                    initial_used_usd=user_monthly["used_usd"],
+                )
+            )
+
+        counter_ids = await self.usage_repository.reserve_limit_scopes(
+            scopes=scopes,
+            amount_usd=amount,
+        )
+        if counter_ids is None:
             self._collect_denied_event(
                 organization_id=organization_id,
                 user_id=user_id,
@@ -101,44 +150,6 @@ class UsageService:
                 reason="limit_exceeded",
             )
             raise UsageLimitExceededError()
-
-        counter_ids: list[UUID] = []
-        org_monthly = limits["org_monthly"]
-        if organization_id is not None and org_monthly["limit_usd"] is not None:
-            counter_ids.append(
-                await self.usage_repository.reserve_counter(
-                    organization_id=organization_id,
-                    user_id=None,
-                    window_kind="org_month",
-                    window_start=org_monthly["window_start"],
-                    window_end=org_monthly["reset_at"],
-                    amount_usd=amount,
-                )
-        )
-        user_weekly = limits["user_weekly"]
-        if user_weekly["limit_usd"] is not None:
-            counter_ids.append(
-                await self.usage_repository.reserve_counter(
-                    organization_id=user_weekly["counter_organization_id"],
-                    user_id=user_id,
-                    window_kind="user_week",
-                    window_start=user_weekly["window_start"],
-                    window_end=user_weekly["reset_at"],
-                    amount_usd=amount,
-                )
-            )
-        user_monthly = limits["user_monthly"]
-        if user_monthly["limit_usd"] is not None:
-            counter_ids.append(
-                await self.usage_repository.reserve_counter(
-                    organization_id=user_monthly["counter_organization_id"],
-                    user_id=user_id,
-                    window_kind="user_month",
-                    window_start=user_monthly["window_start"],
-                    window_end=user_monthly["reset_at"],
-                    amount_usd=amount,
-                )
-            )
         return UsageReservation(
             organization_id=organization_id,
             user_id=user_id,
@@ -215,7 +226,11 @@ class UsageService:
         )
         saved = await self.usage_repository.create(record)
         if reservation is not None:
-            await self.release_reservation(reservation)
+            await self.usage_repository.consume_reservation(
+                counter_ids=reservation.counter_ids,
+                reserved_usd=reservation.amount_usd,
+                actual_usd=cost_usd or 0.0,
+            )
         self._collect_recorded_event(saved)
         return saved
 

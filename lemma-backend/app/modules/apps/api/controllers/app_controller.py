@@ -1,5 +1,6 @@
 """App API controller."""
 
+from contextlib import AsyncExitStack
 from io import BytesIO
 from typing import Optional
 from uuid import UUID
@@ -17,6 +18,8 @@ from fastapi.responses import Response, StreamingResponse
 
 from app.core.api.dependencies import CurrentUser
 from app.core.api.pagination import parse_uuid_page_token
+from app.core.api.uploads import UploadBudget, stage_upload_limited
+from app.core.config import settings
 from app.core.authorization.dependencies import PodContextDep
 from app.core.helpers.slug import normalize_resource_name
 from app.modules.apps.api.asset_response import app_asset_response
@@ -248,21 +251,44 @@ async def upload_app_bundle(
     source_archive: UploadFile | None = File(default=None),
     dist_archive: UploadFile | None = File(default=None),
 ) -> AppBundleUploadResponse:
-    source_archive_bytes: bytes | None = None
-    dist_archive_bytes: bytes | None = None
-    if source_archive is not None:
-        source_archive_bytes = await source_archive.read()
-    if dist_archive is not None:
-        dist_archive_bytes = await dist_archive.read()
-
-    app = await use_cases.upload_bundle(
-        pod_id=pod_id,
-        app_name=app_name,
-        request=request,
-        user_id=user.id,
-        source_archive_bytes=source_archive_bytes,
-        dist_archive_bytes=dist_archive_bytes,
+    budget = UploadBudget(
+        max_bytes=settings.app_bundle_upload_max_bytes,
+        field="app bundle",
     )
+    async with AsyncExitStack() as uploads:
+        source_staged = (
+            await uploads.enter_async_context(
+                stage_upload_limited(
+                    source_archive,
+                    max_bytes=settings.app_source_archive_max_bytes,
+                    field="source archive",
+                    budget=budget,
+                )
+            )
+            if source_archive is not None
+            else None
+        )
+        dist_staged = (
+            await uploads.enter_async_context(
+                stage_upload_limited(
+                    dist_archive,
+                    max_bytes=settings.app_dist_archive_max_bytes,
+                    field="dist archive",
+                    budget=budget,
+                )
+            )
+            if dist_archive is not None
+            else None
+        )
+
+        app = await use_cases.upload_bundle(
+            pod_id=pod_id,
+            app_name=app_name,
+            request=request,
+            user_id=user.id,
+            source_archive_bytes=(source_staged.path if source_staged else None),
+            dist_archive_bytes=(dist_staged.path if dist_staged else None),
+        )
     return AppBundleUploadResponse(
         message="Bundle uploaded successfully",
         app=AppDetailResponse.model_validate(app),

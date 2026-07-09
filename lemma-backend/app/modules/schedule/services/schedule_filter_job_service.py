@@ -24,6 +24,7 @@ class ScheduleFilterJobService:
         schedule_id: str | None = None,
         payload: dict,
         metadata: dict,
+        source_event_id: str,
     ) -> None:
         if schedule_id is None:
             raise ValueError("schedule_id is required")
@@ -40,6 +41,7 @@ class ScheduleFilterJobService:
             schedule=schedule,
             payload=payload,
             metadata=metadata,
+            source_event_id=source_event_id,
         )
         if not fired:
             logger.info("Schedule %s filtered out by LLM, skipping event", schedule_id)

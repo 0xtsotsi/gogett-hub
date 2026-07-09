@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 from typing import Callable, Optional
 from uuid import UUID
 
 from app.core.authorization.context import Context
 from app.core.log.log import get_logger
+from app.core.api.uploads import upload_source_has_content, upload_source_size
 
 from app.modules.datastore.domain.errors import (
     DatastoreFileNotFoundError,
@@ -117,7 +121,7 @@ class FileWriter:
         self,
         pod_id: UUID,
         name: str,
-        file_content: bytes,
+        file_content: bytes | Path,
         requester_user_id: UUID,
         description: Optional[str] = None,
         metadata: Optional[dict] = None,
@@ -174,7 +178,7 @@ class FileWriter:
             name=file_name,
             description=description,
             mime_type=mime_type,
-            size_bytes=len(file_content),
+            size_bytes=upload_source_size(file_content),
             search_enabled=search_enabled,
             status=draft_status,
             metadata=metadata,
@@ -199,9 +203,9 @@ class FileWriter:
         self,
         pod_id: UUID,
         path: str,
-        markdown_content: bytes,
+        markdown_content: bytes | Path,
         requester_user_id: UUID,
-        images: list[tuple[str, bytes]] | None = None,
+        images: list[tuple[str, bytes | Path]] | None = None,
         ctx: Context | None = None,
     ) -> DatastoreFileEntity:
         """Attach (or replace) a user-provided markdown version of a document,
@@ -227,7 +231,7 @@ class FileWriter:
                 "Markdown can only be attached to an indexable, non-markdown "
                 "document (e.g. a PDF, Word/ODT, HTML, RTF, or EPUB file)."
             )
-        if not markdown_content or not markdown_content.strip():
+        if not await asyncio.to_thread(upload_source_has_content, markdown_content):
             raise DatastoreValidationError("Markdown content cannot be empty")
 
         await self.storage.upload_file(
@@ -493,11 +497,7 @@ class FileWriter:
             file_entity.update_description(update_entity.description)
         if update_entity.metadata is not None:
             file_entity.update_metadata(update_entity.metadata)
-        # Replacing the original bytes drops any bring-your-own markdown: the
-        # user's markdown would now be stale vs the new content, so we clear the
-        # flags and let the reprocess re-extract via the fast path (the stale
-        # source.md + companion images are wiped by delete_child_artifacts during
-        # that reprocess).
+        # Replacement invalidates user-authored derived markdown and assets.
         if update_entity.content is not None and file_entity.metadata:
             cleared = dict(file_entity.metadata)
             had_source = cleared.pop(_MARKDOWN_SOURCE_KEY, None) is not None
@@ -532,7 +532,7 @@ class FileWriter:
             and previous_storage_key != new_storage_key
         )
         if has_content:
-            file_entity.size_bytes = len(update_entity.content)
+            file_entity.size_bytes = upload_source_size(update_entity.content)
 
         should_sync = previous_path != file_entity.path
         if has_content or rename_moved:

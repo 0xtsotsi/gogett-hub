@@ -236,7 +236,7 @@ class BundleExporter:
         from app.modules.function.api.dependencies import build_function_service
         from app.modules.pod.infrastructure.pod_repositories import PodRepository
         from app.modules.schedule.api.dependencies import get_schedule_service
-        from app.modules.workflow.api.dependencies import get_flow_service
+        from app.modules.workflow.api.dependencies import get_workflow_service
 
         from app.core.infrastructure.events.message_bus import get_message_bus
 
@@ -387,13 +387,13 @@ class BundleExporter:
 
             # --- workflows ----------------------------------------------------
             if "workflows" in selected:
-                flow_service = get_flow_service(uow)
-                flows, _ = await flow_service.list_flows(
+                flow_service = get_workflow_service(uow)
+                flows, _ = await flow_service.list_workflows(
                     pod_id, limit=1000, requester_user_id=user_id, ctx=ctx
                 )
                 for summary in sorted(flows, key=lambda f: str(f.name or "")):
                     workflow_name = str(summary.name or "")
-                    flow = await flow_service.get_flow_by_name(
+                    flow = await flow_service.get_workflow_by_name(
                         pod_id, workflow_name, requester_user_id=user_id, ctx=ctx
                     )
                     dir_ = root / "workflows" / workflow_name
@@ -849,9 +849,9 @@ def _agent_response_dict(agent: Any) -> dict[str, Any]:
 
 
 def _flow_response_dict(flow: Any) -> dict[str, Any]:
-    from app.modules.workflow.api.schemas import flow_response_from_domain
+    from app.modules.workflow.api.schemas import workflow_response_from_domain
 
-    return _dump_response(flow_response_from_domain(flow))
+    return _dump_response(workflow_response_from_domain(flow))
 
 
 def _schedule_response_dict(schedule: Any) -> dict[str, Any]:

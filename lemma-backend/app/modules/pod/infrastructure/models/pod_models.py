@@ -12,6 +12,7 @@ from app.modules.pod.domain.pod_entities import (
     PodRole,
     PodEntity,
     PodMemberEntity,
+    PodProvisioningStatus,
 )
 
 from app.modules.identity.infrastructure.models.organization_models import (
@@ -40,6 +41,25 @@ class Pod(UUIDAuditBase):
         default=False,
         nullable=False,
         index=True,
+    )
+    provisioning_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=PodProvisioningStatus.PROVISIONING.value,
+        index=True,
+    )
+    provisioning_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+    provisioning_error_type: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    provisioning_error_code: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    provisioning_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    provisioning_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     members: Mapped[list[PodMember]] = relationship(

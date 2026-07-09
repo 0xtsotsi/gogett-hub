@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import re
 from datetime import datetime
 from typing import Any, Optional, Sequence
@@ -97,7 +99,8 @@ class DatastoreFileService:
         )
         # Resolve the search factory lazily so tests (and callers) can reassign
         # ``self.search_service_factory`` after construction.
-        search_factory_provider = lambda: self.search_service_factory
+        def search_factory_provider():
+            return self.search_service_factory
 
         reader = FileReader(
             file_repository,
@@ -154,7 +157,7 @@ class DatastoreFileService:
         self,
         pod_id: UUID,
         name: str,
-        file_content: bytes,
+        file_content: bytes | Path,
         ctx: Context,
         description: Optional[str] = None,
         metadata: Optional[dict] = None,
@@ -194,9 +197,9 @@ class DatastoreFileService:
         self,
         pod_id: UUID,
         path: str,
-        markdown_content: bytes,
+        markdown_content: bytes | Path,
         ctx: Context,
-        images: list[tuple[str, bytes]] | None = None,
+        images: list[tuple[str, bytes | Path]] | None = None,
     ) -> DatastoreFileEntity:
         """Attach/replace a user-provided markdown version of a document (plus any
         images it references), then re-queue it so the user's markdown is

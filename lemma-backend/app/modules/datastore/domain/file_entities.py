@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -193,7 +194,7 @@ class DatastoreFileUpdateEntity(BaseModel):
     metadata: dict[str, Any] | None = None
     visibility: str | None = None
     search_enabled: bool | None = None
-    content: bytes | None = None
+    content: bytes | Path | None = None
 
 
 class DatastoreFileSearchResult(BaseModel):

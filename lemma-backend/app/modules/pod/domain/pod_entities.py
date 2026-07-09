@@ -18,6 +18,13 @@ class PodJoinPolicy(str, Enum):
     PUBLIC = "PUBLIC"  # any Lemma user may self-join (auto-added to the org)
 
 
+class PodProvisioningStatus(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    PROVISIONING = "PROVISIONING"
+    READY = "READY"
+    FAILED = "FAILED"
+
+
 class PodRecipe(BaseModel):
     """A record of a bundle installed into this pod (the durable trace of an
     import; the ephemeral import job state is not kept). ``kind`` distinguishes an
@@ -100,6 +107,12 @@ class PodEntity(AggregateRoot):
     icon_url: Optional[str] = None
     config: PodConfig = Field(default_factory=PodConfig)
     is_deleted: bool = False
+    provisioning_status: PodProvisioningStatus = PodProvisioningStatus.PROVISIONING
+    provisioning_attempts: int = 0
+    provisioning_error_type: str | None = None
+    provisioning_error_code: str | None = None
+    provisioning_started_at: datetime | None = None
+    provisioning_completed_at: datetime | None = None
 
     def mark_created(self, creator_id: UUID) -> None:
         """Add pod created event to aggregate."""
@@ -123,6 +136,28 @@ class PodEntity(AggregateRoot):
             PodDeletedEvent(
                 pod_id=self.id,
                 organization_id=self.organization_id,
+            )
+        )
+
+    def retry_provisioning(self, creator_id: UUID) -> None:
+        """Reset terminal provisioning state and enqueue an idempotent repair."""
+        from app.modules.pod.domain.events import PodCreatedEvent
+
+        self.provisioning_status = PodProvisioningStatus.PROVISIONING
+        self.provisioning_attempts = 0
+        self.provisioning_error_type = None
+        self.provisioning_error_code = None
+        # The repair is queued but has not started. Leaving this unset lets the
+        # first worker claim it while fresh PROVISIONING claims suppress
+        # concurrent duplicate events.
+        self.provisioning_started_at = None
+        self.provisioning_completed_at = None
+        self.add_event(
+            PodCreatedEvent(
+                pod_id=self.id,
+                organization_id=self.organization_id,
+                creator_id=creator_id,
+                name=self.name,
             )
         )
 

@@ -317,10 +317,10 @@ class ServiceExistingResources:
         return {str(a.name or "") for a in agents}
 
     async def workflow_names(self) -> set[str]:
-        from app.modules.workflow.api.dependencies import get_flow_service
+        from app.modules.workflow.api.dependencies import get_workflow_service
 
-        service = get_flow_service(self._uow)
-        flows, _ = await service.list_flows(
+        service = get_workflow_service(self._uow)
+        flows, _ = await service.list_workflows(
             self._pod_id, limit=1000, requester_user_id=self._user_id, ctx=self._ctx
         )
         return {str(f.name or "") for f in flows}

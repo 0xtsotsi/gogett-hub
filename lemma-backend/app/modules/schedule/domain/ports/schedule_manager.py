@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+from typing import Any
 
 from app.modules.connectors.domain.account import AccountEntity
 from app.modules.connectors.domain.connector_trigger import ConnectorTriggerEntity
@@ -15,7 +15,7 @@ class ExternalScheduleManager(ABC):
         self,
         account: AccountEntity,
         app_trigger: ConnectorTriggerEntity,
-        config: dict,
+        config: dict[str, Any],
     ) -> str:
         """
         Create a schedule subscription on the external platform.
@@ -44,7 +44,7 @@ class ExternalScheduleManager(ABC):
     @abstractmethod
     async def get_schedule(
         self, account: AccountEntity, provider_id: str
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """
         Get schedule subscription details from the external platform.
 

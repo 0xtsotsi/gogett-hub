@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, Callable, Optional, Protocol, Sequence, Tuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, Sequence, Tuple
 from uuid import UUID
 
 from app.core.authorization.context import Context
@@ -20,6 +21,10 @@ from app.modules.datastore.domain.file_entities import (
     FileStatus,
     SearchMethod,
 )
+
+if TYPE_CHECKING:
+    from app.core.domain.events import DomainEvent
+    from app.modules.datastore.domain.record_entities import RecordEntity
 
 
 class DatastoreTableRepositoryPort(Protocol):
@@ -199,14 +204,31 @@ class DatastoreSchemaPort(Protocol):
 
 
 class DatastoreRecordRepositoryPort(Protocol):
-    async def create_record(self, ctx, data: dict, user_id: UUID): ...
+    async def create_record(
+        self,
+        ctx,
+        data: dict,
+        user_id: UUID,
+        *,
+        event_factory: Callable[["RecordEntity"], "DomainEvent"] | None = None,
+    ): ...
 
     async def bulk_create_records(
-        self, ctx, records: list[dict], user_id: UUID
+        self,
+        ctx,
+        records: list[dict],
+        user_id: UUID,
+        *,
+        events: list["DomainEvent"] | None = None,
     ) -> int: ...
 
     async def bulk_upsert_records(
-        self, ctx, records: list[dict], user_id: UUID
+        self,
+        ctx,
+        records: list[dict],
+        user_id: UUID,
+        *,
+        events: list["DomainEvent"] | None = None,
     ) -> int: ...
 
     async def get_record(
@@ -216,6 +238,7 @@ class DatastoreRecordRepositoryPort(Protocol):
         user_id: UUID,
         *,
         enforce_user_scope: bool = True,
+        event_factory: Callable[["RecordEntity"], "DomainEvent"] | None = None,
     ): ...
 
     async def execute_readonly_query(
@@ -237,6 +260,7 @@ class DatastoreRecordRepositoryPort(Protocol):
         filters: list[tuple[str, str, object]] | None = None,
         *,
         enforce_user_scope: bool = True,
+        event: "DomainEvent" | None = None,
     ) -> Tuple[list, int]: ...
 
     async def update_record(
@@ -259,7 +283,9 @@ class DatastoreRecordRepositoryPort(Protocol):
     ) -> bool: ...
 
 class DatastoreStoragePort(Protocol):
-    async def upload_file(self, destination_blob_name: str, file_content: bytes) -> bool: ...
+    async def upload_file(
+        self, destination_blob_name: str, file_content: bytes | Path
+    ) -> bool: ...
 
     async def download_file(self, source_blob_name: str) -> bytes: ...
 

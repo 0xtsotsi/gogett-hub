@@ -82,6 +82,23 @@ async def get_pod(
     return PodResponse.model_validate(pod)
 
 
+@router.post(
+    "/{pod_id}/provisioning/retry",
+    dependencies=[PodEditorDep],
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="pod.provisioning.retry",
+    response_model=PodResponse,
+)
+async def retry_pod_provisioning(
+    pod_id: UUID,
+    pod_service: PodServiceDep,
+    user: CurrentUser,
+    ctx: PodContextDep,
+) -> PodResponse:
+    pod = await pod_service.retry_provisioning(pod_id, user.id, ctx=ctx)
+    return PodResponse.model_validate(pod)
+
+
 @router.put(
     "/{pod_id}",
     dependencies=[PodEditorDep],

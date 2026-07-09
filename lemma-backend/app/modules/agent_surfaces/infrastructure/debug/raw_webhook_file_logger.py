@@ -8,6 +8,7 @@ from typing import Any
 import aiofiles
 
 from app.modules.agent_surfaces.config import surface_settings
+from app.core.redaction import redact_value
 
 
 def _enabled_sources() -> set[str]:
@@ -45,8 +46,8 @@ async def log_raw_webhook_event(
     record = {
         "logged_at": datetime.now(timezone.utc).isoformat(),
         "source": source,
-        "headers": headers,
-        "payload": payload,
+        "headers": redact_value(headers),
+        "payload": redact_value(payload),
     }
     async with aiofiles.open(target_file, "a", encoding="utf-8") as handle:
         await handle.write(json.dumps(record, ensure_ascii=True) + "\n")

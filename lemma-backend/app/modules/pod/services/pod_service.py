@@ -17,6 +17,7 @@ from app.modules.pod.domain.pod_entities import (
     PodMemberEntity,
     PodRole,
     PodUpdateEntity,
+    PodProvisioningStatus,
 )
 from app.modules.pod.domain.ports import (
     OrganizationMembershipPort,
@@ -97,6 +98,28 @@ class PodService:
             raise PodAccessDeniedError("User doesn't have access to this pod")
 
         return pod
+
+    async def retry_provisioning(
+        self,
+        pod_id: UUID,
+        requester_user_id: UUID,
+        *,
+        ctx: Context,
+    ) -> PodEntity:
+        pod = await self.pod_repository.get(pod_id)
+        if pod is None:
+            raise PodNotFoundError()
+        await ctx.require(
+            Permissions.POD_UPDATE,
+            ResourceRef.pod(pod_id, pod.organization_id),
+        )
+        if pod.provisioning_status not in {
+            PodProvisioningStatus.UNKNOWN,
+            PodProvisioningStatus.FAILED,
+        }:
+            return pod
+        pod.retry_provisioning(requester_user_id)
+        return await self.pod_repository.update(pod)
 
     async def update_pod(
         self,

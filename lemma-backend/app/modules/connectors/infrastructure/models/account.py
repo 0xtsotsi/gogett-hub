@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import Boolean, String, ForeignKey, Index, Text, text
@@ -10,6 +11,9 @@ from app.modules.connectors.domain.account import AccountEntity
 
 from app.modules.identity.infrastructure.models.user_models import User
 from app.modules.connectors.infrastructure.models.connector import Connector
+
+if TYPE_CHECKING:
+    from app.modules.connectors.infrastructure.models.auth_config import AuthConfig
 
 
 class Account(UUIDAuditBase):

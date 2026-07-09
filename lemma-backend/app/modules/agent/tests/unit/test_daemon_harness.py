@@ -30,6 +30,18 @@ from app.modules.agent.infrastructure.harnesses.daemon import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_daemon_capacity_cache(monkeypatch: pytest.MonkeyPatch):
+    """Unit tests must not depend on an ambient Redis at localhost:6379."""
+    import app.modules.agent.infrastructure.daemon_hub as daemon_hub_module
+
+    async def _no_capacity(*, daemon_id):
+        del daemon_id
+        return None
+
+    monkeypatch.setattr(daemon_hub_module, "get_daemon_capacity", _no_capacity)
+
+
 class _FakeWorkspaceSandboxService:
     async def get_env_vars(self, **kwargs):
         del kwargs

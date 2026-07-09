@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+from contextlib import AsyncExitStack
 from io import BytesIO
 from typing import Optional
 from urllib.parse import quote
@@ -19,7 +20,9 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 
 from app.core.api.pagination import parse_uuid_page_token
+from app.core.api.uploads import UploadBudget, stage_upload_limited
 from app.core.api.dependencies import CurrentUser
+from app.core.config import settings
 from app.core.authorization.dependencies import PodContextDep
 from app.modules.datastore.api.dependencies import FileServiceDep, FileUseCasesDep
 from app.modules.datastore.api.schemas.datastore_schemas import (
@@ -152,19 +155,22 @@ async def upload_file(
     search_enabled: bool = Form(True),
     visibility: str | None = Form(default=None),
 ) -> FileDetailResponse:
-    file_content = await data.read()
-    file_name = name or data.filename or "untitled"
-
-    file_entity = await file_service.create_file(
-        pod_id=pod_id,
-        name=file_name,
-        file_content=file_content,
-        ctx=ctx,
-        description=description,
-        directory_path=directory_path,
-        search_enabled=search_enabled,
-        visibility=visibility,
-    )
+    async with stage_upload_limited(
+        data,
+        max_bytes=settings.datastore_upload_max_bytes,
+        field="file",
+    ) as staged:
+        file_name = name or data.filename or "untitled"
+        file_entity = await file_service.create_file(
+            pod_id=pod_id,
+            name=file_name,
+            file_content=staged.path,
+            ctx=ctx,
+            description=description,
+            directory_path=directory_path,
+            search_enabled=search_enabled,
+            visibility=visibility,
+        )
     return await _file_detail_response(file_entity, user.id)
 
 
@@ -290,25 +296,39 @@ async def update_file(
 ) -> FileDetailResponse:
     form = await request.form()
     provided_fields = set(form.keys())
-    file_content = await data.read() if data is not None else None
+    async with AsyncExitStack() as uploads:
+        staged = (
+            await uploads.enter_async_context(
+                stage_upload_limited(
+                    data,
+                    max_bytes=settings.datastore_upload_max_bytes,
+                    field="file",
+                )
+            )
+            if data is not None
+            else None
+        )
 
-    update_payload: dict[str, object | None] = {}
-    update_payload["path"] = path
-    if "visibility" in provided_fields:
-        update_payload["visibility"] = visibility
-    if "new_path" in provided_fields:
-        update_payload["new_path"] = new_path
-    if "description" in provided_fields:
-        update_payload["description"] = description
-    if "search_enabled" in provided_fields:
-        update_payload["search_enabled"] = search_enabled
-    if data is not None:
-        update_payload["content"] = file_content
+        update_payload: dict[str, object | None] = {}
+        update_payload["path"] = path
+        if "visibility" in provided_fields:
+            update_payload["visibility"] = visibility
+        if "new_path" in provided_fields:
+            update_payload["new_path"] = new_path
+        if "description" in provided_fields:
+            update_payload["description"] = description
+        if "search_enabled" in provided_fields:
+            update_payload["search_enabled"] = search_enabled
+        if staged is not None:
+            update_payload["content"] = staged.path
 
-    update_entity = DatastoreFileUpdateEntity(**update_payload)
-    file_entity = await use_cases.update_file(
-        pod_id=pod_id, update_entity=update_entity, request=request, user_id=user.id
-    )
+        update_entity = DatastoreFileUpdateEntity(**update_payload)
+        file_entity = await use_cases.update_file(
+            pod_id=pod_id,
+            update_entity=update_entity,
+            request=request,
+            user_id=user.id,
+        )
     response = await _file_detail_response(file_entity, user.id)
     _ensure_file_in_pod(response, pod_id)
     return response
@@ -330,29 +350,43 @@ async def attach_document_markdown(
     path: str = Form(...),
     images: list[UploadFile] = File(default=[]),
 ) -> FileDetailResponse:
-    """Attach (or replace) a user-authored markdown version of a document, plus
-    any images it references.
+    """Attach user-authored markdown and referenced images to a document.
 
-    The uploaded markdown becomes the document's agent-facing ``document.md`` and
-    is chunked/indexed on the original's behalf; the source file is unchanged.
-    Each uploaded image is stored as a sibling child artifact so a reference like
-    ``![](fig1.png)`` resolves through the children endpoint — send the images
-    under repeated ``images`` fields, named to match the markdown references.
-    Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+    The source file remains unchanged; the markdown is indexed for agent use.
     """
-    markdown_content = await data.read()
-    image_files = [
-        (image.filename or "image", await image.read())
-        for image in images
-        if image is not None
-    ]
-    file_entity = await file_service.attach_user_markdown(
-        pod_id=pod_id,
-        path=path,
-        markdown_content=markdown_content,
-        ctx=ctx,
-        images=image_files,
+    budget = UploadBudget(
+        max_bytes=settings.datastore_markdown_batch_max_bytes,
+        field="markdown batch",
     )
+    async with AsyncExitStack() as uploads:
+        markdown = await uploads.enter_async_context(
+            stage_upload_limited(
+                data,
+                max_bytes=settings.datastore_markdown_max_bytes,
+                field="markdown",
+                budget=budget,
+            )
+        )
+        image_files = []
+        for image in images:
+            if image is None:
+                continue
+            staged_image = await uploads.enter_async_context(
+                stage_upload_limited(
+                    image,
+                    max_bytes=settings.datastore_markdown_image_max_bytes,
+                    field="markdown image",
+                    budget=budget,
+                )
+            )
+            image_files.append((image.filename or "image", staged_image.path))
+        file_entity = await file_service.attach_user_markdown(
+            pod_id=pod_id,
+            path=path,
+            markdown_content=markdown.path,
+            ctx=ctx,
+            images=image_files,
+        )
     return await _file_detail_response(file_entity, user.id)
 
 

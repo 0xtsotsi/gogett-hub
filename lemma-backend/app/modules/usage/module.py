@@ -19,12 +19,6 @@ def _routers():
     return [usage]
 
 
-def _event_routers():
-    from app.modules.usage.events.handlers import router
-
-    return [router]
-
-
 @asynccontextmanager
 async def _pricing_coverage_lifespan(_app: "FastAPI") -> AsyncIterator[None]:
     """Warn at startup when a configured system:lemma model has no usage price.
@@ -59,6 +53,5 @@ async def _pricing_coverage_lifespan(_app: "FastAPI") -> AsyncIterator[None]:
 module = LemmaModule(
     name="usage",
     routers=_routers,
-    event_routers=_event_routers,
     api_lifespans=(_pricing_coverage_lifespan,),
 )

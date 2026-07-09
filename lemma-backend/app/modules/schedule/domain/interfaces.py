@@ -151,6 +151,7 @@ class ScheduleEventPublisher(ABC):
         payload: Dict[str, Any],
         metadata: Optional[Dict[str, Any]] = None,
         llm_output: Optional[Dict[str, Any]] = None,
+        source_event_id: str | None = None,
     ) -> None:
         """Publish a ScheduleFired event."""
         pass
@@ -165,6 +166,7 @@ class ScheduleFilterTaskQueue(ABC):
         schedule_id: UUID,
         payload: Dict[str, Any],
         metadata: Dict[str, Any],
+        source_event_id: str,
     ) -> None:
         """Enqueue background LLM filter work for a schedule."""
         pass

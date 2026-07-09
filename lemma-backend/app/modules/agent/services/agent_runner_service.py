@@ -15,7 +15,6 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttribu
 from opentelemetry import trace
 from app.core.config import settings
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
-from app.core.infrastructure.events.publisher import EventPublisher
 from app.core.log.log import get_logger
 from app.core.observability.telemetry import agent_run_telemetry_context
 from app.modules.agent.domain.entities import Agent, AgentRun, Conversation, Message
@@ -23,10 +22,7 @@ from app.modules.agent.domain.errors import (
     AgentNotFoundError,
     ConversationNotFoundError,
 )
-from app.modules.agent.domain.events import (
-    AGENT_EVENTS_STREAM,
-    AgentRunCompletedEvent,
-)
+from app.modules.agent.domain.events import AgentRunCompletedEvent
 from app.modules.agent.domain.value_objects import (
     AgentEvent,
     AgentEventType,
@@ -110,9 +106,9 @@ async def _finalize_safely(coro: Awaitable[None], *, agent_run_id: UUID) -> None
         )
     except Exception as exc:
         logger.error(
-            "Agent run finalization failed run=%s: %s",
+            "Agent run finalization failed run=%s error_type=%s",
             agent_run_id,
-            exc,
+            type(exc).__name__,
             exc_info=True,
         )
 
@@ -818,6 +814,8 @@ class AgentRunnerService:
         usage_reservation: UsageReservation | None = None,
     ) -> None:
         try:
+            event: AgentRunCompletedEvent | None = None
+            event_data: JsonObject = {}
             async with self.uow_factory() as uow:
                 finish_result = await ConversationRepository(uow).finish_agent_run(
                     agent_run_id=agent_run_id,
@@ -826,25 +824,27 @@ class AgentRunnerService:
                     error=error,
                     output_data=output_data,
                 )
+                if finish_result is not None and finish_result.updated:
+                    status = finish_result.status
+                    conversation_status = finish_result.conversation_status
+                    if status == AgentRunStatus.STOPPED:
+                        error = None
+                    if error:
+                        event_data["error"] = error
+                    if output_data is not None:
+                        event_data["output_data"] = output_data
+                    event_data["conversation_status"] = conversation_status.value
+                    event = AgentRunCompletedEvent(
+                        conversation_id=conversation_id,
+                        agent_run_id=agent_run_id,
+                        status=status,
+                        data=event_data or None,
+                    )
+                    uow.collect_events([event])
             if finish_result is None or not finish_result.updated:
                 await self.usage_recorder.release(usage_reservation)
                 return
-            status = finish_result.status
-            conversation_status = finish_result.conversation_status
-            if status == AgentRunStatus.STOPPED:
-                error = None
-            event_data: JsonObject = {}
-            if error:
-                event_data["error"] = error
-            if output_data is not None:
-                event_data["output_data"] = output_data
-            event_data["conversation_status"] = conversation_status.value
-            event = AgentRunCompletedEvent(
-                conversation_id=conversation_id,
-                agent_run_id=agent_run_id,
-                status=status,
-                data=event_data or None,
-            )
+            assert event is not None
             if status == AgentRunStatus.FAILED:
                 await publish_conversation_event(
                     conversation_id,
@@ -859,7 +859,6 @@ class AgentRunnerService:
                     data=event_data or None,
                 ),
             )
-            await self._publish_lifecycle_event(event)
             await self._publish_usage_event(
                 conversation_id=conversation_id,
                 agent_run_id=agent_run_id,
@@ -875,20 +874,20 @@ class AgentRunnerService:
             )
         except Exception as exc:
             logger.error(
-                "Failed to finalize agent run run=%s: %s", agent_run_id, exc, exc_info=True
+                "Failed to finalize agent run run=%s error_type=%s",
+                agent_run_id,
+                type(exc).__name__,
+                exc_info=True,
             )
             try:
                 await self.usage_recorder.release(usage_reservation)
             except Exception as release_exc:
                 logger.warning(
-                    "Failed to release usage reservation run=%s: %s",
+                    "Failed to release usage reservation run=%s error_type=%s",
                     agent_run_id,
-                    release_exc,
+                    type(release_exc).__name__,
                 )
-            return
-
-    async def _publish_lifecycle_event(self, event: object) -> None:
-        await EventPublisher.publish(AGENT_EVENTS_STREAM, event)
+            raise
 
     async def _publish_usage_event(
         self,

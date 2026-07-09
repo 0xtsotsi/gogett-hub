@@ -8,9 +8,12 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 
 from app.core.api.dependencies import CurrentUser
+from app.core.api.uploads import read_upload_limited
+from app.core.config import settings
 from app.modules.agent.tools.file_access import sniff_image_mime
 from app.modules.icon.api.schemas import IconUploadResponse
 from app.modules.icon.services.icon_service import IconService
+from app.modules.icon.services.raster_validation import validate_raster_icon
 
 router = APIRouter(tags=["icons"])
 
@@ -36,7 +39,13 @@ async def upload_icon(
     user: CurrentUser,
     file: UploadFile = File(...),
 ) -> IconUploadResponse:
-    file_content = await file.read()
+    file_content = (
+        await read_upload_limited(
+            file,
+            max_bytes=settings.icon_upload_max_bytes,
+            field="icon",
+        )
+    ).data
     if not file_content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -51,6 +60,18 @@ async def upload_icon(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only PNG, JPEG, GIF, WEBP, or BMP icons are supported",
         )
+    try:
+        validate_raster_icon(
+            file_content,
+            detected_media_type=sniffed_type,
+            max_dimension=settings.icon_max_dimension_pixels,
+            max_pixels=settings.icon_max_total_pixels,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded icon is malformed or has unsafe trailing content",
+        ) from exc
 
     service = IconService(public_base_url=str(request.base_url).rstrip("/"))
     uploaded = await service.upload_icon(

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from app.modules.schedule.domain.interfaces import ScheduleEventPublisher
 from app.modules.schedule.domain.schedule import ScheduleEntity
 from app.modules.schedule.infrastructure.adapters.schedule_event_publisher import (
-    RedisScheduleEventPublisher,
+    DurableScheduleEventPublisher,
 )
 from app.modules.schedule.services.schedule_filter_service import ScheduleFilterService
 from app.modules.usage.domain.errors import UsageLimitExceededError
@@ -25,7 +25,7 @@ class ScheduleProcessor:
         event_publisher: ScheduleEventPublisher | None = None,
     ):
         self.filter_service = filter_service or ScheduleFilterService()
-        self.event_publisher = event_publisher or RedisScheduleEventPublisher()
+        self.event_publisher = event_publisher or DurableScheduleEventPublisher()
 
     async def process_event(
         self,
@@ -33,6 +33,7 @@ class ScheduleProcessor:
         schedule: ScheduleEntity | None = None,
         payload: Dict[str, Any],
         metadata: Optional[Dict[str, Any]] = None,
+        source_event_id: str | None = None,
     ) -> bool:
         """Process schedule event and publish when accepted."""
         if schedule is None:
@@ -57,14 +58,18 @@ class ScheduleProcessor:
                     return False
             except UsageLimitExceededError:
                 raise
-            except Exception as e:
-                logger.error("Error in LLM filter for schedule %s: %s", schedule.id, e)
-                return False
+            except Exception:
+                logger.exception(
+                    "Retryable LLM filter failure",
+                    schedule_id=str(schedule.id),
+                )
+                raise
 
         await self.event_publisher.publish_schedule_fired(
             schedule=schedule,
             payload=payload,
             metadata=metadata,
             llm_output=llm_output,
+            source_event_id=source_event_id,
         )
         return True

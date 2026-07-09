@@ -20,6 +20,9 @@ from app.modules.datastore.services.file_service import DatastoreFileService
 from app.modules.datastore.services.record_service import RecordService
 from app.modules.datastore.services.table_service import TableService
 from app.modules.datastore.infrastructure.storage import create_datastore_storage
+from app.modules.datastore.infrastructure.transactional_events import (
+    dispatch_datastore_outbox_once,
+)
 from app.modules.pod.services.authorization_factory import create_authorization_service
 from app.modules.identity.infrastructure.user_repositories import UserRepository
 
@@ -73,6 +76,8 @@ def build_record_service(uow) -> RecordService:
         message_bus=message_bus,
         authorization_service=create_authorization_service(uow),
         user_repository=UserRepository(uow, message_bus=message_bus),
+        transactional_events=True,
+        event_dispatcher=dispatch_datastore_outbox_once,
     )
 
 

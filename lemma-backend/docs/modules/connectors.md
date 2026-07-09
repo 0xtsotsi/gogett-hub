@@ -76,4 +76,3 @@ credential encryption/refresh, catalog import, and operation timeouts. Current
 unit coverage is 70.9% (2,237 of 3,155 statements). Error redaction,
 credential-response, dynamic schema compilation, and oversized-service findings
 are listed in [issues.md](issues.md).
-

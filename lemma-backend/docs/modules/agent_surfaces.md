@@ -82,4 +82,3 @@ for platform parsing, signatures, conversation reuse, identity, attachments,
 approvals/forms, progress, and delivery. Current unit coverage is 65.8% (5,629
 of 8,556 statements). Its legacy in-module README has stale route examples;
 event-loss, complexity, and boundary findings are in [issues.md](issues.md).
-

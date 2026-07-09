@@ -73,4 +73,3 @@ Tests cover lifecycle, host routing, public serving, storage compensation,
 archive handling, HTML/SDK injection, CORS, and release deduplication. Current
 unit coverage is 73.6% (732 of 994 statements). Multipart memory limits and
 advisory-only validation are discussed in [issues.md](issues.md).
-

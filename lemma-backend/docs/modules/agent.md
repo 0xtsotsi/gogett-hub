@@ -81,4 +81,3 @@ runtime profiles, daemon reconnection, MCP, widgets, usage, subagents, and
 mocked/real harness paths. Current unit coverage is 63.2% (5,339 of 8,444
 statements). Large orchestration classes and cross-module coupling are tracked
 in [issues.md](issues.md).
-

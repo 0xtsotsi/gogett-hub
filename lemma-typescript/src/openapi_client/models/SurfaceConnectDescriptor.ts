@@ -17,4 +17,3 @@ export type SurfaceConnectDescriptor = {
     supports_org_custom_oauth?: boolean;
     system_oauth_available?: boolean;
 };
-

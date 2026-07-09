@@ -71,4 +71,3 @@ Tests cover CRUD, custom roles, join policy, resource grants, authorization
 hardening, delegation, and event behavior. Current unit coverage is 62.0%
 (1,062 of 1,714 statements). See [issues.md](issues.md) for provisioning and
 module-coupling findings.
-

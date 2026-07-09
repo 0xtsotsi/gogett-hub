@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /lemma-backend
+    schedule:
+      interval: weekly
+    groups:
+      backend-python:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /lemma-python
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /lemma-typescript
+    schedule:
+      interval: weekly
+    groups:
+      typescript-sdk:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /lemma-frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /lemma-backend
+    schedule:
+      interval: weekly

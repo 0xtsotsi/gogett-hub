@@ -6,4 +6,3 @@ import type { AvailableSurface } from './AvailableSurface.js';
 export type AvailableSurfacesResponse = {
     surfaces?: Array<AvailableSurface>;
 };
-

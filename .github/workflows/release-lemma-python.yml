@@ -11,6 +11,7 @@ on:
         required: true
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -27,6 +28,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Require fresh backend protected E2E
+        uses: ./.github/actions/require-backend-protected-e2e
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          sha: ${{ github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -64,4 +64,3 @@ Tests cover normalization, filters, adapters, CRUD, scheduler calls, and event
 consumers. Current unit coverage is the lowest installed module at 54.2%
 (1,049 of 1,935 statements). Duplicate-fire and silent-filter-failure risks are
 tracked in [issues.md](issues.md).
-

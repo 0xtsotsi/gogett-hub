@@ -75,4 +75,3 @@ Unit and e2e tests cover organization lifecycle, SuperTokens configuration,
 profile behavior, and invitation flows. Current unit coverage is 60.6% (995 of
 1,642 statements). Security-sensitive gaps and secret-handling findings are in
 [issues.md](issues.md).
-

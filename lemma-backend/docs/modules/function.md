@@ -79,4 +79,3 @@ Tests cover schemas, file management, event projection, permission revocation,
 timeouts, retries, cancellation, AgentBox execution, and workflow completion
 events. Current unit coverage is 61.4% (989 of 1,611 statements). See
 [issues.md](issues.md) for coverage and boundary findings.
-

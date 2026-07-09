@@ -41,4 +41,3 @@ Tests cover upload validation, public retrieval, traversal rejection, headers,
 and cleanup. Current unit coverage is 84.0% (126 of 150 statements), the
 highest module. The absence of an upload byte limit is tracked in
 [issues.md](issues.md).
-

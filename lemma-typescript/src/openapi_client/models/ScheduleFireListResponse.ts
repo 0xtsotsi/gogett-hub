@@ -7,4 +7,3 @@ export type ScheduleFireListResponse = {
     items: Array<ScheduleFireResponse>;
     limit: number;
 };
-

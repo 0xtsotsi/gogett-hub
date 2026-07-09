@@ -58,4 +58,3 @@ Tests cover pricing, reservations, fallback pricing, limits, queries, and API
 authorization. Current unit coverage is 64.7% (542 of 838 statements). Atomic
 limit-enforcement and low test-file-count findings are in
 [issues.md](issues.md).
-

@@ -27,6 +27,7 @@ env:
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
@@ -35,8 +36,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  protected-e2e-gate:
+    name: Require fresh backend protected E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Verify protected evidence
+        uses: ./.github/actions/require-backend-protected-e2e
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          sha: ${{ github.sha }}
+
   build:
     name: Build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    needs: protected-e2e-gate
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false

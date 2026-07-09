@@ -78,4 +78,3 @@ document processing, recovery, signed URLs, WebSockets, and e2e CRUD. Current
 unit coverage is 66.5% (4,316 of 6,487 statements); one MarkItDown unit test is
 skipped when the optional package is absent. Upload-memory and event-reliability
 findings are in [issues.md](issues.md).
-

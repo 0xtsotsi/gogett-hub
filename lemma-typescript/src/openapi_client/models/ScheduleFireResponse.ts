@@ -21,4 +21,3 @@ export type ScheduleFireResponse = {
     target_run_id?: (string | null);
     updated_at: string;
 };
-

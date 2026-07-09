@@ -66,4 +66,3 @@ Tests cover retry boundaries, fake AgentBox behavior, browser access, session
 lifecycle, cache expiry/invalidation, process bindings, and real Docker runtime
 smoke paths. Current unit coverage is 67.2% (845 of 1,257 statements). Plaintext
 token caching and module-boundary findings are in [issues.md](issues.md).
-

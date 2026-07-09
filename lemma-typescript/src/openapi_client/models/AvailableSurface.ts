@@ -23,4 +23,3 @@ export type AvailableSurface = {
     supported_credential_modes: Array<SurfaceCredentialMode>;
     title?: (string | null);
 };
-

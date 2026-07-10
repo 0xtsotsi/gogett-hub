@@ -49,7 +49,9 @@ async def client(icon_app: FastAPI):
 
 
 @pytest.mark.asyncio
-async def test_upload_icon_persists_file_and_public_endpoint_serves_it(client: AsyncClient):
+async def test_upload_icon_persists_file_and_public_endpoint_serves_it(
+    client: AsyncClient,
+):
     image_bytes = _png_bytes()
 
     upload_response = await client.post(
@@ -83,7 +85,10 @@ async def test_upload_icon_rejects_non_image_upload(client: AsyncClient):
     )
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert response.json()["detail"] == "Only PNG, JPEG, GIF, WEBP, or BMP icons are supported"
+    assert (
+        response.json()["detail"]
+        == "Only PNG, JPEG, GIF, WEBP, or BMP icons are supported"
+    )
 
 
 @pytest.mark.asyncio
@@ -137,14 +142,19 @@ async def test_upload_icon_rejects_malformed_and_polyglot_raster(client: AsyncCl
 
     polyglot = await client.post(
         "/icons/upload",
-        files={"file": ("polyglot.png", _png_bytes() + b"<script>x</script>", "image/png")},
+        files={
+            "file": ("polyglot.png", _png_bytes() + b"<script>x</script>", "image/png")
+        },
     )
     assert polyglot.status_code == status.HTTP_400_BAD_REQUEST
 
 
 @pytest.mark.asyncio
 async def test_get_public_icon_returns_404_for_missing_icon(client: AsyncClient):
-    response = await client.get("/public/icons/icons/missing.png")
+    response = await client.get(
+        "/public/icons/icons/22222222-2222-4222-8222-222222222222/"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+    )
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
     assert response.json()["detail"] == "Icon not found"

@@ -11,6 +11,24 @@ from xml.etree import ElementTree
 
 
 COMMENT_MARKER_PREFIX = "lemma-backend-coverage"
+BACKEND_MODULES = frozenset(
+    {
+        "agent",
+        "agent_surfaces",
+        "apps",
+        "connectors",
+        "datastore",
+        "function",
+        "icon",
+        "identity",
+        "pod",
+        "pod_bundle",
+        "schedule",
+        "usage",
+        "workflow",
+        "workspace",
+    }
+)
 
 
 def comment_marker(phase: str) -> str:
@@ -280,7 +298,12 @@ def build_overall_summary(
         ),
     }
     module_names = sorted(
-        {row["name"] for phase in phases.values() for row in phase["modules"]}
+        {
+            row["name"]
+            for phase in phases.values()
+            for row in phase["modules"]
+            if row["name"] in BACKEND_MODULES
+        }
     )
 
     module_rows: list[dict[str, Any]] = []

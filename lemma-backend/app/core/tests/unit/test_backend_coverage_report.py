@@ -137,7 +137,13 @@ def test_overall_report_is_one_module_wise_unit_e2e_and_combined_table():
             "files": {
                 "app/modules/agent/runtime.py": {
                     "summary": {"num_statements": 10, "missing_lines": missing}
-                }
+                },
+                "app/app.py": {
+                    "summary": {"num_statements": 2, "missing_lines": 1}
+                },
+                "app/core/message_bus.py": {
+                    "summary": {"num_statements": 2, "missing_lines": 1}
+                },
             },
             "totals": {
                 "covered_lines": covered,
@@ -159,6 +165,8 @@ def test_overall_report_is_one_module_wise_unit_e2e_and_combined_table():
     assert reporter.comment_marker("overall") in markdown
     assert "| Module | Unit | E2E only | Combined |" in markdown
     assert "| agent | 60.0% | 80.0% | 90.0% |" in markdown
+    assert "| app.py |" not in markdown
+    assert "| core |" not in markdown
     assert "Lowest-Covered Files" not in markdown
     assert "Tests:" not in markdown
     assert "Gates:" not in markdown

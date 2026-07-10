@@ -20,10 +20,7 @@ import {
 } from "@/lib/pods/onboarding-skip";
 import {
   useCreateOrganization,
-  useJoinSuggestedOrganization,
   useMyOrganizationInvitations,
-  useOrganizationSlugAvailability,
-  useSuggestedOrganizations,
 } from "@/lib/hooks/use-organizations";
 import { useAccessiblePods } from "@/lib/hooks/use-pods";
 import { useProfile, useUpdateProfile } from "@/lib/hooks/use-user";
@@ -36,12 +33,8 @@ import {
   OrganizationInvitationStatus,
   OrganizationJoinPolicy,
   type Organization,
+  type Pod,
 } from "@/lib/types";
-import {
-  normalizeEmailDomain,
-  slugifyOrganizationName,
-  workDomainFromEmail,
-} from "@/lib/utils/organization-slugs";
 import {
   FIRST_RUN_DELIGHT,
   buildRecipeConversationHref,
@@ -50,18 +43,19 @@ import {
 
 import { SetupChrome, SetupShell } from "./account-onboarding-chrome";
 import {
-  buildPodDescription,
   buildPromptFromIntent,
-  defaultWorkspaceName,
-  derivePodNameFromIntent,
   inferFullName,
+  podNameForAudience,
   personalWorkspaceName,
   setupStepsForAudience,
   splitName,
   startRecipesForAudience,
+  teamLabelForKind,
+  teamWorkspaceName,
   type Audience,
   type ConnectChoice,
   type SetupStep,
+  type TeamKind,
 } from "./account-onboarding-helpers";
 import {
   AudienceStep,
@@ -70,7 +64,7 @@ import {
   IdentityStep,
   InvitationsStep,
   StartStep,
-  WorkspaceStep,
+  TeamStep,
 } from "./account-onboarding-steps";
 
 export function AccountOnboarding({
@@ -120,19 +114,15 @@ export function AccountOnboarding({
     !hasLastOpenedPod &&
     !hasSkippedFirstPod &&
     isProfileComplete &&
-    !needsOrganization &&
     !isLoadingPods &&
     pendingInvitations.length === 0 &&
-    organizations.length > 0 &&
     pods.length === 0;
   const [setupActive, setSetupActive] = useState(false);
   const nextSetupStep: SetupStep = needsProfile
     ? "identity"
-    : needsOrganization
+    : needsOrganization || needsFirstPod
       ? "audience"
-      : needsFirstPod
-        ? "start"
-        : "audience";
+      : "audience";
   const setupInitialStep: SetupStep =
     setupActive || needsFirstPod ? nextSetupStep : "boot";
 
@@ -167,7 +157,6 @@ export function AccountOnboarding({
     return (
       <SetupAssistant
         profile={profile}
-        organizations={organizations}
         initialOrganization={currentOrg || organizations[0] || null}
         initialAudience={organizations.length > 0 ? "team" : null}
         startStep={nextSetupStep}
@@ -183,7 +172,6 @@ export function AccountOnboarding({
 
 function SetupAssistant({
   profile,
-  organizations,
   initialOrganization,
   initialAudience,
   startStep,
@@ -197,7 +185,6 @@ function SetupAssistant({
     last_name?: string | null;
     full_name?: string | null;
   } | null;
-  organizations: Organization[];
   initialOrganization: Organization | null;
   initialAudience: Audience | null;
   startStep: SetupStep;
@@ -209,30 +196,23 @@ function SetupAssistant({
   const queryClient = useQueryClient();
   const updateProfile = useUpdateProfile();
   const createOrganization = useCreateOrganization();
-  const joinSuggestedOrganization = useJoinSuggestedOrganization();
   const createAgentRuntime = useCreateAgentRuntime();
   const updatePodDefaultRuntime = useUpdatePodDefaultAgentRuntime();
-  const suggestedOrganizations = useSuggestedOrganizations({
-    enabled: Boolean(profile?.email) && organizations.length === 0,
-  });
-  const suggestedOrganization = suggestedOrganizations.data?.items?.[0] || null;
   const email = profile?.email || "";
-  const workDomain = workDomainFromEmail(email);
-  const normalizedWorkDomain = normalizeEmailDomain(workDomain);
   const inferredName = inferFullName(profile);
   const [step, setStep] = useState<SetupStep>(initialStep);
   const [createdOrganization, setCreatedOrganization] =
     useState<Organization | null>(null);
+  const [basePod, setBasePod] = useState<Pod | null>(null);
   const [isCreatingPod, setIsCreatingPod] = useState(false);
   const [isConnectingAi, setIsConnectingAi] = useState(false);
   const [connectedProfileId, setConnectedProfileId] = useState<string | null>(
     null,
   );
   const [identityName, setIdentityName] = useState(inferredName);
-  const [workspaceName, setWorkspaceName] = useState(
-    defaultWorkspaceName(inferredName),
-  );
   const [audience, setAudience] = useState<Audience | null>(initialAudience);
+  const [teamKind, setTeamKind] = useState<TeamKind | null>("support");
+  const [customTeamName, setCustomTeamName] = useState("");
   const startRecipes = useMemo(
     () => startRecipesForAudience(audience ?? "personal"),
     [audience],
@@ -241,16 +221,6 @@ function SetupAssistant({
     () => startRecipesForAudience(initialAudience ?? "personal")[0]?.id ?? "",
   );
   const [customIntent, setCustomIntent] = useState("");
-  const [allowDomainJoin, setAllowDomainJoin] = useState(
-    Boolean(normalizedWorkDomain),
-  );
-  const slug = useMemo(
-    () => slugifyOrganizationName(workspaceName),
-    [workspaceName],
-  );
-  const slugAvailability = useOrganizationSlugAvailability(slug, {
-    enabled: step === "workspace" && !suggestedOrganization && slug.length > 2,
-  });
   const activeOrganization = createdOrganization || initialOrganization;
 
   useEffect(() => {
@@ -258,10 +228,6 @@ function SetupAssistant({
       setStep(initialStep);
     }
   }, [initialStep, step]);
-
-  useEffect(() => {
-    setAllowDomainJoin(Boolean(normalizedWorkDomain));
-  }, [normalizedWorkDomain]);
 
   const goTo = (nextStep: SetupStep) => {
     onSetupStart();
@@ -285,7 +251,6 @@ function SetupAssistant({
       {
         onSuccess: () => {
           toast.success("Operator profile saved");
-          setWorkspaceName(defaultWorkspaceName(identityName));
           goTo("audience");
         },
         onError: (error) =>
@@ -294,70 +259,88 @@ function SetupAssistant({
     );
   };
 
-  const handleAudienceSelect = (value: Audience) => {
-    setAudience(value);
-    setCustomIntent("");
-    setSelectedRecipeId(startRecipesForAudience(value)[0]?.id ?? "");
-    // Solo users skip workspace setup entirely — their workspace is created
-    // silently when the first pod lands.
-    goTo(value === "team" ? "workspace" : "connect");
-  };
+  const resolveTeamName = (kind = teamKind, customName = customTeamName) =>
+    teamLabelForKind(kind, customName);
 
-  const handleJoinSuggested = () => {
-    if (!suggestedOrganization) return;
-
-    joinSuggestedOrganization.mutate(suggestedOrganization.id, {
-      onSuccess: (organization) => {
-        toast.success(`Joined ${organization.name}`);
-        setCreatedOrganization(organization);
-        onOrganizationReady(organization);
-        // Members joining an existing workspace may already have accessible
-        // pods. Route to home and let the root gate decide whether to open an
-        // existing pod or fall through to pod setup, instead of always forcing
-        // first-pod creation.
-        router.replace("/home");
-      },
-      onError: (error) =>
-        toast.error(`Could not join workspace: ${error.message}`),
-    });
-  };
-
-  const handleCreateWorkspace = () => {
-    const useDomainJoin = allowDomainJoin && Boolean(normalizedWorkDomain);
-    createOrganization.mutate(
-      {
-        name: workspaceName.trim(),
-        join_policy: useDomainJoin
-          ? OrganizationJoinPolicy.EMAIL_DOMAIN
-          : OrganizationJoinPolicy.INVITE_ONLY,
-        email_domain: useDomainJoin ? normalizedWorkDomain : null,
-      },
-      {
-        onSuccess: (organization) => {
-          toast.success(`${organization.name} created`);
-          setCreatedOrganization(organization);
-          onOrganizationReady(organization);
-          goTo("connect");
-        },
-        onError: (error) =>
-          toast.error(`Failed to create workspace: ${error.message}`),
-      },
-    );
-  };
-
-  // Solo users never name a workspace. Make sure one exists before the pod
-  // lands, creating it quietly if needed.
-  const ensureOrganization = async (): Promise<Organization | null> => {
+  const ensureOrganization = async (
+    audienceForPod: Audience,
+    teamName = "",
+  ): Promise<Organization | null> => {
     if (activeOrganization) return activeOrganization;
 
     const organization = await createOrganization.mutateAsync({
-      name: personalWorkspaceName(identityName),
+      name:
+        audienceForPod === "personal"
+          ? personalWorkspaceName(identityName)
+          : teamWorkspaceName(teamName),
       join_policy: OrganizationJoinPolicy.INVITE_ONLY,
       email_domain: null,
     });
     setCreatedOrganization(organization);
     onOrganizationReady(organization);
     return organization;
+  };
+
+  const createBasePod = async (
+    audienceForPod: Audience,
+    teamName = "",
+  ): Promise<Pod | null> => {
+    setIsCreatingPod(true);
+    try {
+      const organization = await ensureOrganization(audienceForPod, teamName);
+      if (!organization) {
+        toast.error("Could not prepare your workspace");
+        return null;
+      }
+
+      const podName = podNameForAudience(audienceForPod, teamName);
+      const pod = await getLemmaClient().pods.create({
+        name: podName,
+        description:
+          audienceForPod === "personal"
+            ? "Personal pod created during onboarding. Add recipes, agents, apps, and automations here."
+            : `${teamName || "Team"} pod created during onboarding. Add recipes, agents, apps, and automations here.`,
+        organization_id: organization.id,
+      });
+      setBasePod(pod);
+      queryClient.invalidateQueries({ queryKey: ["pods"] });
+      toast.success(`${pod.name} created`);
+      return pod;
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Failed to create pod";
+      toast.error(message);
+      return null;
+    } finally {
+      setIsCreatingPod(false);
+    }
+  };
+
+  const handleAudienceSelect = async (value: Audience) => {
+    setAudience(value);
+    setCustomIntent("");
+    setSelectedRecipeId(startRecipesForAudience(value)[0]?.id ?? "");
+
+    if (value === "team") {
+      goTo("team");
+      return;
+    }
+
+    const pod = await createBasePod("personal");
+    if (pod) goTo("connect");
+  };
+
+  const handleTeamContinue = async () => {
+    const teamName = resolveTeamName();
+    if (!teamName.trim()) {
+      toast.error("Choose or name a team first");
+      return;
+    }
+
+    const pod = await createBasePod("team", teamName);
+    if (pod) goTo("connect");
   };
 
   const handleConnectContinue = async (choice: ConnectChoice) => {
@@ -368,12 +351,14 @@ function SetupAssistant({
 
     setIsConnectingAi(true);
     try {
-      const organization = await ensureOrganization();
+      const teamName = resolveTeamName();
+      const organization = await ensureOrganization(audience ?? "personal", teamName);
       if (!organization) {
         toast.error("Could not prepare your workspace");
         return;
       }
 
+      let runtimeProfileId: string | null = null;
       if (choice.kind === "daemon") {
         const profile = await createAgentRuntime.mutateAsync({
           organizationId: organization.id,
@@ -386,6 +371,7 @@ function SetupAssistant({
             default_model_name: choice.modelName || undefined,
           },
         });
+        runtimeProfileId = profile.id;
         setConnectedProfileId(profile.id);
         toast.success(`${choice.displayName} connected`);
       } else {
@@ -410,8 +396,16 @@ function SetupAssistant({
                   model_names: choice.modelNames,
                 },
         });
+        runtimeProfileId = profile.id;
         setConnectedProfileId(profile.id);
         toast.success(`${choice.name} saved`);
+      }
+
+      if (basePod && runtimeProfileId) {
+        await updatePodDefaultRuntime.mutateAsync({
+          podId: basePod.id,
+          runtime: { profile_id: runtimeProfileId, model_name: null },
+        });
       }
       goTo("start");
     } catch (error) {
@@ -426,11 +420,54 @@ function SetupAssistant({
   };
 
   const handleSkipFirstPod = () => {
+    if (basePod) {
+      router.push(`/pod/${basePod.id}`);
+      return;
+    }
+
     markOnboardingSkippedFirstPod();
     router.replace("/home");
   };
 
-  const handleCreateFromStart = async () => {
+  const requireBasePod = () => {
+    if (basePod) return basePod;
+    toast.error("Create a pod first");
+    goTo(audience === "team" ? "team" : "audience");
+    return null;
+  };
+
+  const openBuildConversation = (pod: Pod, message: string, metadataIntent: string) => {
+    const params = new URLSearchParams({
+      assistantMessage: message,
+      conversationInstructions: [
+        FIRST_RUN_DELIGHT,
+        `The pod already exists: ${pod.name}. Do not create another pod. Use the user-visible message as the goal and build inside the current pod. Inspect existing resources first, reuse anything that fits, seed believable sample data, and wire any surface or connector that fits how they already work.`,
+      ].join("\n\n"),
+      conversationMetadata: JSON.stringify({
+        source: "onboarding",
+        intent: metadataIntent,
+        first_run: true,
+        pod_id: pod.id,
+      }),
+    });
+    router.push(`/pod/${pod.id}/conversations/new?${params.toString()}`);
+  };
+
+  const handleBuildWithLemma = () => {
+    const pod = requireBasePod();
+    if (!pod) return;
+
+    openBuildConversation(
+      pod,
+      `Help me build the first useful capability inside ${pod.name}. If you need context, ask one short question, then make a working first version.`,
+      "build_with_lemma",
+    );
+  };
+
+  const handleCreateFromStart = () => {
+    const pod = requireBasePod();
+    if (!pod) return;
+
     // A typed brief always wins over a preselected card.
     const intentText = customIntent.trim();
     const recipe = intentText ? null : getRecipeById(selectedRecipeId);
@@ -439,72 +476,39 @@ function SetupAssistant({
       return;
     }
 
-    setIsCreatingPod(true);
-    try {
-      const organization = await ensureOrganization();
-      if (!organization) {
-        toast.error("Could not prepare your workspace");
-        return;
-      }
+    if (recipe) {
+      router.push(
+        buildRecipeConversationHref(pod.id, recipe, {
+          podName: pod.name,
+          mode: recipe.source.kind === "repo" ? "install" : undefined,
+          firstRun: true,
+        }),
+      );
+      return;
+    }
 
-      if (recipe) {
-        const pod = await getLemmaClient().pods.create({
-          name: recipe.name,
-          description: recipe.blurb,
-          organization_id: organization.id,
-        });
-        toast.success(`${pod.name} created`);
-        queryClient.invalidateQueries({ queryKey: ["pods"] });
-        if (connectedProfileId) {
-          await updatePodDefaultRuntime.mutateAsync({
-            podId: pod.id,
-            runtime: { profile_id: connectedProfileId, model_name: null },
-          });
-        }
-        router.push(
-          buildRecipeConversationHref(pod.id, recipe, {
-            podName: pod.name,
-            mode: recipe.source.kind === "repo" ? "customize" : undefined,
-            firstRun: true,
-          }),
-        );
-        return;
-      }
-
-      const pod = await getLemmaClient().pods.create({
-        name: derivePodNameFromIntent(intentText),
-        description: buildPodDescription(intentText, "ai"),
-        organization_id: organization.id,
+    if (connectedProfileId) {
+      void updatePodDefaultRuntime.mutateAsync({
+        podId: pod.id,
+        runtime: { profile_id: connectedProfileId, model_name: null },
       });
-      toast.success(`${pod.name} created`);
-      queryClient.invalidateQueries({ queryKey: ["pods"] });
-      if (connectedProfileId) {
-        await updatePodDefaultRuntime.mutateAsync({
-          podId: pod.id,
-          runtime: { profile_id: connectedProfileId, model_name: null },
-        });
-      }
+    }
+
+    if (intentText) {
       const params = new URLSearchParams({
         assistantMessage: buildPromptFromIntent(intentText),
         conversationInstructions: [
           FIRST_RUN_DELIGHT,
-          "Use the user-visible message as the goal. Propose and build the smallest useful first version, seed believable sample data, and wire any surface or connector that fits how they already work.",
+          `The pod already exists: ${pod.name}. Do not create another pod. Use the user-visible message as the goal and build the smallest useful first version inside the current pod. Seed believable sample data and wire any surface or connector that fits how they already work.`,
         ].join("\n\n"),
         conversationMetadata: JSON.stringify({
           source: "onboarding",
-          intent: "create_resource",
+          intent: "build_inside_existing_pod",
           first_run: true,
+          pod_id: pod.id,
         }),
       });
       router.push(`/pod/${pod.id}/conversations/new?${params.toString()}`);
-    } catch (error) {
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : "Failed to create pod";
-      toast.error(message);
-    } finally {
-      setIsCreatingPod(false);
     }
   };
 
@@ -550,23 +554,20 @@ function SetupAssistant({
       ) : step === "audience" ? (
         <AudienceStep
           audience={audience}
+          isSaving={isCreatingPod}
+          savingAudience="personal"
           onSelect={handleAudienceSelect}
           onBack={handleBack}
           steps={orderedSteps}
         />
-      ) : step === "workspace" ? (
-        <WorkspaceStep
-          domain={workDomain}
-          suggestedOrganization={suggestedOrganization}
-          workspaceName={workspaceName}
-          slugAvailable={slugAvailability.data?.available}
-          allowDomainJoin={allowDomainJoin}
-          isJoining={joinSuggestedOrganization.isPending}
-          isCreating={createOrganization.isPending}
-          onWorkspaceNameChange={setWorkspaceName}
-          onAllowDomainJoinChange={setAllowDomainJoin}
-          onJoinSuggested={handleJoinSuggested}
-          onCreateWorkspace={handleCreateWorkspace}
+      ) : step === "team" ? (
+        <TeamStep
+          teamKind={teamKind}
+          customTeamName={customTeamName}
+          isCreating={isCreatingPod}
+          onTeamKindChange={setTeamKind}
+          onCustomTeamNameChange={setCustomTeamName}
+          onContinue={handleTeamContinue}
           onBack={handleBack}
           steps={orderedSteps}
         />
@@ -580,10 +581,11 @@ function SetupAssistant({
       ) : (
         <StartStep
           audience={audience ?? "personal"}
+          podName={basePod?.name ?? podNameForAudience(audience ?? "personal", resolveTeamName())}
           recipes={startRecipes}
           selectedRecipeId={selectedRecipeId}
           customIntent={customIntent}
-          isCreating={isCreatingPod}
+          isCreating={false}
           onSelectRecipe={(id) => {
             setCustomIntent("");
             setSelectedRecipeId(id);
@@ -593,6 +595,7 @@ function SetupAssistant({
             // Typing overrides a card; clearing restores the default pick.
             setSelectedRecipeId(value.trim() ? "" : startRecipes[0]?.id ?? "");
           }}
+          onBuildWithLemma={handleBuildWithLemma}
           onContinue={handleCreateFromStart}
           onSkip={handleSkipFirstPod}
           onBack={handleBack}

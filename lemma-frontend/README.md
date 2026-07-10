@@ -42,7 +42,7 @@ default.
 | `NEXT_PUBLIC_SESSION_TOKEN_DOMAIN` | _(empty)_ | Cookie domain for the session. Set to your apex domain (e.g. `.example.com`) only when serving from that domain; leave empty on `localhost`. |
 | `NEXT_PUBLIC_SHARED_SESSION_DOMAIN` | _(unset)_ | Apex domain to share a login across sibling subdomains (e.g. desk apps). Leave unset for single-host cookies. |
 | `NEXT_PUBLIC_APPS_DOMAIN_SUFFIX` | _(unset)_ | Domain suffix under which pod desk apps are served (e.g. `apps.example.com`). Optional. |
-| `NEXT_PUBLIC_SUPPORT_EMAIL` | `deepak@lemma.work` | Contact address shown on legal pages and support links. |
+| `NEXT_PUBLIC_SUPPORT_EMAIL` | `info@webrnds.com` | Contact address shown on legal pages and support links. |
 | `NEXT_PUBLIC_APP_NAME` | `Lemma Auth` | Display name used by the auth portal. |
 
 These values are read at runtime (not baked in at build time), so the same build

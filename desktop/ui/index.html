@@ -337,7 +337,7 @@
       <button class="choice" id="choose-cloud" type="button">
         <span class="flag">nothing to install</span>
         <strong>Lemma Cloud</strong>
-        <span>Your workspace runs on lemma.work. Fastest way in — switch
+        <span>Your workspace runs on gogett.webrnds.com. Fastest way in — switch
         to local any time from the menu.</span>
       </button>
     </div>
@@ -607,7 +607,7 @@
   document.getElementById("choose-cloud").addEventListener("click", () => {
     hideChooser();
     say("Taking you to Lemma Cloud.");
-    truth.textContent = "lemma.work";
+    truth.textContent = "gogett.webrnds.com";
     window.lemmaDesktop.setConnectionMode("hosted");
   });
 

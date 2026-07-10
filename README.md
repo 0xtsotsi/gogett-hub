@@ -7,11 +7,11 @@
 ![License](https://img.shields.io/github/license/lemma-work/lemma-platform)
 ![Release](https://img.shields.io/github/v/release/lemma-work/lemma-platform)
 ![Build](https://img.shields.io/github/actions/workflow/status/lemma-work/lemma-platform/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-lemma.work-blue)](https://lemma.work)
+[![Docs](https://img.shields.io/badge/docs-gogett-blue)](https://gogett.webrnds.com)
 
-[Quickstart](#quickstart) · [Inside a pod](#inside-a-pod) · [Why Lemma](#chat-is-not-where-work-lives) · [Surfaces](#use-it-from-anywhere) · [Coding agents](#the-back-layer-for-your-coding-agents) · [Docs](https://lemma.work)
+[Quickstart](#quickstart) · [Inside a pod](#inside-a-pod) · [Why Lemma](#chat-is-not-where-work-lives) · [Surfaces](#use-it-from-anywhere) · [Coding agents](#the-back-layer-for-your-coding-agents) · [Docs](https://gogett.webrnds.com)
 
-Website → **[lemma.work](https://lemma.work)**
+Website → **[gogett](https://gogett.webrnds.com)**
 
 </div>
 
@@ -55,16 +55,16 @@ The breakout AI products already point this way. Gamma turns a prompt into an ed
 
 ## Local-first, no lock-in
 
-- **The Mac app.** Download Lemma, open it, and choose at first run: keep everything on your machine, or connect to the **lemma.work** cloud. Same product either way, and you can change your mind later.
+- **The Mac app.** Download Lemma, open it, and choose at first run: keep everything on your machine, or connect to the **gogett** cloud at **gogett.webrnds.com**. Same product either way, and you can change your mind later.
 - **Your machine.** The full stack runs self-contained on your laptop — one command on any OS with Docker or Podman. Your data never leaves unless you wire it somewhere.
-- **Our cloud, when you want it.** [lemma.work](https://lemma.work) runs the same open-source stack — for when you want your pod reachable by teammates and surfaces without hosting anything.
+- **Our cloud, when you want it.** [gogett.webrnds.com](https://gogett.webrnds.com) runs the same open-source stack — for when you want your pod reachable by teammates and surfaces without hosting anything.
 - **Your subscription.** Already pay for Claude or ChatGPT? Lemma agents can run through your local **Claude Code or Codex logins** — no separate API key, no per-token bill.
 - **Your keys, your models.** Or bring any **Anthropic-compatible or OpenAI-compatible** key or endpoint — a cloud provider, a self-hosted gateway, or a local model behind an OpenAI-compatible server. Runtime profiles are configured per pod, so different agents can run on different models.
 - **Your code.** Core is [AGPLv3](LICENSE); SDKs and CLI are [Apache-2.0](LICENSES/Apache-2.0.txt).
 
 ## Quickstart
 
-**Easiest — use it with the coding agent you already have.** Sign up at **[lemma.work/start](https://lemma.work/start)**, install the CLI, and drop Lemma's skills into your agent:
+**Easiest — use it with the coding agent you already have.** Sign up at **[gogett.webrnds.com/start](https://gogett.webrnds.com/start)**, install the CLI, and drop Lemma's skills into your agent:
 
 ```bash
 uv tool install lemma-terminal

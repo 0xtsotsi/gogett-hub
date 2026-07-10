@@ -6,8 +6,9 @@ name: Backend E2E (mocked)
 # Real streaq workers are part of hermetic PR E2E. Only slow, Docker workspace,
 # live-provider, local-CLI, and real-indexing tests stay in protected CI.
 #
-# The suite is sharded across runners, each serial, so it finishes in ~3min and
-# is reliable (no within-runner container contention).
+# The suite is sharded across runners. Most shards stay serial; the 100+ journey
+# surfaces shard uses two fully isolated xdist workers to remain under ten
+# minutes without creating extra jobs or comments.
 #
 # Trigger model: runs automatically once the "CI" workflow (unit tests etc.)
 # SUCCEEDS for a PR — so the container-heavy e2e only spins up after the cheap
@@ -52,9 +53,9 @@ jobs:
       # Run every shard even if one fails, so one red shard doesn't mask others.
       fail-fast: false
       matrix:
-        # The fast suite is sharded across runners, each serial (E2E_WORKERS=1):
-        # parallelism is across machines, not xdist workers within one machine —
-        # which sidesteps the shared-container contention that makes -n2 flaky.
+        # The fast suite is sharded across runners. Only surfaces uses two xdist
+        # workers; E2E support namespaces its containers, database, Redis, storage,
+        # fake providers, and streaq subprocess per worker.
         # Each shard runs the normal fast e2e command under coverage, scoped by
         # E2E_ARGS; the union of all shard args equals the whole fast suite, with
         # `rest` a catch-all via --ignore so a new module's e2e tests are never
@@ -65,17 +66,24 @@ jobs:
         suite:
           - name: surfaces
             args: app/modules/agent_surfaces/tests/e2e
+            workers: 2
           - name: agent
             args: app/modules/agent/tests/e2e
+            workers: 1
           - name: function
             args: app/modules/function/tests/e2e
+            workers: 1
           - name: pod
             args: app/modules/pod/tests/e2e
+            workers: 1
           - name: datastore
             args: app/modules/datastore/tests/e2e app/modules/apps/tests/e2e
+            workers: 1
           - name: connectors
             args: app/modules/connectors/tests/e2e app/modules/schedule/tests/e2e
+            workers: 1
           - name: rest
+            workers: 1
             args: >-
               app/modules app/core
               --ignore=app/modules/agent/tests/e2e
@@ -100,14 +108,13 @@ jobs:
           enable-cache: true
       - name: Sync deps
         run: uv sync
-      # Every shard runs serially (E2E_WORKERS=1) on its own runner; the shards
-      # run in parallel, so the gate's wall-clock is the slowest shard, not their
-      # sum. E2E_ARGS scopes each shard to its module paths.
+      # Shards run in parallel, so wall-clock is the slowest shard, not their sum.
+      # E2E_ARGS scopes each shard; matrix workers keeps surfaces below ten minutes.
       - name: E2E tests with coverage (mocked LLM + fake AgentBox)
         run: >-
           make coverage-backend-e2e-shard
           E2E_ARGS="${{ matrix.suite.args }}"
-          E2E_WORKERS=1
+          E2E_WORKERS=${{ matrix.suite.workers }}
           COVERAGE_PHASE=e2e-${{ matrix.suite.name }}
       - name: Upload backend e2e coverage
         if: always()

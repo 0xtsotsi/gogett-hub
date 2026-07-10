@@ -7,6 +7,7 @@ import os
 import subprocess
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,6 +22,20 @@ _DEFAULT_READINESS_MARKERS = (
     "`HandleAgentRunEvent` waiting for messages",
     "`HandleScheduleEvents` waiting for messages",
 )
+
+
+@dataclass(frozen=True)
+class ProductionWorkerProcess:
+    """Running production worker plus bounded diagnostics for E2E failures."""
+
+    process: subprocess.Popen[str]
+    log_path: Path
+
+    def read_log_tail(self, *, max_characters: int = 30_000) -> str:
+        content = _read_log(self.log_path)
+        if len(content) <= max_characters:
+            return content
+        return "[earlier worker output omitted]\n" + content[-max_characters:]
 
 
 def _read_log(path: Path) -> str:
@@ -38,7 +53,7 @@ async def production_worker_process(
     extra_env: Mapping[str, str] | None = None,
     readiness_markers: Sequence[str] = _DEFAULT_READINESS_MARKERS,
     startup_attempts: int = 600,
-) -> AsyncIterator[subprocess.Popen[str]]:
+) -> AsyncIterator[ProductionWorkerProcess]:
     """Start the same worker entrypoint used in production with hermetic I/O.
 
     Module suites provide only their fake-provider URLs and adapter selection.
@@ -116,7 +131,7 @@ async def production_worker_process(
             )
 
         try:
-            yield process
+            yield ProductionWorkerProcess(process=process, log_path=log_path)
         finally:
             process.terminate()
             try:

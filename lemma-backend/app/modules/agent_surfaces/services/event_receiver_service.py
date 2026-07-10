@@ -166,11 +166,14 @@ class NativeSurfaceReceiverCoordinator:
                     pass
                 self._wakeup.clear()
         finally:
-            await self.stop()
+            await self._shutdown()
 
     async def stop(self) -> None:
+        """Signal shutdown; the active run loop owns resource release."""
         self._stopping = True
         self._wakeup.set()
+
+    async def _shutdown(self) -> None:
         if self._listener_task is not None:
             self._listener_task.cancel()
             await asyncio.gather(self._listener_task, return_exceptions=True)
@@ -199,9 +202,7 @@ class NativeSurfaceReceiverCoordinator:
             if key in self._tasks and not self._tasks[key].done():
                 continue
             if await self._acquire_lease(key):
-                self._tasks[key] = asyncio.create_task(
-                    self._run_leased_receiver(candidate)
-                )
+                self._tasks[key] = asyncio.create_task(self._run_leased_receiver(candidate))
 
     async def _load_candidates(self) -> list[NativeReceiverCandidate]:
         platforms: set[SurfacePlatform] = set()
@@ -636,4 +637,3 @@ async def _publish_native_receiver_event(
         receiver_surface_ids=list(surface_ids) if surface_ids else None,
     )
     await EventPublisher.publish(event.stream_name(), event)
-

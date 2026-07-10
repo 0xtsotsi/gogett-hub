@@ -540,7 +540,7 @@ async def test_surface_credentials_are_unique_within_org_until_deleted(
         f"/pods/{sibling_pod_id}/surfaces",
         json={"platform": "WHATSAPP"},
     )
-    assert duplicate_system.status_code == 400, duplicate_system.text
+    assert duplicate_system.status_code == 422, duplicate_system.text
     assert "System WHATSAPP credentials are already used" in duplicate_system.text
 
     deleted_system = await authenticated_client.delete(
@@ -579,7 +579,7 @@ async def test_surface_credentials_are_unique_within_org_until_deleted(
         f"/pods/{sibling_pod_id}/surfaces",
         json={"platform": "SLACK", "account_id": str(account.id)},
     )
-    assert duplicate_account.status_code == 400, duplicate_account.text
+    assert duplicate_account.status_code == 422, duplicate_account.text
     assert "connected account is already used" in duplicate_account.text
 
     deleted_account = await authenticated_client.delete(

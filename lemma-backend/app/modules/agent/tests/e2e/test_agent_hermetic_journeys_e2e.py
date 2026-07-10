@@ -293,7 +293,13 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
                 "profile_id": runtime["id"],
                 "model_name": "mock-safe-model",
             },
-            "toolsets": ["TODO", "WORKSPACE_CLI"],
+            "toolsets": [
+                "TODO",
+                "WORKSPACE_CLI",
+                "VIEW_IMAGE",
+                "SKILLS",
+                "SPEECH",
+            ],
         },
     )
     assert agent.status_code == status.HTTP_201_CREATED, agent.text
@@ -312,7 +318,62 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
             },
             tool_call_id="shell-1",
         ),
-        script_text("Todo and workspace tools completed."),
+        script_tool_call(
+            "execute_python",
+            {
+                "code": (
+                    "import base64\n"
+                    "from pathlib import Path\n"
+                    "Path('pixel.png').write_bytes(base64.b64decode("
+                    "'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z2S8AAAAASUVORK5CYII='))\n"
+                    "print(21 * 2)"
+                ),
+                "comment": "Create an inspectable image and compute a value",
+            },
+            tool_call_id="python-1",
+        ),
+        script_tool_call(
+            "view_image",
+            {"workspace_file_path": "pixel.png"},
+            tool_call_id="image-1",
+        ),
+        script_tool_call(
+            "manage_process",
+            {"action": "list", "comment": "Check tracked processes"},
+            tool_call_id="process-list-1",
+        ),
+        script_tool_call(
+            "manage_process",
+            {"action": "input", "chars": ""},
+            tool_call_id="process-invalid-1",
+        ),
+        script_tool_call(
+            "exec_command",
+            {"cmd": "exit 7", "comment": "Exercise a user-command failure"},
+            tool_call_id="shell-failure-1",
+        ),
+        script_tool_call("list_skills", {}, tool_call_id="skills-list-1"),
+        script_tool_call(
+            "load_skill",
+            {"name": "browser"},
+            tool_call_id="skill-load-1",
+        ),
+        script_tool_call(
+            "load_skill",
+            {"name": "does-not-exist"},
+            tool_call_id="skill-missing-1",
+        ),
+        script_tool_call(
+            "say",
+            {"text": "Hermetic spoken response"},
+            tool_call_id="speech-say-1",
+        ),
+        script_tool_call(
+            "listen",
+            {"file_path": "missing-audio.ogg"},
+            tool_call_id="speech-listen-1",
+        ),
+        script_text("Todo, workspace, skills, and speech tools completed."),
     ]
     conversation = await authenticated_client.post(
         f"/pods/{pod_id}/conversations",
@@ -343,18 +404,37 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
     assert messages.status_code == status.HTTP_200_OK, messages.text
     items = messages.json()["items"]
     tool_calls = {
-        item["tool_name"]: item
-        for item in items
-        if item["kind"] == "TOOL_CALL"
+        item["tool_name"]: item for item in items if item["kind"] == "TOOL_CALL"
     }
     tool_returns = {
-        item["tool_name"]: item
-        for item in items
-        if item["kind"] == "TOOL_RETURN"
+        item["tool_name"]: item for item in items if item["kind"] == "TOOL_RETURN"
     }
-    assert {"write_todos", "exec_command"} <= tool_calls.keys()
+    tool_returns_by_id = {
+        item["tool_call_id"]: item for item in items if item["kind"] == "TOOL_RETURN"
+    }
+    assert {
+        "write_todos",
+        "exec_command",
+        "execute_python",
+        "view_image",
+        "manage_process",
+        "list_skills",
+        "load_skill",
+        "say",
+        "listen",
+    } <= tool_calls.keys()
     assert tool_returns["write_todos"]["tool_result"]["success"] is True
-    assert "workspace-proof" in str(tool_returns["exec_command"]["tool_result"])
+    assert "workspace-proof" in str(tool_returns_by_id["shell-1"]["tool_result"])
+    assert tool_returns_by_id["shell-failure-1"]["tool_result"]["success"] is False
+    assert "42" in str(tool_returns["execute_python"]["tool_result"])
+    assert tool_returns["view_image"]["tool_result"]
+    assert tool_returns["list_skills"]["tool_result"]["success"] is True
+    assert tool_returns_by_id["skill-load-1"]["tool_result"]["success"] is True
+    assert tool_returns_by_id["skill-missing-1"]["tool_result"]["success"] is False
+    assert tool_returns_by_id["process-list-1"]["tool_result"]["success"] is True
+    assert tool_returns_by_id["process-invalid-1"]["tool_result"]["success"] is False
+    assert tool_returns["say"]["tool_result"]["success"] is False
+    assert tool_returns["listen"]["tool_result"]["success"] is False
 
     persisted = await authenticated_client.get(
         f"/pods/{pod_id}/conversations/{conversation_id}"

@@ -280,6 +280,13 @@ def e2e_settings(test_database_url, test_redis_url, supertokens_container):
     settings.e2e_sandbox_mode = sandbox_mode
     os.environ["E2E_LLM_MODE"] = llm_mode
     os.environ["E2E_SANDBOX_MODE"] = sandbox_mode
+    if llm_mode == "mock":
+        # system:lemma normally requires an operator credential and model
+        # catalog. The deterministic FunctionModel never contacts that
+        # provider, but profile resolution still exercises the production path.
+        os.environ.setdefault("LEMMA_OPENAI_API_KEY", "e2e-mock-key-not-used")
+        os.environ.setdefault("LEMMA_OPENAI_DEFAULT_MODEL", "e2e-mock-model")
+        os.environ.setdefault("LEMMA_OPENAI_MODEL_NAMES", "e2e-mock-model")
 
     # A single Kreuzberg is shared across all xdist workers (see datastore
     # conftest); under concurrent indexing load it can briefly stall or be
@@ -339,10 +346,19 @@ def _start_fake_agentbox(port: int) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_workspace_containers_session():
-    # Clean stale containers from prior interrupted runs.
-    _cleanup_e2e_workspace_containers()
+    # A broad stale-container sweep is safe only in a serial session. Under
+    # xdist, a sibling worker may already own an e2e-labeled Postgres/Redis
+    # container; sweeping by the shared label would kill its live stack.
+    parallel_worker = bool(os.environ.get("PYTEST_XDIST_WORKER"))
+    if not parallel_worker:
+        _cleanup_e2e_workspace_containers()
     yield
-    _cleanup_e2e_workspace_containers()
+    # Close exactly the contexts created by this pytest process. Their context
+    # managers remove their own containers and network without touching a
+    # sibling worker's resources.
+    _close_shared_contexts()
+    if not parallel_worker:
+        _cleanup_e2e_workspace_containers()
 
 
 @pytest_asyncio.fixture(scope="function", autouse=True)

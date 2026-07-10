@@ -31,7 +31,7 @@ class ProductionWorkerProcess:
     process: subprocess.Popen[str]
     log_path: Path
 
-    def read_log_tail(self, *, max_characters: int = 30_000) -> str:
+    def read_log_tail(self, *, max_characters: int = 200_000) -> str:
         content = _read_log(self.log_path)
         if len(content) <= max_characters:
             return content

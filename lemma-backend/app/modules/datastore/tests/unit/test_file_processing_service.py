@@ -143,9 +143,13 @@ async def test_process_file_async_writes_child_container_and_indexes_chunks():
         content_path=ANY,
     )
     service.search_service.index_file_chunks.assert_awaited_once()
-    assert service.search_service.index_file_chunks.await_args.args[2]["source"] == "test"
+    assert (
+        service.search_service.index_file_chunks.await_args.args[2]["source"] == "test"
+    )
     # Child artifacts are colocated under the source file's hidden container.
-    uploaded_paths = [call.args[0] for call in service.storage.upload_file.await_args_list]
+    uploaded_paths = [
+        call.args[0] for call in service.storage.upload_file.await_args_list
+    ]
     assert uploaded_paths == [
         f"pods/{pod_id}/files/manuals/.scan.pdf/document.md",
         f"pods/{pod_id}/files/manuals/.scan.pdf/image_0.png",
@@ -257,7 +261,9 @@ async def test_process_file_async_user_markdown_with_companion_images():
     await service.process_file_async(file_id)
 
     service.document_processor.extract.assert_not_awaited()
-    uploaded = {c.args[0]: c.args[1] for c in service.storage.upload_file.await_args_list}
+    uploaded = {
+        c.args[0]: c.args[1] for c in service.storage.upload_file.await_args_list
+    }
     prefix = f"pods/{pod_id}/files/manuals/.scan.pdf"
     # document.md + re-persisted source.md + the companion image + manifest.
     assert set(uploaded) == {
@@ -463,9 +469,7 @@ async def test_process_file_async_indexes_personal_file_when_search_enabled():
     await service.process_file_async(file_id)
 
     # The original was streamed (not buffered) from the right storage key.
-    assert streamed_keys == [
-        f"pods/{pod_id}/files/{owner_user_id}/private.txt"
-    ]
+    assert streamed_keys == [f"pods/{pod_id}/files/{owner_user_id}/private.txt"]
     service.document_processor.extract.assert_awaited_once()
     service.search_service.index_file_chunks.assert_awaited_once()
     service.search_service.remove_file.assert_not_awaited()
@@ -499,8 +503,14 @@ async def test_process_file_async_uses_latest_file_metadata_over_stale_job_metad
 
     await service.process_file_async(file_id, {"source": "stale"})
 
-    assert service.search_service.index_file_chunks.await_args.args[2]["source"] == "latest"
-    assert service.search_service.index_file_chunks.await_args.args[2]["editor"] == "frontend"
+    assert (
+        service.search_service.index_file_chunks.await_args.args[2]["source"]
+        == "latest"
+    )
+    assert (
+        service.search_service.index_file_chunks.await_args.args[2]["editor"]
+        == "frontend"
+    )
     # Three short UoWs: get_model, claim_for_processing, mark_completed.
     assert factory.opened == 3
 
@@ -655,6 +665,17 @@ async def test_process_file_async_marks_failed_in_own_uow_on_error():
     # get_model + claim + mark_failed, all closed.
     assert factory.opened == 3
     assert factory.active == 0
+
+
+def test_processing_error_summary_never_persists_provider_payload():
+    canary = "CANARY_DATASTORE_PROVIDER_SECRET"
+
+    summary = DatastoreFileProcessingService._sanitize_error(
+        RuntimeError(f"provider response api_key={canary}")
+    )
+
+    assert summary == "RuntimeError: document processing failed"
+    assert canary not in summary
 
 
 @pytest.mark.asyncio

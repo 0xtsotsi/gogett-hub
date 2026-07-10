@@ -1,7 +1,9 @@
 """Datastore-local transactional event staging."""
 
 import asyncio
+from typing import cast
 
+from sqlalchemy import Table
 from sqlalchemy.dialects.postgresql import insert
 
 from app.core.domain.events import DomainEvent
@@ -28,9 +30,8 @@ async def ensure_datastore_event_outbox() -> None:
         if _outbox_ready:
             return
         async with get_datastore_engine().begin() as connection:
-            await connection.run_sync(
-                DomainEventOutbox.__table__.create, checkfirst=True
-            )
+            outbox_table = cast(Table, DomainEventOutbox.__table__)
+            await connection.run_sync(outbox_table.create, checkfirst=True)
         _outbox_ready = True
 
 
@@ -61,20 +62,25 @@ async def dispatch_datastore_outbox_once() -> int:
 
 async def stage_domain_events(session, events: list[DomainEvent]) -> None:
     """Write record events in the same datastore transaction as row changes."""
-    for event in events:
-        await session.execute(
-            insert(DomainEventOutbox)
-            .values(
-                id=event.event_id,
-                stream=event.stream_name(),
-                event_type=event.event_type,
-                schema_version=event.schema_version,
-                producer=event.producer,
-                payload=event.model_dump(mode="json"),
-                occurred_at=event.occurred_at,
-                correlation_id=event.correlation_id,
-                causation_id=event.causation_id,
-                request_id=event.request_id,
-            )
-            .on_conflict_do_nothing(index_elements=["id"])
-        )
+    if not events:
+        return
+    rows = [
+        {
+            "id": event.event_id,
+            "stream": event.stream_name(),
+            "event_type": event.event_type,
+            "schema_version": event.schema_version,
+            "producer": event.producer,
+            "payload": event.model_dump(mode="json"),
+            "occurred_at": event.occurred_at,
+            "correlation_id": event.correlation_id,
+            "causation_id": event.causation_id,
+            "request_id": event.request_id,
+        }
+        for event in events
+    ]
+    await session.execute(
+        insert(DomainEventOutbox)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=["id"])
+    )

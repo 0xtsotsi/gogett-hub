@@ -55,3 +55,7 @@ def test_required_e2e_allows_hermetic_worker_scenarios() -> None:
     assert "not workspace" in fast_filter
     assert "not provider" in fast_filter
     assert "not protected" in fast_filter
+
+    conftest = (_REPO_ROOT / "lemma-backend/conftest.py").read_text()
+    workspace_fixtures = conftest.split("WORKSPACE_FIXTURES =", 1)[1].split("}", 1)[0]
+    assert '"backend_server"' not in workspace_fixtures

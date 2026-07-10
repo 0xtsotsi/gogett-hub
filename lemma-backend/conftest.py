@@ -29,7 +29,6 @@ os.environ.setdefault("AGENTBOX_API_KEY", "test-agentbox-key")
 os.environ.setdefault("AGENTBOX_API_URL", "http://localhost:9999")
 
 WORKSPACE_FIXTURES = {
-    "backend_server",
     "configure_workspace_api_url",
     "workspace_image",
     "_configure_function_workspace_api_url",

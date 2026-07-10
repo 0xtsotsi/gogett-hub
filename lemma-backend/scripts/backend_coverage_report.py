@@ -280,11 +280,7 @@ def build_overall_summary(
         ),
     }
     module_names = sorted(
-        {
-            row["name"]
-            for phase in phases.values()
-            for row in phase["modules"]
-        }
+        {row["name"] for phase in phases.values() for row in phase["modules"]}
     )
 
     module_rows: list[dict[str, Any]] = []
@@ -304,9 +300,7 @@ def build_overall_summary(
 
     return {
         "phase": "overall",
-        "missing_coverage": any(
-            phase["missing_coverage"] for phase in phases.values()
-        ),
+        "missing_coverage": any(phase["missing_coverage"] for phase in phases.values()),
         "unit": phases["unit"],
         "e2e": phases["e2e"],
         "combined": phases["combined"],
@@ -327,27 +321,10 @@ def _total_cell(summary: dict[str, Any]) -> str:
 
 
 def render_overall_markdown(summary: dict[str, Any]) -> str:
-    lines = [comment_marker("overall"), "## Backend Coverage", ""]
-    lines.append(
-        "_Authoritative module-wise coverage for the complete unit suite, "
-        "the union of every E2E shard, and both suites combined._"
-    )
-    lines.append("")
-
-    unit_tests = summary["unit"]["tests"]
-    e2e_tests = summary["e2e"]["tests"]
-    lines.append(
-        "**Tests:** "
-        f"{unit_tests['tests']} unit "
-        f"({unit_tests['failures']} failed, {unit_tests['errors']} errors, "
-        f"{unit_tests['skipped']} skipped); "
-        f"{e2e_tests['tests']} E2E "
-        f"({e2e_tests['failures']} failed, {e2e_tests['errors']} errors, "
-        f"{e2e_tests['skipped']} skipped)"
-    )
-    lines.append("")
-    lines.append(
-        _table(
+    return (
+        comment_marker("overall")
+        + "\n"
+        + _table(
             ["Module", "Unit", "E2E only", "Combined"],
             [
                 [
@@ -367,16 +344,8 @@ def render_overall_markdown(summary: dict[str, Any]) -> str:
                 ],
             ],
         )
+        + "\n"
     )
-    lines.extend(
-        [
-            "",
-            "**Gates:** combined overall ≥70%; combined schedule ≥65%; "
-            "changed code ≥90%; E2E-only agent, agent_surfaces, datastore, "
-            "and function ≥80%.",
-        ]
-    )
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def _paths_from_glob(patterns: list[str]) -> list[Path]:

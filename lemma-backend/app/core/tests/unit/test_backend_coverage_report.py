@@ -6,7 +6,9 @@ from pathlib import Path
 
 
 def _load_reporter():
-    script = Path(__file__).resolve().parents[4] / "scripts" / "backend_coverage_report.py"
+    script = (
+        Path(__file__).resolve().parents[4] / "scripts" / "backend_coverage_report.py"
+    )
     spec = importlib.util.spec_from_file_location("backend_coverage_report", script)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -52,7 +54,9 @@ def test_backend_coverage_report_groups_modules_and_escapes_markdown(tmp_path):
         '<testsuite tests="3" failures="0" errors="0" skipped="1" time="1.2" />'
     )
 
-    summary = reporter.build_summary(coverage, phase="e2e-surfaces", junit_paths=[junit])
+    summary = reporter.build_summary(
+        coverage, phase="e2e-surfaces", junit_paths=[junit]
+    )
     markdown = reporter.render_markdown(summary)
 
     assert summary["modules"] == [
@@ -156,6 +160,9 @@ def test_overall_report_is_one_module_wise_unit_e2e_and_combined_table():
     assert "| Module | Unit | E2E only | Combined |" in markdown
     assert "| agent | 60.0% | 80.0% | 90.0% |" in markdown
     assert "Lowest-Covered Files" not in markdown
+    assert "Tests:" not in markdown
+    assert "Gates:" not in markdown
+    assert "Backend Coverage" not in markdown
 
 
 def test_backend_coverage_report_cli_writes_markdown_and_summary(tmp_path):

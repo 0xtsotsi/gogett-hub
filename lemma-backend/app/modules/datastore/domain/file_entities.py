@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -70,7 +71,7 @@ class DatastoreFileEntity(AggregateRoot):
             return self.mime_type
         if self.is_folder:
             return "application/x-directory"
-        from app.modules.agent.domain.file_entities import get_content_type
+        from app.core.file_types import get_content_type
 
         return get_content_type(self.name)
 
@@ -193,7 +194,7 @@ class DatastoreFileUpdateEntity(BaseModel):
     metadata: dict[str, Any] | None = None
     visibility: str | None = None
     search_enabled: bool | None = None
-    content: bytes | None = None
+    content: bytes | Path | None = None
 
 
 class DatastoreFileSearchResult(BaseModel):

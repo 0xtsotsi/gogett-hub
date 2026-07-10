@@ -22,6 +22,7 @@ COPY lemma-backend/pyproject.toml lemma-backend/uv.lock ./
 
 # Copy local path dependencies and repo-native skills.
 COPY agentbox-client /agentbox-client
+COPY lemma-pod-bundle /lemma-pod-bundle
 COPY lemma-backend/lemma-connectors ./lemma-connectors
 COPY lemma-skills ./lemma-skills
 

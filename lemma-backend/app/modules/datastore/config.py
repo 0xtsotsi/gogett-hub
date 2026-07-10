@@ -19,8 +19,17 @@ from app.core.settings_env import dotenv_path
 
 class DatastoreSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=dotenv_path(), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+        env_file=dotenv_path(),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
     )
+
+    # API upload limits
+    datastore_upload_max_bytes: int = Field(default=100 * 1024 * 1024)
+    datastore_markdown_max_bytes: int = Field(default=25 * 1024 * 1024)
+    datastore_markdown_image_max_bytes: int = Field(default=10 * 1024 * 1024)
+    datastore_markdown_batch_max_bytes: int = Field(default=50 * 1024 * 1024)
 
     # Ad-hoc SQL query guardrails
     datastore_query_role: str = Field(
@@ -314,7 +323,6 @@ class DatastoreSettings(BaseSettings):
             "secrets.token_urlsafe(9) yields a 12-character code."
         ),
     )
-
 
     def effective_document_processor(self) -> str:
         """Resolve ``document_processor`` to a concrete adapter name.

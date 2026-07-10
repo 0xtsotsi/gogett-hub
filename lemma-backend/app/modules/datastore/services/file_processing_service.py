@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.core.concurrency.offload import run_blocking
+from app.core.redaction import redact_value
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.datastore.config import datastore_settings
 from app.modules.datastore.domain.document_processing import (
@@ -129,15 +130,11 @@ class DatastoreFileProcessingService:
     def _sanitize_error(exc: Exception) -> str:
         """Return a safe, user-facing error string for storage in the DB.
 
-        The full exception (with HTTP bodies, object keys, SQL) is logged at
-        error level; only a short class-based summary is persisted so file-status
-        queries don't leak internal infrastructure details.
+        Provider bodies, object keys, SQL, URLs, and credentials may all appear
+        in an exception message. Persist only the failure class and a stable
+        summary; detailed diagnostics belong in redacted structured telemetry.
         """
-        exc_name = type(exc).__name__
-        message = str(exc).split("\n")[0].strip()
-        if len(message) > 200:
-            message = message[:200] + "..."
-        return f"{exc_name}: {message}" if message else exc_name
+        return f"{type(exc).__name__}: document processing failed"
 
     async def process_file_async(
         self,
@@ -179,7 +176,9 @@ class DatastoreFileProcessingService:
             try:
                 await self.search_service.remove_file(file_id)
             except Exception:
-                logger.warning("Failed removing search projection for %s", file_id, exc_info=True)
+                logger.warning(
+                    "Failed removing search projection for %s", file_id, exc_info=True
+                )
             await self._file_projection.delete_child_artifacts(
                 self.pod_id, file_entity.path
             )
@@ -231,8 +230,12 @@ class DatastoreFileProcessingService:
             async with get_inflight_byte_budget().reserve(size_bytes):
                 current_metadata = dict(metadata or {})
                 current_metadata.update(file_entity.file_metadata or {})
-                search_metadata = await self._build_search_metadata(file_entity, current_metadata)
-                extraction, user_markdown_bytes = await self._build_extraction(file_entity)
+                search_metadata = await self._build_search_metadata(
+                    file_entity, current_metadata
+                )
+                extraction, user_markdown_bytes = await self._build_extraction(
+                    file_entity
+                )
                 chunks = self._chunks_for_index(extraction)
                 page_count = 0
                 has_markdown = False
@@ -271,7 +274,11 @@ class DatastoreFileProcessingService:
                     file_id,
                 )
         except Exception as exc:
-            logger.error("Search processing failed for %s: %s", file_id, exc)
+            logger.error(
+                "Search processing failed for %s",
+                file_id,
+                extra={"error": redact_value(exc)},
+            )
             async with self._file_repo() as files:
                 failed = await files.mark_failed(
                     file_id, error=self._sanitize_error(exc)
@@ -295,7 +302,9 @@ class DatastoreFileProcessingService:
         can re-persist ``source.md`` (delete_child_artifacts wipes the container).
         Everything else goes through the configured document processor.
         """
-        if (file_entity.file_metadata or {}).get("markdown_source") == _USER_MARKDOWN_SOURCE:
+        if (file_entity.file_metadata or {}).get(
+            "markdown_source"
+        ) == _USER_MARKDOWN_SOURCE:
             try:
                 raw = await self.storage.download_file(
                     build_datastore_child_user_markdown_key(
@@ -381,7 +390,9 @@ class DatastoreFileProcessingService:
         # off the event loop so a large doc doesn't stall the worker.
         chunks = await run_blocking(chunk_markdown, markdown, limiter="cpu_bound")
         page_count = max((page for _, page in parse_page_offsets(markdown)), default=0)
-        pages = [DocumentPage(page_number=number) for number in range(1, page_count + 1)]
+        pages = [
+            DocumentPage(page_number=number) for number in range(1, page_count + 1)
+        ]
         return DocumentExtraction(
             markdown=markdown,
             chunks=chunks,
@@ -448,9 +459,7 @@ class DatastoreFileProcessingService:
         )
         if user_markdown_bytes is not None:
             await self.storage.upload_file(
-                build_datastore_child_user_markdown_key(
-                    self.pod_id, file_entity.path
-                ),
+                build_datastore_child_user_markdown_key(self.pod_id, file_entity.path),
                 user_markdown_bytes,
             )
 
@@ -461,7 +470,9 @@ class DatastoreFileProcessingService:
             "source_mime_type": file_entity.mime_type,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "markdown_source": (
-                _USER_MARKDOWN_SOURCE if user_markdown_bytes is not None else "extracted"
+                _USER_MARKDOWN_SOURCE
+                if user_markdown_bytes is not None
+                else "extracted"
             ),
             "extraction_mode": extraction.extraction_mode,
             "detected_languages": extraction.detected_languages,

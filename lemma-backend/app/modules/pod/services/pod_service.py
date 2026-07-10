@@ -6,8 +6,8 @@ from typing import Optional
 
 from app.core.authorization.context import Context, ResourceRef
 from app.core.authorization.permissions import Permissions
-from app.modules.identity.domain.organization_entities import OrganizationRole
-from app.modules.icon.services.icon_service import IconService
+from app.modules.identity.contracts import OrganizationRole
+from app.modules.icon.contracts import IconCleanupPort
 from app.modules.pod.domain.errors import (
     PodAccessDeniedError,
     PodNotFoundError,
@@ -35,7 +35,7 @@ class PodService:
         organization_repository: OrganizationMembershipPort,
         pod_role_service: PodRoleService | None = None,
         authorization_service: object | None = None,
-        icon_service: IconService | None = None,
+        icon_service: IconCleanupPort | None = None,
     ):
         self.pod_repository = pod_repository
         self.pod_member_repository = pod_member_repository

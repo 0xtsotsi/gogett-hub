@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 
 [[package]]
@@ -493,7 +493,7 @@ source = { directory = "../lemma-pod-bundle" }
 
 [[package]]
 name = "lemma-sdk"
-version = "0.5.6"
+version = "0.5.7"
 source = { directory = "../lemma-python" }
 dependencies = [
     { name = "attrs" },

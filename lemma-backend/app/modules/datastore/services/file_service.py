@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import re
 from datetime import datetime
 from typing import Any, Optional, Sequence
@@ -41,6 +43,9 @@ from app.modules.datastore.services.files.searcher import FileSearcher
 from app.modules.datastore.services.files.skills_overlay import SkillsOverlay
 from app.modules.datastore.services.files.tree import DirectoryTreeBuilder
 from app.modules.datastore.services.files.writer import FileWriter
+from app.modules.datastore.services.files.transaction_facade import (
+    FileTransactionFacade,
+)
 from app.modules.datastore.services.search.postgres_search_service import PostgresSearchService
 from app.modules.datastore.services.system_skill_files import SystemSkillFileProvider
 
@@ -57,7 +62,7 @@ def _child_page_number(artifact_rel: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-class DatastoreFileService:
+class DatastoreFileService(FileTransactionFacade):
     """Thin facade over the datastore file collaborators. Public method names
     and signatures are part of the frozen contract; each delegates to the
     collaborator that owns the behaviour."""
@@ -97,7 +102,8 @@ class DatastoreFileService:
         )
         # Resolve the search factory lazily so tests (and callers) can reassign
         # ``self.search_service_factory`` after construction.
-        search_factory_provider = lambda: self.search_service_factory
+        def search_factory_provider():
+            return self.search_service_factory
 
         reader = FileReader(
             file_repository,
@@ -154,7 +160,7 @@ class DatastoreFileService:
         self,
         pod_id: UUID,
         name: str,
-        file_content: bytes,
+        file_content: bytes | Path,
         ctx: Context,
         description: Optional[str] = None,
         metadata: Optional[dict] = None,
@@ -194,9 +200,9 @@ class DatastoreFileService:
         self,
         pod_id: UUID,
         path: str,
-        markdown_content: bytes,
+        markdown_content: bytes | Path,
         ctx: Context,
-        images: list[tuple[str, bytes]] | None = None,
+        images: list[tuple[str, bytes | Path]] | None = None,
     ) -> DatastoreFileEntity:
         """Attach/replace a user-provided markdown version of a document (plus any
         images it references), then re-queue it so the user's markdown is

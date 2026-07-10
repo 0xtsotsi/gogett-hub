@@ -22,9 +22,15 @@ class ObstoreDatastoreStorage:
         self.store = store
 
     async def upload_file(
-        self, destination_blob_name: str, file_content: bytes
+        self, destination_blob_name: str, file_content: bytes | Path
     ) -> bool:
-        await obs.put_async(self.store, destination_blob_name, file_content)
+        await obs.put_async(
+            self.store,
+            destination_blob_name,
+            file_content,
+            use_multipart=isinstance(file_content, Path),
+            chunk_size=1024 * 1024,
+        )
         return True
 
     async def download_file(self, source_blob_name: str) -> bytes:

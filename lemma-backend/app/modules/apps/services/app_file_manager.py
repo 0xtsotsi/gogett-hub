@@ -50,15 +50,22 @@ class AppFileManager:
         except UnicodeDecodeError:
             return bytes_data
 
-    async def write_file(self, path: str, content: bytes | str):
+    async def write_file(self, path: str, content: bytes | str | Path):
         if isinstance(content, str):
             content = content.encode("utf-8")
 
-        await obs.put_async(self.store, path, content)
+        await obs.put_async(
+            self.store,
+            path,
+            content,
+            use_multipart=isinstance(content, Path),
+            chunk_size=1024 * 1024,
+        )
+        size = content.stat().st_size if isinstance(content, Path) else len(content)
         return {
             "name": path.split("/")[-1],
             "path": path,
-            "size": len(content),
+            "size": size,
             "last_modified": datetime.now().isoformat(),
         }
 

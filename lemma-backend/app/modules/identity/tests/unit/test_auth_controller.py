@@ -5,7 +5,14 @@ from uuid import uuid4
 
 import pytest
 
-from app.modules.identity.api.controllers.auth_controller import verify_token
+from app.modules.identity.api.controllers.auth_controller import (
+    DesktopAuthRequestCreate,
+    DesktopAuthSessionRequest,
+    complete_desktop_auth_request,
+    create_desktop_auth_request,
+    create_desktop_auth_session,
+    verify_token,
+)
 from app.modules.identity.domain.user_entities import AuthUserEntity, UserEntity
 from app.core.authorization.delegation import (
     CLAIM_ACTOR_ID,
@@ -112,3 +119,72 @@ async def test_verify_token_returns_function_delegation_claims():
     assert response.function_name == "sync_expense"
     assert response.scopes == ["function:execute"]
     assert len(uow.session.execute_calls) == 1
+
+
+class _FakeDesktopAuthStore:
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.created_challenges: list[str] = []
+        self.completed: list[tuple[str, object]] = []
+        self.consumed: list[tuple[str, str]] = []
+
+    async def create(self, challenge):
+        self.created_challenges.append(challenge)
+        return SimpleNamespace(
+            request_id="desktop-request-123456789",
+            expires_in_seconds=300,
+        )
+
+    async def complete(self, request_id, user_id):
+        self.completed.append((request_id, user_id))
+
+    async def consume(self, request_id, verifier):
+        self.consumed.append((request_id, verifier))
+        return self.user_id
+
+
+async def _async_value(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_desktop_auth_handoff_creates_completes_and_exchanges(monkeypatch):
+    from app.modules.identity.api.controllers import auth_controller
+
+    user_id = uuid4()
+    store = _FakeDesktopAuthStore(user_id)
+    monkeypatch.setattr(
+        auth_controller, "get_desktop_auth_handoff_store", lambda: store
+    )
+    monkeypatch.setattr(
+        auth_controller,
+        "create_desktop_browser_session",
+        lambda request, exchanged_user_id: _async_value("session-handle"),
+    )
+
+    challenge = "a" * 43
+    created = await create_desktop_auth_request(
+        DesktopAuthRequestCreate(code_challenge=challenge)
+    )
+    browser_request = SimpleNamespace(
+        state=SimpleNamespace(user=AuthUserEntity(id=user_id))
+    )
+    completed = await complete_desktop_auth_request(
+        created.request_id,
+        browser_request,
+    )
+    webview_request = SimpleNamespace(headers={"st-auth-mode": "cookie"})
+    exchanged = await create_desktop_auth_session(
+        DesktopAuthSessionRequest(
+            request_id=created.request_id,
+            code_verifier="b" * 43,
+        ),
+        webview_request,
+    )
+
+    assert store.created_challenges == [challenge]
+    assert store.completed == [(created.request_id, user_id)]
+    assert store.consumed == [(created.request_id, "b" * 43)]
+    assert completed.status == "complete"
+    assert exchanged.user_id == user_id
+    assert exchanged.session_handle == "session-handle"

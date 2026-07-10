@@ -12,7 +12,14 @@ from app.modules.identity.api.dependencies import UserServiceDep
 from app.modules.identity.domain.user_entities import UserEntity
 from app.modules.identity.infrastructure.supertokens_auth.helpers import (
     create_cli_session_tokens,
+    create_desktop_browser_session,
     refresh_cli_session_tokens,
+)
+from app.modules.identity.services.desktop_auth_handoff import (
+    DesktopAuthRequestNotFound,
+    DesktopAuthRequestPending,
+    DesktopAuthVerifierRejected,
+    get_desktop_auth_handoff_store,
 )
 from app.core.authorization.delegation import (
     CLAIM_ACTOR_ID,
@@ -60,6 +67,34 @@ class CliRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class DesktopAuthRequestCreate(BaseModel):
+    code_challenge: str = Field(
+        min_length=43, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+
+
+class DesktopAuthRequestResponse(BaseModel):
+    request_id: str
+    expires_in_seconds: int
+
+
+class DesktopAuthCompleteResponse(BaseModel):
+    status: str = "complete"
+
+
+class DesktopAuthSessionRequest(BaseModel):
+    request_id: str = Field(min_length=20, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    code_verifier: str = Field(
+        min_length=43, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+
+
+class DesktopAuthSessionResponse(BaseModel):
+    status: str = "complete"
+    user_id: UUID
+    session_handle: str
+
+
 @router.get(
     "/verify-token",
     operation_id="auth.verify_token",
@@ -81,13 +116,17 @@ async def verify_token(
     scopes = auth_claims.get(CLAIM_SCOPE)
     if isinstance(scopes, str):
         scopes = [scopes]
-    if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes):
+    if not isinstance(scopes, list) or not all(
+        isinstance(scope, str) for scope in scopes
+    ):
         scopes = []
     function_id = None
     function_name = None
     if auth_claims.get(CLAIM_ACTOR_TYPE) == WorkloadPrincipalType.FUNCTION.value:
         raw_function_id = auth_claims.get(CLAIM_ACTOR_ID)
-        function_id = UUID(str(raw_function_id)) if raw_function_id is not None else None
+        function_id = (
+            UUID(str(raw_function_id)) if raw_function_id is not None else None
+        )
         function_name = auth_claims.get(CLAIM_ACTOR_NAME)
     organization_id = await _resolve_pod_organization_id(uow, pod_id)
     return VerifyTokenResponse(
@@ -122,6 +161,82 @@ async def cli_auth_info() -> CliAuthInfoResponse:
     return CliAuthInfoResponse(
         api_url=settings.cli_api_url or settings.api_url,
         auth_frontend_url=settings.cli_auth_frontend_url or settings.auth_frontend_url,
+    )
+
+
+@router.post(
+    "/desktop/requests",
+    include_in_schema=False,
+    operation_id="auth.desktop.request.create",
+    response_model=DesktopAuthRequestResponse,
+)
+async def create_desktop_auth_request(
+    body: DesktopAuthRequestCreate,
+) -> DesktopAuthRequestResponse:
+    request = await get_desktop_auth_handoff_store().create(body.code_challenge)
+    return DesktopAuthRequestResponse(
+        request_id=request.request_id,
+        expires_in_seconds=request.expires_in_seconds,
+    )
+
+
+@router.post(
+    "/desktop/requests/{request_id}/complete",
+    include_in_schema=False,
+    operation_id="auth.desktop.request.complete",
+    response_model=DesktopAuthCompleteResponse,
+)
+async def complete_desktop_auth_request(
+    request_id: str,
+    request: Request,
+) -> DesktopAuthCompleteResponse:
+    user: UserEntity = request.state.user
+    try:
+        await get_desktop_auth_handoff_store().complete(request_id, user.id)
+    except DesktopAuthRequestNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail="Desktop login request expired"
+        ) from exc
+    return DesktopAuthCompleteResponse()
+
+
+@router.post(
+    "/desktop/session",
+    include_in_schema=False,
+    operation_id="auth.desktop.session.create",
+    response_model=DesktopAuthSessionResponse,
+)
+async def create_desktop_auth_session(
+    body: DesktopAuthSessionRequest,
+    request: Request,
+) -> DesktopAuthSessionResponse:
+    if request.headers.get("st-auth-mode") != "cookie":
+        raise HTTPException(
+            status_code=400,
+            detail="Desktop session exchange requires cookie auth mode",
+        )
+    try:
+        user_id = await get_desktop_auth_handoff_store().consume(
+            body.request_id,
+            body.code_verifier,
+        )
+    except DesktopAuthRequestPending as exc:
+        raise HTTPException(
+            status_code=409, detail="Desktop login is still pending"
+        ) from exc
+    except DesktopAuthVerifierRejected as exc:
+        raise HTTPException(
+            status_code=403, detail="Desktop login verifier was rejected"
+        ) from exc
+    except DesktopAuthRequestNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail="Desktop login request expired"
+        ) from exc
+
+    session_handle = await create_desktop_browser_session(request, user_id)
+    return DesktopAuthSessionResponse(
+        user_id=user_id,
+        session_handle=session_handle,
     )
 
 

@@ -37,9 +37,27 @@ if (apiUrl) {
   } catch {}
 }
 
+// gogett: proxy SuperTokens + backend API routes to the upstream FastAPI.
+// Without these rewrites the SDK POSTs to /st/auth/* land on Next.js's static
+// catch-all and return HTML (404-equivalent). The upstream lemma-frontend image
+// assumes this rewriting is wired up — locally we have to add it explicitly.
+const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || "http://backend:8000";
+
 const nextConfig: NextConfig = {
   allowedDevOrigins: devOrigins,
   output: "standalone",
+  async rewrites() {
+    return [
+      // SuperTokens gateway path: SDK POSTs to /st/auth/* which the frontend
+      // relays to the backend at /auth/* (backend mounts SuperTokens there).
+      { source: "/st/auth/:path*", destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
+      // Generic API passthrough so the same-origin SDK can reach the backend.
+      { source: "/api/v1/:path*", destination: `${BACKEND_INTERNAL_URL}/api/v1/:path*` },
+      { source: "/users/:path*", destination: `${BACKEND_INTERNAL_URL}/users/:path*` },
+      { source: "/organizations/:path*", destination: `${BACKEND_INTERNAL_URL}/organizations/:path*` },
+      { source: "/pods/:path*", destination: `${BACKEND_INTERNAL_URL}/pods/:path*` },
+    ];
+  },
   transpilePackages: ["lemma-sdk"],
   serverExternalPackages: ["esbuild"],
   turbopack: {

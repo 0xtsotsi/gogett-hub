@@ -15,6 +15,7 @@ run ``create_fake_agentbox_app()`` on the pinned AgentBox port and point
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -98,9 +99,7 @@ class FakeAgentBoxState:
         self.function_behavior = _FunctionExecutorBehavior(
             modes=[str(mode) for mode in modes],
             delay_seconds=max(0.0, float(body.get("delay_seconds", 0.0))),
-            error_message=str(
-                body.get("error_message", "Scripted user-code failure")
-            ),
+            error_message=str(body.get("error_message", "Scripted user-code failure")),
             log_message=str(body.get("log_message", "scripted function log")),
             job_pending_polls=max(0, int(body.get("job_pending_polls", 0))),
         )
@@ -115,7 +114,11 @@ class FakeAgentBoxState:
     def ensure_sandbox(self, sandbox_id: str, env: dict[str, str]) -> _Sandbox:
         sandbox = self.sandboxes.get(sandbox_id)
         if sandbox is None:
-            root = self.base_dir / sandbox_id
+            # Route parameters are untrusted even in the hermetic fake. Never
+            # use the caller's identifier as a filesystem component: a stable
+            # digest preserves sandbox reuse without allowing path traversal.
+            directory = hashlib.sha256(sandbox_id.encode("utf-8")).hexdigest()
+            root = self.base_dir / directory
             root.mkdir(parents=True, exist_ok=True)
             sandbox = _Sandbox(root=root, env=dict(env))
             self.sandboxes[sandbox_id] = sandbox
@@ -127,10 +130,13 @@ class FakeAgentBoxState:
         """Map a sandbox-absolute path (e.g. /workspace/conversations/X) into the
         sandbox temp dir, creating it. Treats the sandbox root as ``/``."""
         rel = cwd.lstrip("/") if cwd else ""
-        path = (sandbox.root / rel).resolve()
+        root = sandbox.root.resolve()
+        path = (root / rel).resolve()
         # Keep everything under the sandbox root.
-        if not str(path).startswith(str(sandbox.root.resolve())):
-            path = sandbox.root
+        try:
+            path.relative_to(root)
+        except ValueError:
+            path = root
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -140,7 +146,9 @@ class FakeAgentBoxState:
 
 def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
     """Build a FastAPI app implementing the AgentBox manager HTTP contract."""
-    state = FakeAgentBoxState(base_dir or Path(tempfile.mkdtemp(prefix="fake-agentbox-")))
+    state = FakeAgentBoxState(
+        base_dir or Path(tempfile.mkdtemp(prefix="fake-agentbox-"))
+    )
     app = FastAPI(title="fake-agentbox")
     app.state.fake = state
 
@@ -148,7 +156,9 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
         return SandboxSummary(id=sandbox_id, ready=True, status="RUNNING")
 
     @app.put("/sandboxes/{sandbox_id}")
-    async def ensure_sandbox(sandbox_id: str, body: SandboxEnsureRequest) -> SandboxResponse:
+    async def ensure_sandbox(
+        sandbox_id: str, body: SandboxEnsureRequest
+    ) -> SandboxResponse:
         state.ensure_sandbox(sandbox_id, body.env or {})
         return SandboxResponse(sandbox=_summary(sandbox_id))
 
@@ -176,7 +186,9 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
         sandbox_id: str, session_id: str, body: RuntimeSessionRequest
     ) -> RuntimeSessionResponse:
         sandbox = state.ensure_sandbox(sandbox_id, {})
-        sandbox.sessions[session_id] = _Session(cwd=body.cwd or "/workspace", env=dict(body.env or {}))
+        sandbox.sessions[session_id] = _Session(
+            cwd=body.cwd or "/workspace", env=dict(body.env or {})
+        )
         return RuntimeSessionResponse(
             sandbox_id=sandbox_id,
             session_id=session_id,
@@ -312,9 +324,7 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
         )
 
     @app.post("/sandboxes/{sandbox_id}/sessions/{session_id}/stdin")
-    async def write_stdin(
-        sandbox_id: str, session_id: str
-    ) -> ExecCommandResponse:
+    async def write_stdin(sandbox_id: str, session_id: str) -> ExecCommandResponse:
         # Long-running/interactive processes aren't modelled by the fake; report
         # nothing pending so callers don't block.
         return ExecCommandResponse(success=True, stdout="", stderr="", completed=True)
@@ -331,7 +341,10 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
 
     @app.post("/sandboxes/{sandbox_id}/apps/{app_name}/access")
     async def app_access(sandbox_id: str, app_name: str) -> dict[str, str]:
-        return {"url": f"http://fake-agentbox.local/{sandbox_id}/{app_name}", "token": uuid.uuid4().hex}
+        return {
+            "url": f"http://fake-agentbox.local/{sandbox_id}/{app_name}",
+            "token": uuid.uuid4().hex,
+        }
 
     register_fake_function_executor(app, state)
     return app

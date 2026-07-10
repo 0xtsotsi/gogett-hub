@@ -11,7 +11,10 @@ from agentbox_client.apps.function_executor import (
     FunctionExecutorClient,
 )
 from agentbox_client.client import AgentBoxClient
-from app.modules.workspace.testing.fake_agentbox import create_fake_agentbox_app
+from app.modules.workspace.testing.fake_agentbox import (
+    FakeAgentBoxState,
+    create_fake_agentbox_app,
+)
 
 
 async def _client(app) -> AgentBoxClient:
@@ -167,3 +170,16 @@ async def test_fake_agentbox_get_and_delete_sandbox():
         assert await client.get_sandbox("sb2") is None
     finally:
         await client.close()
+
+
+def test_fake_agentbox_hashes_ids_and_contains_cwd_traversal(tmp_path):
+    state = FakeAgentBoxState(tmp_path)
+
+    sandbox = state.ensure_sandbox("../../outside", {})
+    resolved = state.resolve(sandbox, "../../also-outside")
+
+    assert sandbox.root.parent == tmp_path.resolve()
+    assert sandbox.root.name != "outside"
+    assert resolved == sandbox.root
+    assert not (tmp_path.parent / "outside").exists()
+    assert not (tmp_path.parent / "also-outside").exists()

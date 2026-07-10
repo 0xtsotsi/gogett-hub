@@ -9,7 +9,6 @@ from faststream import Depends, Logger
 from faststream.redis import RedisRouter
 from streaq.task import TaskStatus
 
-from app.core.config import settings
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.db.uow_factory import (
     SessionUnitOfWorkFactory,
@@ -39,6 +38,7 @@ from app.modules.agent.domain.events import (
     AgentRunStartedEvent,
     AgentRunStopRequestedEvent,
 )
+from app.modules.agent.config import agent_settings
 from app.modules.agent.domain.value_objects import AgentRunStatus
 from app.modules.agent.domain.value_objects import HarnessKind
 from app.modules.agent.infrastructure.harnesses import (
@@ -68,6 +68,7 @@ CONTROL_EVENT_MODELS = {
 def conversation_title_job_id(conversation_id: UUID) -> str:
     return f"conv-title:{conversation_id}"
 
+
 def provide_job_queue() -> SharedStreaqJobQueue:
     return get_streaq_job_queue()
 
@@ -77,15 +78,25 @@ def provide_uow_factory() -> UnitOfWorkFactory:
 
 
 def build_harness_registry() -> HarnessRegistry:
-    reconnect_grace_seconds = settings.daemon_reconnect_grace_seconds
+    reconnect_grace_seconds = agent_settings.daemon_reconnect_grace_seconds
     return HarnessRegistry(
         [
             PydanticAIHarness(),
-            DaemonHarness(HarnessKind.CODEX, reconnect_grace_seconds=reconnect_grace_seconds),
-            DaemonHarness(HarnessKind.CLAUDE_CODE, reconnect_grace_seconds=reconnect_grace_seconds),
-            DaemonHarness(HarnessKind.OPENCODE, reconnect_grace_seconds=reconnect_grace_seconds),
-            DaemonHarness(HarnessKind.CURSOR, reconnect_grace_seconds=reconnect_grace_seconds),
-            DaemonHarness(HarnessKind.ANTIGRAVITY, reconnect_grace_seconds=reconnect_grace_seconds),
+            DaemonHarness(
+                HarnessKind.CODEX, reconnect_grace_seconds=reconnect_grace_seconds
+            ),
+            DaemonHarness(
+                HarnessKind.CLAUDE_CODE, reconnect_grace_seconds=reconnect_grace_seconds
+            ),
+            DaemonHarness(
+                HarnessKind.OPENCODE, reconnect_grace_seconds=reconnect_grace_seconds
+            ),
+            DaemonHarness(
+                HarnessKind.CURSOR, reconnect_grace_seconds=reconnect_grace_seconds
+            ),
+            DaemonHarness(
+                HarnessKind.ANTIGRAVITY, reconnect_grace_seconds=reconnect_grace_seconds
+            ),
         ]
     )
 
@@ -330,9 +341,7 @@ async def reconcile_orphaned_agent_runs() -> None:
     if not finalized:
         return
 
-    logger.warning(
-        "Reconciled %d orphaned agent run(s) to FAILED", len(finalized)
-    )
+    logger.warning("Reconciled %d orphaned agent run(s) to FAILED", len(finalized))
     # Publish outside the UoW (mirrors handle_agent_control_event's stop path)
     # so SSE clients refresh and workflow waits resume promptly.
     for conversation_id, agent_run_id, status in finalized:

@@ -23,8 +23,8 @@ from fastapi.responses import StreamingResponse
 from app.core.api.dependencies import CurrentUser, get_uow_factory
 from app.core.api.uploads import stage_upload_limited
 from app.core.authorization.scope import pod_context_scope
+from app.core.domain.realtime import RealtimeChannel
 from app.core.infrastructure.channels.channel_service import (
-    ChannelService,
     get_channel_service,
 )
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
@@ -45,7 +45,7 @@ from app.modules.pod_bundle.infrastructure.state_store import (
 
 router = APIRouter(prefix="/pods", tags=["Pod Bundle"], redirect_slashes=False)
 
-ChannelServiceDep = Annotated[ChannelService, Depends(get_channel_service)]
+ChannelServiceDep = Annotated[RealtimeChannel, Depends(get_channel_service)]
 
 _TERMINAL_EVENT_TYPES = {"completed", "error", "expired"}
 
@@ -245,7 +245,7 @@ async def stream_import_events(
 
 async def import_event_stream(
     store,
-    channel_service: ChannelService,
+    channel_service: RealtimeChannel,
     pod_id: UUID,
     import_id: UUID,
 ) -> AsyncGenerator[str, None]:

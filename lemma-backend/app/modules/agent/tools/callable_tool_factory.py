@@ -14,7 +14,7 @@ from pydantic_ai.tools import RunContext, Tool
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_core import SchemaValidator
 
-from app.core.config import settings
+from app.modules.agent.config import agent_settings
 from app.core.log.log import get_logger
 from app.core.authorization.models import ResourcePermissionGrantModel
 from app.core.authorization.permissions import Permissions
@@ -130,7 +130,9 @@ class AgentCallableToolFactory:
                 if function is None or function.status != FunctionStatus.READY:
                     continue
                 try:
-                    tools.append(self._build_function_tool(function, parent_agent=agent))
+                    tools.append(
+                        self._build_function_tool(function, parent_agent=agent)
+                    )
                 except Exception:
                     logger.warning(
                         "Skipping function tool %s for agent %s: build failed",
@@ -146,7 +148,9 @@ class AgentCallableToolFactory:
                     child_agent = await agent_repo.get(child_agent_id)
                     if child_agent is None:
                         continue
-                    tools.append(self._build_agent_tool(child_agent, parent_agent=agent))
+                    tools.append(
+                        self._build_agent_tool(child_agent, parent_agent=agent)
+                    )
 
         if not tools:
             return []
@@ -189,7 +193,9 @@ class AgentCallableToolFactory:
         ]
         return function_ids, agent_ids
 
-    def _build_function_tool(self, function: FunctionEntity, *, parent_agent: Agent) -> Tool:
+    def _build_function_tool(
+        self, function: FunctionEntity, *, parent_agent: Agent
+    ) -> Tool:
         schema = _inline_schema(_normalize_json_schema(function.input_schema))
         description = self._build_function_description(function)
         function_name = f"function_{function.name}"
@@ -352,7 +358,7 @@ class AgentCallableToolFactory:
             FunctionRunStatus.CANCELLED,
         }
         run: FunctionRunEntity | None = None
-        interval = settings.function_run_poll_interval_seconds
+        interval = agent_settings.function_run_poll_interval_seconds
         attempts = max(1, int(_SUBAGENT_TOOL_TIMEOUT_SECONDS / interval))
         for _ in range(attempts):
             async with self.uow_factory() as uow:

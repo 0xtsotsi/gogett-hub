@@ -58,6 +58,8 @@ Storage uses a stage/commit/promote pattern with cleanup compensation. HTML
 lint is advisory and reports obsolete SDK usage; it does not reject app code.
 Entrypoints are no-cache and receive pod/API/auth context at serve time, while
 hashed static assets use immutable caching and ETags.
+`AppsSettings` owns source/dist/combined upload ceilings and archive-entry,
+expanded-size, and compression-ratio protections.
 
 ## Authorization and security
 

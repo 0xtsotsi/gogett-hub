@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.infrastructure.cache.redis_json_cache import RedisJsonCache
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.agent.domain.entities import Agent, Conversation
+from app.modules.agent.config import agent_settings
 from app.modules.agent.infrastructure.context_brief_repository import (
     AgentContextBriefRepository,
 )
@@ -51,7 +52,7 @@ _brief_cache: RedisJsonCache | None = None
 
 def _get_brief_cache() -> RedisJsonCache | None:
     global _brief_cache
-    ttl = settings.agent_context_brief_cache_ttl_seconds
+    ttl = agent_settings.agent_context_brief_cache_ttl_seconds
     if ttl <= 0:
         return None
     if _brief_cache is None or _brief_cache._ttl_seconds != ttl:

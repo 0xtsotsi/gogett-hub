@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +35,7 @@ class SqlAlchemyUnitOfWork(IUnitOfWork):
         """Backward-compatible no-op setter; dispatch is outbox-driven."""
         self._message_bus = message_bus
 
-    def collect_events(self, events: list["DomainEvent"]) -> None:
+    def collect_events(self, events: Sequence["DomainEvent"]) -> None:
         """Collect domain events for publishing on commit.
 
         Called by repositories after saving aggregates.
@@ -55,30 +56,33 @@ class SqlAlchemyUnitOfWork(IUnitOfWork):
         self._pending_events.clear()
 
     async def _stage_pending_events(self) -> None:
-        for event in self._pending_events:
-            payload = event.model_dump(mode="json")
-            await self.session.execute(
-                insert(DomainEventOutbox)
-                .values(
-                    id=event.event_id,
-                    stream=event.stream_name(),
-                    event_type=event.event_type,
-                    schema_version=event.schema_version,
-                    producer=event.producer,
-                    payload=payload,
-                    occurred_at=event.occurred_at,
-                    correlation_id=event.correlation_id,
-                    causation_id=event.causation_id,
-                    request_id=event.request_id,
-                )
-                .on_conflict_do_nothing(index_elements=["id"])
-            )
-            logger.debug(
-                "Staged domain event in transactional outbox",
-                event_id=str(event.event_id),
-                event_type=event.event_type,
-                stream=event.stream_name(),
-            )
+        if not self._pending_events:
+            return
+
+        rows = [
+            {
+                "id": event.event_id,
+                "stream": event.stream_name(),
+                "event_type": event.event_type,
+                "schema_version": event.schema_version,
+                "producer": event.producer,
+                "payload": event.model_dump(mode="json"),
+                "occurred_at": event.occurred_at,
+                "correlation_id": event.correlation_id,
+                "causation_id": event.causation_id,
+                "request_id": event.request_id,
+            }
+            for event in self._pending_events
+        ]
+        await self.session.execute(
+            insert(DomainEventOutbox)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        logger.debug(
+            "Staged domain events in transactional outbox",
+            event_count=len(rows),
+        )
 
     async def rollback(self) -> None:
         """Rollback transaction and discard pending events."""

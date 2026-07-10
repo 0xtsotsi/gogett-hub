@@ -24,7 +24,8 @@ Only PNG, JPEG, GIF, WebP, and BMP magic bytes are accepted. SVG is rejected
 because the public route shares a cookie-bearing API origin. Retrieval sets
 `X-Content-Type-Options: nosniff`; an unknown/legacy extension is
 `application/octet-stream` with `Content-Disposition: attachment`. Storage path
-normalization rejects empty, dot, and parent segments.
+normalization rejects empty, dot, and parent segments. `IconSettings` owns the
+5 MiB upload, 4,096-pixel dimension, and total-pixel limits.
 
 ```mermaid
 flowchart LR
@@ -37,7 +38,5 @@ flowchart LR
 
 ## Tests and operations
 
-Tests cover upload validation, public retrieval, traversal rejection, headers,
-and cleanup. Current unit coverage is 84.0% (126 of 150 statements), the
-highest module. The absence of an upload byte limit is tracked in
-[issues.md](issues.md).
+Tests cover upload limits and validation, public retrieval, traversal rejection,
+headers, and cleanup. See [issues.md](issues.md) for the resolved upload finding.

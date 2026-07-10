@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from uuid import UUID
@@ -60,7 +61,6 @@ from app.modules.agent.infrastructure.models import (
     MessageModel,
 )
 from app.modules.connectors.domain.ports import SecretEncryptionPort
-
 
 def _enum_status_values_for_db(statuses: object, enum_type: type[Enum]) -> list[str]:
     if isinstance(statuses, (enum_type, str)):
@@ -558,7 +558,7 @@ class ConversationRepository:
         self.uow = uow
         self.session = uow.session
 
-    def collect_events(self, events: list[AgentDomainEvent]) -> None:
+    def collect_events(self, events: Sequence[AgentDomainEvent]) -> None:
         self.uow.collect_events(events)
 
     async def create_conversation(

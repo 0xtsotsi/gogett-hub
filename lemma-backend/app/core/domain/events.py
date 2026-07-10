@@ -4,9 +4,13 @@ from uuid import UUID, uuid7
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.core.request_context import get_request_id
+from app.core.request_context import (
+    get_causation_id,
+    get_correlation_id,
+    get_request_id,
+)
 
 
 class DomainEvent(BaseModel):
@@ -18,6 +22,15 @@ class DomainEvent(BaseModel):
     correlation_id: UUID | None = None
     causation_id: UUID | None = None
     request_id: str | None = Field(default_factory=get_request_id)
+
+    @model_validator(mode="after")
+    def populate_event_lineage(self) -> "DomainEvent":
+        """Give roots a correlation id and inherit lineage inside consumers."""
+        if self.correlation_id is None:
+            self.correlation_id = get_correlation_id() or self.event_id
+        if self.causation_id is None:
+            self.causation_id = get_causation_id()
+        return self
 
     @classmethod
     def get_event_type(cls) -> str:

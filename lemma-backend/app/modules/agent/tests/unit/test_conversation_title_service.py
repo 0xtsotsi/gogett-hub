@@ -106,7 +106,7 @@ def _patch_llm(
     # LLM titling is opt-in via CONVERSATION_TITLE_MODEL; enable it for the
     # LLM-path tests regardless of the ambient .env value.
     monkeypatch.setattr(
-        cts.settings,
+        cts.agent_settings,
         "conversation_title_model",
         "accounts/fireworks/models/test-title-model",
     )
@@ -242,7 +242,7 @@ async def test_no_model_configured_uses_first_message_without_llm(
 ) -> None:
     capture = _patch_llm(monkeypatch, output="Should Not Be Used")
     # Opt OUT of LLM titling: no model configured.
-    monkeypatch.setattr(cts.settings, "conversation_title_model", None)
+    monkeypatch.setattr(cts.agent_settings, "conversation_title_model", None)
     conv = _conversation()
     uow = _FakeUow(conv)
     monkeypatch.setattr(cts, "ConversationRepository", _FakeRepo)

@@ -8,7 +8,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
-from app.core.config import settings
+from app.modules.apps.config import apps_settings
 from app.modules.apps.domain.errors import AppValidationError
 
 
@@ -44,7 +44,7 @@ def inspect_app_archive(data: bytes | Path, *, label: str) -> ArchiveInspection:
     paths: set[str] = set()
     with archive:
         infos = archive.infolist()
-        if len(infos) > settings.app_archive_max_entries:
+        if len(infos) > apps_settings.app_archive_max_entries:
             raise AppValidationError(f"{label} contains too many entries")
         for info in infos:
             path = _normalized_path(info.filename, label=label)
@@ -63,12 +63,12 @@ def inspect_app_archive(data: bytes | Path, *, label: str) -> ArchiveInspection:
             if info.is_dir():
                 continue
             total += info.file_size
-            if total > settings.app_archive_max_uncompressed_bytes:
+            if total > apps_settings.app_archive_max_uncompressed_bytes:
                 raise AppValidationError(f"{label} expands beyond the configured limit")
             unsafe_ratio = info.file_size > 0 and (
                 info.compress_size == 0
                 or info.file_size / info.compress_size
-                > settings.app_archive_max_compression_ratio
+                > apps_settings.app_archive_max_compression_ratio
             )
             if unsafe_ratio:
                 raise AppValidationError(f"{label} has an unsafe compression ratio")

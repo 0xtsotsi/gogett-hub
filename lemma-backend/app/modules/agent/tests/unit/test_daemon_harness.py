@@ -632,6 +632,41 @@ async def test_hub_register_supersedes_connection_orphans_old_runs():
 
 
 @pytest.mark.asyncio
+async def test_stale_websocket_cannot_unregister_superseding_connection(monkeypatch):
+    hub = AgentRuntimeDaemonHub()
+    daemon_id = uuid4()
+    daemon_user_id = uuid4()
+    old_websocket = _FakeWebSocket()
+    new_websocket = _FakeWebSocket()
+
+    async def listen(connection):
+        connection.command_ready.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(hub, "_listen_for_daemon_commands", listen)
+    await hub.register(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        websocket=old_websocket,  # type: ignore[arg-type]
+    )
+    await hub.register(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        websocket=new_websocket,  # type: ignore[arg-type]
+    )
+
+    await hub.unregister(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        websocket=old_websocket,  # type: ignore[arg-type]
+    )
+
+    assert hub._connections[daemon_id].websocket is new_websocket
+    await hub.close()
+    assert hub._connections == {}
+
+
+@pytest.mark.asyncio
 async def test_hub_reattach_runs_relinks_orphaned_queue_to_new_connection():
     hub = AgentRuntimeDaemonHub()
     daemon_id = uuid4()

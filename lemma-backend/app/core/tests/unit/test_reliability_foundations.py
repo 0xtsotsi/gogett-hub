@@ -70,17 +70,20 @@ async def test_uow_stages_event_before_database_commit() -> None:
     session = _FakeSession()
     uow = SqlAlchemyUnitOfWork(session)  # type: ignore[arg-type]
     event = _TestEvent(value="committed")
-    uow.collect_events([event])
+    second_event = _TestEvent(value="also-committed")
+    uow.collect_events([event, second_event])
 
     await uow.commit()
 
     assert session.committed is True
     assert len(session.statements) == 1
     params = session.statements[0].compile().params
-    assert params["event_type"] == "test.created"
-    assert params["stream"] == "test_events"
-    assert params["id"] == event.event_id
-    assert params["payload"]["value"] == "committed"
+    assert params["event_type_m0"] == "test.created"
+    assert params["stream_m0"] == "test_events"
+    assert params["id_m0"] == event.event_id
+    assert params["payload_m0"]["value"] == "committed"
+    assert params["id_m1"] == second_event.event_id
+    assert params["payload_m1"]["value"] == "also-committed"
     assert not uow.has_pending_events()
 
 
@@ -165,6 +168,27 @@ async def test_inbox_classifies_success_retry_terminal_and_dead_letter() -> None
     dead_letter = _MemoryInbox(attempt=10)
     await dead_letter.process("consumer", event, infrastructure_failure)
     assert dead_letter.finished == [(InboxStatus.DEAD_LETTER, "RuntimeError")]
+
+
+@pytest.mark.asyncio
+async def test_inbox_propagates_event_lineage_to_resulting_events() -> None:
+    parent = _TestEvent(value="parent")
+    child: _TestEvent | None = None
+
+    async def create_child() -> None:
+        nonlocal child
+        child = _TestEvent(value="child")
+
+    await _MemoryInbox().process("consumer", parent, create_child)
+
+    assert parent.correlation_id == parent.event_id
+    assert parent.causation_id is None
+    assert child is not None
+    assert child.correlation_id == parent.correlation_id
+    assert child.causation_id == parent.event_id
+    unrelated = _TestEvent(value="unrelated")
+    assert unrelated.correlation_id == unrelated.event_id
+    assert unrelated.causation_id is None
 
 
 class _ValidationProbe(BaseModel):

@@ -19,10 +19,10 @@ from fastapi.responses import Response, StreamingResponse
 from app.core.api.dependencies import CurrentUser
 from app.core.api.pagination import parse_uuid_page_token
 from app.core.api.uploads import UploadBudget, stage_upload_limited
-from app.core.config import settings
 from app.core.authorization.dependencies import PodContextDep
 from app.core.helpers.slug import normalize_resource_name
 from app.modules.apps.api.asset_response import app_asset_response
+from app.modules.apps.config import apps_settings
 from app.modules.apps.api.dependencies import (
     AppServiceDep,
     AppUseCasesDep,
@@ -252,7 +252,7 @@ async def upload_app_bundle(
     dist_archive: UploadFile | None = File(default=None),
 ) -> AppBundleUploadResponse:
     budget = UploadBudget(
-        max_bytes=settings.app_bundle_upload_max_bytes,
+        max_bytes=apps_settings.app_bundle_upload_max_bytes,
         field="app bundle",
     )
     async with AsyncExitStack() as uploads:
@@ -260,7 +260,7 @@ async def upload_app_bundle(
             await uploads.enter_async_context(
                 stage_upload_limited(
                     source_archive,
-                    max_bytes=settings.app_source_archive_max_bytes,
+                    max_bytes=apps_settings.app_source_archive_max_bytes,
                     field="source archive",
                     budget=budget,
                 )
@@ -272,7 +272,7 @@ async def upload_app_bundle(
             await uploads.enter_async_context(
                 stage_upload_limited(
                     dist_archive,
-                    max_bytes=settings.app_dist_archive_max_bytes,
+                    max_bytes=apps_settings.app_dist_archive_max_bytes,
                     field="dist archive",
                     budget=budget,
                 )

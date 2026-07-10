@@ -9,9 +9,9 @@ from fastapi.responses import Response
 
 from app.core.api.dependencies import CurrentUser
 from app.core.api.uploads import read_upload_limited
-from app.core.config import settings
 from app.modules.agent.tools.file_access import sniff_image_mime
 from app.modules.icon.api.schemas import IconUploadResponse
+from app.modules.icon.config import icon_settings
 from app.modules.icon.services.icon_service import IconService
 from app.modules.icon.services.raster_validation import validate_raster_icon
 
@@ -42,7 +42,7 @@ async def upload_icon(
     file_content = (
         await read_upload_limited(
             file,
-            max_bytes=settings.icon_upload_max_bytes,
+            max_bytes=icon_settings.icon_upload_max_bytes,
             field="icon",
         )
     ).data
@@ -64,8 +64,8 @@ async def upload_icon(
         validate_raster_icon(
             file_content,
             detected_media_type=sniffed_type,
-            max_dimension=settings.icon_max_dimension_pixels,
-            max_pixels=settings.icon_max_total_pixels,
+            max_dimension=icon_settings.icon_max_dimension_pixels,
+            max_pixels=icon_settings.icon_max_total_pixels,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -111,7 +111,9 @@ async def get_public_icon(icon_path: str) -> Response:
     # download so it can never execute on our origin. nosniff blocks MIME
     # confusion either way.
     guessed = mimetypes.guess_type(icon_path)[0]
-    media_type = guessed if guessed in _SAFE_ICON_MEDIA_TYPES else "application/octet-stream"
+    media_type = (
+        guessed if guessed in _SAFE_ICON_MEDIA_TYPES else "application/octet-stream"
+    )
     headers = {
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "public, max-age=31536000, immutable",

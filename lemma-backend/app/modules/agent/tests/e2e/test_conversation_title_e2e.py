@@ -65,13 +65,17 @@ def _stub_llm(monkeypatch: pytest.MonkeyPatch, *, output: str) -> None:
     async def _noop_reserve(*, organization_id, user_id, runtime_profile):
         return None
 
-    async def _noop_record(*, ctx, runtime_profile, result, status, reservation, metadata):
+    async def _noop_record(
+        *, ctx, runtime_profile, result, status, reservation, metadata
+    ):
         return None
 
-    # The LLM title path is opt-in (settings.conversation_title_model); without
+    # The LLM title path is opt-in (agent_settings.conversation_title_model); without
     # it the service deliberately falls back to the first-message title. Enable
     # it so the stubbed model boundary is exercised.
-    monkeypatch.setattr(cts.settings, "conversation_title_model", "deepseek-v4-flash")
+    monkeypatch.setattr(
+        cts.agent_settings, "conversation_title_model", "deepseek-v4-flash"
+    )
     monkeypatch.setattr(cts, "PydanticAIAgent", _FakeLLMAgent)
     monkeypatch.setattr(cts, "AgentRuntimeProfileService", _FakeProfileService)
     monkeypatch.setattr(

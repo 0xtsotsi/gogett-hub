@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from app.core.api.pagination import parse_uuid_page_token
 from app.core.api.uploads import UploadBudget, stage_upload_limited
 from app.core.api.dependencies import CurrentUser
-from app.core.config import settings
+from app.modules.datastore.config import datastore_settings
 from app.core.authorization.dependencies import PodContextDep
 from app.modules.datastore.api.dependencies import FileServiceDep, FileUseCasesDep
 from app.modules.datastore.api.schemas.datastore_schemas import (
@@ -157,7 +157,7 @@ async def upload_file(
 ) -> FileDetailResponse:
     async with stage_upload_limited(
         data,
-        max_bytes=settings.datastore_upload_max_bytes,
+        max_bytes=datastore_settings.datastore_upload_max_bytes,
         field="file",
     ) as staged:
         file_name = name or data.filename or "untitled"
@@ -301,7 +301,7 @@ async def update_file(
             await uploads.enter_async_context(
                 stage_upload_limited(
                     data,
-                    max_bytes=settings.datastore_upload_max_bytes,
+                    max_bytes=datastore_settings.datastore_upload_max_bytes,
                     field="file",
                 )
             )
@@ -355,14 +355,14 @@ async def attach_document_markdown(
     The source file remains unchanged; the markdown is indexed for agent use.
     """
     budget = UploadBudget(
-        max_bytes=settings.datastore_markdown_batch_max_bytes,
+        max_bytes=datastore_settings.datastore_markdown_batch_max_bytes,
         field="markdown batch",
     )
     async with AsyncExitStack() as uploads:
         markdown = await uploads.enter_async_context(
             stage_upload_limited(
                 data,
-                max_bytes=settings.datastore_markdown_max_bytes,
+                max_bytes=datastore_settings.datastore_markdown_max_bytes,
                 field="markdown",
                 budget=budget,
             )
@@ -374,7 +374,7 @@ async def attach_document_markdown(
             staged_image = await uploads.enter_async_context(
                 stage_upload_limited(
                     image,
-                    max_bytes=settings.datastore_markdown_image_max_bytes,
+                    max_bytes=datastore_settings.datastore_markdown_image_max_bytes,
                     field="markdown image",
                     budget=budget,
                 )

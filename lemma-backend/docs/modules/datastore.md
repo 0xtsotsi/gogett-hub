@@ -55,6 +55,8 @@ stateDiagram-v2
 The worker can use Kreuzberg, MarkItDown, or Docling-compatible processing.
 Large/parallel extraction is bounded by a semaphore and optional byte budget.
 The recovery cron requeues stale `PENDING`/`PROCESSING` rows.
+`DatastoreSettings` owns original, Markdown, attached-image, and request-batch
+upload ceilings as well as document-processing controls.
 
 ## Authorization
 

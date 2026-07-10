@@ -29,7 +29,10 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=dotenv_path(), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+        env_file=dotenv_path(),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
     )
     environment: Literal["local", "development", "production", "testing"] = Field(
         default="local",
@@ -178,37 +181,6 @@ class Settings(BaseSettings):
             "``WORKER_HEARTBEAT_PATH``."
         ),
     )
-    agent_run_stop_poll_interval_seconds: float = Field(
-        default=1.0,
-        description=(
-            "Minimum interval between DB polls of an agent run's stop flag. The "
-            "harness checks should_stop at every streaming checkpoint (per token "
-            "/ part / tool call); without throttling that is one SELECT per token "
-            "per run, flooding the pool. The checker caches the result and "
-            "re-queries at most this often (0 disables throttling). A stop "
-            "request is still honored within this interval."
-        ),
-    )
-    agent_context_brief_cache_ttl_seconds: int = Field(
-        default=60,
-        description=(
-            "TTL for the in-process cache of an agent's rendered runtime-context "
-            "brief, keyed by (agent, conversation, pod, user). The brief is "
-            "injected into the system prompt and rebuilt on every message; it "
-            "only changes when pod inventory/grants change, so caching it keeps "
-            "the hot path off the DB. Tradeoff: a just-changed grant/table can "
-            "lag by up to this long. 0 disables caching."
-        ),
-    )
-    function_run_poll_interval_seconds: float = Field(
-        default=5.0,
-        description=(
-            "Interval an agent's JOB-function tool waits between DB polls of the "
-            "function run's status. JOB functions are long-running, so 1s polling "
-            "is needlessly aggressive; 5s cuts the poll query rate 5x. The overall "
-            "wait budget is unchanged."
-        ),
-    )
     worker_shutdown_grace_period_seconds: int = Field(
         default=10,
         description=(
@@ -239,16 +211,6 @@ class Settings(BaseSettings):
             "Set to the actual value in your Postgres config."
         ),
     )
-    conversation_title_model: str | None = Field(
-        default=None,
-        description=(
-            "Model name (within the system runtime profile's catalog) used to "
-            "LLM-generate conversation titles. When unset (the default), no LLM "
-            "call is made: the title is derived from the user's first message. "
-            "Set this only to a model your provider actually serves — pointing "
-            "it at a non-existent model makes the title call hang."
-        ),
-    )
     redis_url: str = Field(
         default="redis://localhost:6379",
         description="Redis connection URL",
@@ -257,19 +219,6 @@ class Settings(BaseSettings):
         default=220 * 1024 * 1024,
         description="Global ASGI request-body ceiling, enforced while receiving bytes.",
     )
-    icon_upload_max_bytes: int = Field(default=5 * 1024 * 1024)
-    icon_max_dimension_pixels: int = Field(default=4096)
-    icon_max_total_pixels: int = Field(default=16_777_216)
-    datastore_upload_max_bytes: int = Field(default=100 * 1024 * 1024)
-    datastore_markdown_max_bytes: int = Field(default=25 * 1024 * 1024)
-    datastore_markdown_image_max_bytes: int = Field(default=10 * 1024 * 1024)
-    datastore_markdown_batch_max_bytes: int = Field(default=50 * 1024 * 1024)
-    app_source_archive_max_bytes: int = Field(default=100 * 1024 * 1024)
-    app_dist_archive_max_bytes: int = Field(default=100 * 1024 * 1024)
-    app_bundle_upload_max_bytes: int = Field(default=200 * 1024 * 1024)
-    app_archive_max_entries: int = Field(default=10_000)
-    app_archive_max_uncompressed_bytes: int = Field(default=400 * 1024 * 1024)
-    app_archive_max_compression_ratio: int = Field(default=200)
     redis_max_connections: int = Field(
         default=200,
         description="Maximum pooled Redis connections per process",
@@ -296,36 +245,6 @@ class Settings(BaseSettings):
             "failover / eviction): the lost group is recreated within this window "
             "and the subscriber resumes instead of spinning forever. Set to 0 to "
             "disable the background reconcile loop."
-        ),
-    )
-    daemon_ws_ping_stale_after_seconds: float = Field(
-        default=90.0,
-        description=(
-            "If a connected user daemon sends no daemon.ping for this long, the "
-            "backend closes the websocket proactively instead of waiting for a "
-            "TCP-level disconnect (handles a half-open connection the daemon "
-            "itself doesn't notice). Should comfortably exceed the daemon's own "
-            "self-declared-dead threshold (ping interval * missed-pong limit, "
-            "default 15s * 3 = 45s)."
-        ),
-    )
-    daemon_reconnect_grace_seconds: float = Field(
-        default=120.0,
-        description=(
-            "How long DaemonHarness.run() waits for a disconnected user daemon "
-            "to reattach an in-flight run before failing it. Bounded and "
-            "orthogonal to DEFAULT_DAEMON_EVENT_TIMEOUT_SECONDS (7200s), which "
-            "governs a *live* connection's max silent gap between events, not "
-            "disconnect recovery."
-        ),
-    )
-    local_agent_runtime_config_path: str = Field(
-        default_factory=lambda: str(
-            _default_local_root() / "lemma" / "agent-runtime.json"
-        ),
-        description=(
-            "Local-only file used by the runtime settings API to persist the "
-            "system default agent runtime."
         ),
     )
     lemma_default_model_type: Literal["openai_compat", "anthropic_compat"] = Field(
@@ -565,30 +484,6 @@ class Settings(BaseSettings):
         description=(
             "Optional auth frontend URL advertised to the Lemma CLI. Local dev "
             "can keep this distinct from the browser canonical auth URL."
-        ),
-    )
-    scheduler_api_url: str = Field(
-        default="http://localhost:8711", description="Scheduler API URL"
-    )
-    schedule_max_consecutive_failures: int = Field(
-        default=5,
-        description=(
-            "Circuit breaker: after this many consecutive failed fires, a schedule "
-            "is auto-deactivated (is_active=False) so it stops firing and filling "
-            "the DB with failing runs, and a ScheduleDeactivated event is emitted "
-            "(notifies the creator). A successful fire resets the count. Env: "
-            "``SCHEDULE_MAX_CONSECUTIVE_FAILURES``."
-        ),
-    )
-    scheduler_internal_token: Optional[SecretStr] = Field(
-        default=None,
-        description=(
-            "Shared secret for service-to-service auth on the scheduler sidecar's "
-            "/scheduler/jobs API. The backend sends it as a bearer token and the "
-            "sidecar requires it. When unset (e.g. local single-process dev where "
-            "nothing else can reach the router) the sidecar does not enforce auth. "
-            "Set it in every deployment where the sidecar runs as its own reachable "
-            "service. Env: ``SCHEDULER_INTERNAL_TOKEN``."
         ),
     )
     supertokens_core_url: str = Field(

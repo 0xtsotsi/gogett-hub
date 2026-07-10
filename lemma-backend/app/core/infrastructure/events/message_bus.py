@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -29,7 +30,12 @@ class FastStreamRedisMessageBus:
         async with self._lock:
             if not self._broker:
                 broker = RedisBroker(self._redis_url)
-                await broker.connect()
+                try:
+                    await broker.connect()
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        await broker.stop()
+                    raise
                 self._broker = broker
         return self._broker
 

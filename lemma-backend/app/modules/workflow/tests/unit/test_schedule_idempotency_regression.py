@@ -17,7 +17,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.modules.schedule.domain.schedule import ScheduleFireStatus
+from app.modules.schedule.domain.events.schedule import ScheduleDeactivated
+from app.modules.schedule.domain.schedule import ScheduleFireStatus, ScheduleType
 from app.modules.workflow.execution.engine import WorkflowEngine
 from app.modules.workflow.services.schedule_start_service import ScheduleStartService
 
@@ -93,7 +94,9 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
     import app.modules.schedule.repositories.schedule_repository as repo_mod
 
     monkeypatch.setattr(
-        repo_mod, "ScheduleRepository", lambda uow: Mock(get=AsyncMock(return_value=schedule))
+        repo_mod,
+        "ScheduleRepository",
+        lambda uow: Mock(get=AsyncMock(return_value=schedule)),
     )
 
     # The durable dedup claim reports "already delivered".
@@ -101,9 +104,7 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
 
     fire_repo = Mock()
     fire_repo.claim = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        fire_repo_mod, "ScheduleFireRepository", lambda uow: fire_repo
-    )
+    monkeypatch.setattr(fire_repo_mod, "ScheduleFireRepository", lambda uow: fire_repo)
 
     await svc.handle_schedule_fired(
         schedule_id=str(schedule.id),
@@ -127,7 +128,8 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
 async def test_failure_circuit_breaker(monkeypatch, status, counts, expect_deactivate):
     """ERROR increments and trips at the threshold; TRIGGERED resets."""
     monkeypatch.setattr(
-        "app.core.config.settings.schedule_max_consecutive_failures", 3
+        "app.modules.schedule.config.schedule_settings.schedule_max_consecutive_failures",
+        3,
     )
 
     svc = ScheduleStartService(_engine_with_mocks())
@@ -149,3 +151,33 @@ async def test_failure_circuit_breaker(monkeypatch, status, counts, expect_deact
     else:
         schedule_repo.update.assert_not_awaited()
         assert tripped is None
+
+
+@pytest.mark.anyio
+async def test_deactivation_event_is_staged_before_fire_transaction_commits(
+    monkeypatch,
+):
+    engine = _engine_with_mocks()
+    service = ScheduleStartService(engine)
+    schedule = SimpleNamespace(
+        id=uuid4(),
+        user_id=uuid4(),
+        schedule_type=ScheduleType.TIME,
+    )
+    schedule_repo = Mock()
+    schedule_repo.record_fire = AsyncMock()
+    monkeypatch.setattr(service, "_apply_failure_policy", AsyncMock(return_value=3))
+
+    await service._record_fire(
+        schedule_repo,
+        schedule,
+        status=ScheduleFireStatus.ERROR,
+        error="target dispatch failed",
+    )
+
+    staged = engine.uow.collect_events.call_args.args[0]
+    assert len(staged) == 1
+    assert isinstance(staged[0], ScheduleDeactivated)
+    assert staged[0].schedule_id == schedule.id
+    assert staged[0].consecutive_failures == 3
+    engine.uow.commit.assert_awaited_once()

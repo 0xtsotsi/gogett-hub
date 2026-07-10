@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.log.log import get_logger
 from app.core.observability.telemetry import agent_run_telemetry_context
+from app.modules.agent.config import agent_settings
 from app.modules.agent.domain.entities import Agent, AgentRun, Conversation, Message
 from app.modules.agent.domain.errors import (
     AgentNotFoundError,
@@ -87,7 +88,6 @@ from app.modules.usage.services.usage_context import (
 )
 
 logger = get_logger(__name__)
-
 FULL_HISTORY_AGENT_RUN_COUNT = 5
 
 
@@ -540,7 +540,7 @@ class AgentRunnerService:
         sticks (no further queries). A stop request is still honored within the
         poll interval. Interval ``0`` disables throttling (every call queries).
         """
-        interval = settings.agent_run_stop_poll_interval_seconds
+        interval = agent_settings.agent_run_stop_poll_interval_seconds
         stopped = False
         last_checked: float | None = None
 

@@ -19,8 +19,10 @@ or surfaces; target modules decide how to execute the fire.
 ## Data and schedule types
 
 `schedules` stores target, active state, type-specific config, optional filter
-instruction/schema, and external scheduler metadata. Supported logical types
-include time/cron or once, webhook, datastore, and application-triggered
+instruction/schema, and external scheduler metadata. `schedule_fires` is the
+durable idempotency/delivery ledger keyed by schedule plus source event; it
+records attempts, target run, payload, and terminal outcome. Supported logical
+types include time/cron or once, webhook, datastore, and application-triggered
 schedules. APScheduler owns the concrete time job store.
 
 ## API groups
@@ -48,9 +50,10 @@ flowchart LR
 ```
 
 The service mirrors logical changes into the external scheduler through an
-adapter. A Redis fire store deduplicates agent-target fires and counts
-consecutive failures for automatic deactivation; workflow targets additionally
-use a database uniqueness key.
+adapter. PostgreSQL deduplicates every target dispatch and tracks retry/dead
+letter state. Consecutive-failure policy is durable on the schedule row, and a
+deactivation event is staged in the same transaction as that state change.
+Publishers use the shared transactional outbox/core Redis Streams bus.
 
 ## Authorization and security
 
@@ -60,7 +63,7 @@ a pod is consumed as a system event to tear down schedules and external jobs.
 
 ## Tests and operations
 
-Tests cover normalization, filters, adapters, CRUD, scheduler calls, and event
-consumers. Current unit coverage is the lowest installed module at 54.2%
-(1,049 of 1,935 statements). Duplicate-fire and silent-filter-failure risks are
-tracked in [issues.md](issues.md).
+Tests cover normalization, filters, adapters, CRUD, scheduler calls, event
+consumers, concurrent fire deduplication, retry, and atomic deactivation.
+Operational status and remaining cross-module debt are tracked in
+[issues.md](issues.md).

@@ -18,6 +18,12 @@ sandbox lifecycle belongs to [workspace](workspace.md).
 | Published stream | `agent_events` |
 | Mounted MCP apps | Conversation and pod tool servers are assembled by the backend root using agent services |
 
+Durable lifecycle events are staged in the PostgreSQL outbox and reach Redis
+Streams only through the core message bus. Transient token/status frames use the
+core realtime-channel port with a Redis Pub/Sub adapter; each SSE connection
+leases one subscription connection and releases it on completion, failure, or
+cancellation.
+
 ## Main data model
 
 | Table | Meaning |
@@ -60,6 +66,8 @@ or test harness), builds only the allowed toolsets, creates short UoWs for
 message/status transitions, performs model/tool I/O outside them, publishes
 realtime frames, and records usage. Tool calls receive a delegated workload
 context; destructive operations require a standing grant or session approval.
+Daemon listener tasks are cancelled before their Redis clients close, and a
+superseded websocket cannot unregister its replacement connection.
 
 Subagents are child conversations with inherited workspace context and reduced
 toolsets. Widgets are tool outputs stored in conversation context and served

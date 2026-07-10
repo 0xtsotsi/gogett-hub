@@ -4,7 +4,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 import pytest
 
 from app.modules.apps.domain.errors import AppValidationError
-from app.core.config import settings
+from app.modules.apps.config import apps_settings
 from app.modules.apps.services.archive_validation import (
     _normalized_path,
     inspect_app_archive,
@@ -66,17 +66,17 @@ def test_archive_inspection_rejects_duplicate_paths() -> None:
 
 
 def test_archive_inspection_enforces_entry_size_and_ratio_limits(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "app_archive_max_entries", 1)
+    monkeypatch.setattr(apps_settings, "app_archive_max_entries", 1)
     with pytest.raises(AppValidationError, match="too many entries"):
         inspect_app_archive(_archive({"a": b"a", "b": b"b"}), label="Archive")
 
-    monkeypatch.setattr(settings, "app_archive_max_entries", 100)
-    monkeypatch.setattr(settings, "app_archive_max_uncompressed_bytes", 1)
+    monkeypatch.setattr(apps_settings, "app_archive_max_entries", 100)
+    monkeypatch.setattr(apps_settings, "app_archive_max_uncompressed_bytes", 1)
     with pytest.raises(AppValidationError, match="configured limit"):
         inspect_app_archive(_archive({"large": b"ab"}), label="Archive")
 
-    monkeypatch.setattr(settings, "app_archive_max_uncompressed_bytes", 10_000)
-    monkeypatch.setattr(settings, "app_archive_max_compression_ratio", 1)
+    monkeypatch.setattr(apps_settings, "app_archive_max_uncompressed_bytes", 10_000)
+    monkeypatch.setattr(apps_settings, "app_archive_max_compression_ratio", 1)
     with pytest.raises(AppValidationError, match="compression ratio"):
         inspect_app_archive(_archive({"compressed": b"x" * 1_000}), label="Archive")
 

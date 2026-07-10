@@ -21,6 +21,7 @@ from app.core.domain.errors import DomainError
 from app.core.infrastructure.db.session import async_session_maker
 from app.core.infrastructure.events.models import DomainEventInbox
 from app.core.log.log import get_logger
+from app.core.request_context import event_lineage
 
 
 logger = get_logger(__name__)
@@ -117,7 +118,17 @@ class InboxConsumer:
             span.set_attribute("lemma.event_consumer", consumer)
             span.set_attribute("lemma.event_attempt", attempt)
             try:
-                await handler()
+                payload = normalized_event_payload(event)
+                raw_correlation_id = payload.get("correlation_id")
+                try:
+                    correlation_id = UUID(str(raw_correlation_id))
+                except TypeError, ValueError:
+                    correlation_id = event_id
+                with event_lineage(
+                    correlation_id=correlation_id,
+                    causation_id=event_id,
+                ):
+                    await handler()
             except asyncio.CancelledError:
                 raise
             except ValidationError as exc:
@@ -254,9 +265,7 @@ class InboxConsumer:
             row.status = status.value
             row.last_received_at = now
             row.completed_at = (
-                now
-                if status in {InboxStatus.COMPLETED, InboxStatus.TERMINAL}
-                else None
+                now if status in {InboxStatus.COMPLETED, InboxStatus.TERMINAL} else None
             )
             row.dead_lettered_at = now if status == InboxStatus.DEAD_LETTER else None
             row.last_error_type = error_type[:200] if error_type else None

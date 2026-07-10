@@ -17,7 +17,6 @@ from app.modules.connectors.api.schemas.connector_operation_schemas import (
 from app.modules.connectors.services.connector_operation_service import (
     ConnectorOperationService,
 )
-from app.core.infrastructure.events.message_bus import get_message_bus
 
 
 class _ConnectorInfoToolDeps(BaseModel):
@@ -96,7 +95,7 @@ async def _with_connector_operation_service(
         return await callback(deps.service)
 
     async with async_session_maker() as session:
-        uow = SqlAlchemyUnitOfWork(session, message_bus=get_message_bus())
+        uow = SqlAlchemyUnitOfWork(session)
         service = build_connector_operation_service(uow)
         return await callback(service)
 

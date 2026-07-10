@@ -19,7 +19,7 @@ from uuid import UUID
 
 from pydantic_ai import Agent as PydanticAIAgent
 
-from app.core.config import settings
+from app.modules.agent.config import agent_settings
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.log.log import get_logger
 from app.modules.agent.domain.value_objects import (
@@ -88,7 +88,7 @@ class ConversationTitleService:
             # model the provider actually serves; on any failure we still fall
             # back to the first-message title rather than leaving it blank.
             title: str | None = None
-            if settings.conversation_title_model:
+            if agent_settings.conversation_title_model:
                 try:
                     title = await self._generate(
                         user_id=conversation.user_id,
@@ -198,7 +198,7 @@ class ConversationTitleService:
             return await service.resolve(
                 runtime=AgentRuntimeConfig(
                     profile_id=DEFAULT_SYSTEM_AGENT_RUNTIME_PROFILE_ID,
-                    model_name=settings.conversation_title_model,
+                    model_name=agent_settings.conversation_title_model,
                 ),
                 organization_id=organization_id,
                 user_id=user_id,

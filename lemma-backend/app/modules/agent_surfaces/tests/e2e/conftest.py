@@ -26,6 +26,9 @@ from app.modules.agent.tests.e2e.system_lemma_helpers import (
     system_lemma_api_key,
     system_lemma_env_overlay,
 )
+from app.modules.agent_surfaces.tests.e2e.mock_infrastructure import (
+    FakeComposioServer,
+)
 from app.modules.test_support.e2e import fixtures as e2e_fixtures
 
 # Re-export shared E2E fixtures so this module can run with --confcutdir.
@@ -36,7 +39,6 @@ redis_container = e2e_fixtures.redis_container
 test_database_url = e2e_fixtures.test_database_url
 test_redis_url = e2e_fixtures.test_redis_url
 e2e_settings = e2e_fixtures.e2e_settings
-worker = e2e_fixtures.worker
 db_manager = e2e_fixtures.db_manager
 test_app = e2e_fixtures.test_app
 async_client = e2e_fixtures.async_client
@@ -47,13 +49,24 @@ db_session = e2e_fixtures.db_session
 scenario = e2e_fixtures.scenario
 
 
-@pytest_asyncio.fixture(scope="function")
-async def system_lemma_worker(e2e_settings):
-    """Production streaq worker subprocess wired to ``system:lemma``.
+@pytest_asyncio.fixture(scope="session")
+async def fake_composio_server():
+    server = FakeComposioServer()
+    await server.start()
+    try:
+        yield server
+    finally:
+        await server.stop()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def worker(e2e_settings, fake_composio_server):
+    """Surface shard's production worker with a hermetic Composio transport.
 
     Default e2e mode uses the deterministic FunctionModel token source. When
     ``E2E_LLM_MODE=real`` is set, the existing system:lemma helper gates on the
-    configured LEMMA_OPENAI_* credentials.
+    configured LEMMA_OPENAI_* credentials. The local Composio API preserves the
+    real SDK/gateway boundary for Gmail and Outlook without live credentials.
     """
     import asyncio
 
@@ -104,6 +117,9 @@ async def system_lemma_worker(e2e_settings):
                 "DATABASE_URL": e2e_settings.database_url,
                 "DATASTORE_DATABASE_URL": e2e_settings.datastore_database_url,
                 "REDIS_URL": e2e_settings.redis_url,
+                "API_URL": e2e_settings.api_url,
+                "AGENTBOX_API_URL": e2e_settings.agentbox_api_url,
+                "AGENTBOX_API_KEY": e2e_settings.agentbox_api_key,
                 "SUPERTOKENS_CORE_URL": e2e_settings.supertokens_core_url,
                 "ENVIRONMENT": "testing",
                 "DEBUG": "true",
@@ -116,6 +132,10 @@ async def system_lemma_worker(e2e_settings):
                 "LOCAL_OBJECT_STORAGE_ROOT": e2e_settings.local_object_storage_root,
                 "LOCAL_FILE_STORAGE_ROOT": e2e_settings.local_file_storage_root,
                 "COMPOSIO_CACHE_DIR": "/tmp/composio",
+                "COMPOSIO_API_KEY": "test",
+                "COMPOSIO_BASE_URL": fake_composio_server.base_url,
+                "MICROSOFT_BOT_APP_ID": "teams-app-id",
+                "MICROSOFT_BOT_APP_PASSWORD": "teams-app-secret",
             },
             stdout=log_writer,
             stderr=subprocess.STDOUT,
@@ -186,6 +206,7 @@ __all__ = [
     "db_session",
     "e2e_settings",
     "fake_composio_email",
+    "fake_composio_server",
     "fake_gmail",
     "fake_outlook",
     "fake_resend",
@@ -206,6 +227,5 @@ __all__ = [
     "test_network",
     "test_pod",
     "test_redis_url",
-    "system_lemma_worker",
     "worker",
 ]

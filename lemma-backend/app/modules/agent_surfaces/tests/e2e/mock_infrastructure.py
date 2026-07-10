@@ -54,6 +54,104 @@ class MockPlatformMessageStore:
         self._messages.clear()
 
 
+class FakeComposioServer:
+    """Hermetic Composio v3.1 tool transport used by email-surface workers."""
+
+    def __init__(self) -> None:
+        self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
+        self._port: int | None = None
+        self.executions: list[dict[str, Any]] = []
+        self.outlook_messages: dict[str, dict[str, Any]] = {}
+
+    async def start(self) -> None:
+        app = web.Application()
+        app.router.add_get("/api/v3.1/tools/{tool_slug}", self._retrieve_tool)
+        app.router.add_post(
+            "/api/v3.1/tools/execute/{tool_slug}",
+            self._execute_tool,
+        )
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, host="127.0.0.1", port=0)
+        await self._site.start()
+        sockets = self._site._server.sockets if self._site._server else []
+        self._port = sockets[0].getsockname()[1]
+
+    async def stop(self) -> None:
+        if self._runner:
+            await self._runner.cleanup()
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self._port}"
+
+    def set_outlook_message(self, message_id: str, payload: dict[str, Any]) -> None:
+        self.outlook_messages[message_id] = payload
+
+    async def _retrieve_tool(self, request: web.Request) -> web.Response:
+        slug = request.match_info["tool_slug"]
+        toolkit_slug = "outlook" if slug.startswith("OUTLOOK_") else "gmail"
+        return web.json_response(
+            {
+                "available_versions": ["latest"],
+                "deprecated": {
+                    "available_versions": ["latest"],
+                    "displayName": slug,
+                    "is_deprecated": False,
+                    "toolkit": {"logo": ""},
+                    "version": "latest",
+                },
+                "description": f"Hermetic {slug}",
+                "input_parameters": {},
+                "is_deprecated": False,
+                "name": slug,
+                "no_auth": False,
+                "output_parameters": {},
+                "scopes": [],
+                "slug": slug,
+                "tags": [],
+                "toolkit": {
+                    "logo": "",
+                    "name": toolkit_slug.title(),
+                    "slug": toolkit_slug,
+                },
+                "version": "latest",
+            }
+        )
+
+    async def _execute_tool(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        tool_slug = request.match_info["tool_slug"]
+        execution = {
+            "tool_slug": tool_slug,
+            "body": body,
+            **_request_contract(request),
+        }
+        self.executions.append(execution)
+        arguments = body.get("arguments") or {}
+        if tool_slug == "OUTLOOK_GET_MESSAGE":
+            data = self.outlook_messages.get(str(arguments.get("message_id") or ""), {})
+        elif "ATTACHMENT" in tool_slug:
+            data = {
+                "content_b64": base64.b64encode(
+                    f"fake attachment from {tool_slug}".encode()
+                ).decode("ascii")
+            }
+        else:
+            data = {
+                "id": f"composio-e2e-{len(self.executions)}",
+                "thread_id": arguments.get("thread_id"),
+            }
+        return web.json_response(
+            {
+                "successful": True,
+                "data": data,
+                "error": None,
+            }
+        )
+
+
 class FakeSlackServer:
     """Lightweight aiohttp server mimicking the Slack Web API."""
 
@@ -73,10 +171,14 @@ class FakeSlackServer:
         app.router.add_route(
             "*", "/api/conversations.replies", self._conversations_replies
         )
+        app.router.add_route(
+            "*", "/api/conversations.list", self._conversations_list
+        )
         app.router.add_route("*", "/api/chat.postMessage", self._chat_post_message)
         app.router.add_route("*", "/api/chat.update", self._chat_update)
         app.router.add_route("*", "/api/chat.delete", self._chat_delete)
         app.router.add_route("*", "/api/reactions.add", self._reactions_add)
+        app.router.add_route("*", "/api/files.info", self._files_info)
         app.router.add_route(
             "*", "/api/assistant.threads.setStatus", self._assistant_threads_set_status
         )
@@ -87,6 +189,7 @@ class FakeSlackServer:
             "*", "/api/files.completeUploadExternal", self._files_complete_upload_external
         )
         app.router.add_post("/upload/{file_id}", self._upload_raw_file)
+        app.router.add_get("/files/{file_id}", self._download_file)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -134,10 +237,68 @@ class FakeSlackServer:
         )
 
     async def _conversations_history(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "messages": []})
+        params = await self._collect_params(request)
+        self._store.add("SLACK_HISTORY", params)
+        return web.json_response(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "ts": "1700000000.777002",
+                        "user": "U-CURRENT",
+                        "text": "Current channel message",
+                    },
+                    {
+                        "ts": "1700000000.777001",
+                        "user": "U-CONTEXT",
+                        "text": "Earlier support context",
+                        "user_profile": {"display_name": "Earlier Teammate"},
+                    },
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+        )
 
     async def _conversations_replies(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "messages": []})
+        params = await self._collect_params(request)
+        self._store.add("SLACK_REPLIES", params)
+        return web.json_response(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "ts": "1700000000.777000",
+                        "user": "U-CONTEXT",
+                        "text": "Thread root context",
+                    },
+                    {
+                        "ts": "1700000000.777001",
+                        "user": "U-SECOND",
+                        "text": "Thread follow-up context",
+                    },
+                    {
+                        "ts": "1700000000.777002",
+                        "user": "U-CURRENT",
+                        "text": "Current channel message",
+                    },
+                ],
+            }
+        )
+
+    async def _conversations_list(self, request: web.Request) -> web.Response:
+        params = await self._collect_params(request)
+        self._store.add("SLACK_CHANNEL_LIST", params)
+        return web.json_response(
+            {
+                "ok": True,
+                "channels": [
+                    {"id": "C-SUPPORT", "name": "support", "is_member": True},
+                    {"id": "C-INCIDENTS", "name": "incidents", "is_member": False},
+                    {"name": "malformed-without-id"},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+        )
 
     async def _chat_post_message(self, request: web.Request) -> web.Response:
         params = await self._collect_params(request)
@@ -163,6 +324,34 @@ class FakeSlackServer:
         params = await self._collect_params(request)
         self._store.add("SLACK_REACTIONS", params)
         return web.json_response({"ok": True})
+
+    async def _files_info(self, request: web.Request) -> web.Response:
+        params = await self._collect_params(request)
+        file_id = str(params.get("file") or "F-SURFACE-E2E")
+        return web.json_response(
+            {
+                "ok": True,
+                "file": {
+                    "id": file_id,
+                    "name": "slack-customer-brief.txt",
+                    "mimetype": "text/plain",
+                    "url_private_download": (
+                        f"http://127.0.0.1:{self._port}/files/{file_id}"
+                    ),
+                },
+            }
+        )
+
+    async def _download_file(self, request: web.Request) -> web.Response:
+        file_id = request.match_info["file_id"]
+        self._store.add(
+            "SLACK_FILE_DOWNLOAD",
+            {"file_id": file_id, **_request_contract(request)},
+        )
+        return web.Response(
+            body=f"fake Slack attachment {file_id}".encode(),
+            content_type="text/plain",
+        )
 
     async def _assistant_threads_set_status(self, request: web.Request) -> web.Response:
         params = await self._collect_params(request)
@@ -238,6 +427,18 @@ class FakeTeamsServer:
             self._get_member,
         )
         app.router.add_get("/teams/v3/teams/{team_id}", self._get_team)
+        app.router.add_get(
+            "/teams/v3/attachments/{attachment_id}/views/original",
+            self._get_attachment,
+        )
+        app.router.add_get(
+            "/graph/v1.0/teams/{team_id}/channels/{channel_id}/messages",
+            self._get_channel_messages,
+        )
+        app.router.add_get(
+            "/graph/v1.0/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
+            self._get_channel_messages,
+        )
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -253,6 +454,13 @@ class FakeTeamsServer:
     @property
     def service_url(self) -> str:
         return f"http://127.0.0.1:{self._port}/teams"
+
+    @property
+    def graph_base_url(self) -> str:
+        return f"http://127.0.0.1:{self._port}/graph/v1.0"
+
+    def attachment_url(self, attachment_id: str) -> str:
+        return f"{self.service_url}/v3/attachments/{attachment_id}/views/original"
 
     @property
     def openid_config_url(self) -> str:
@@ -323,6 +531,59 @@ class FakeTeamsServer:
             }
         )
 
+    async def _get_attachment(self, request: web.Request) -> web.Response:
+        attachment_id = request.match_info["attachment_id"]
+        self._store.add(
+            "TEAMS_ATTACHMENT",
+            {"attachment_id": attachment_id, **_request_contract(request)},
+        )
+        return web.Response(
+            body=f"fake Teams attachment {attachment_id}".encode(),
+            content_type="text/plain",
+        )
+
+    async def _get_channel_messages(self, request: web.Request) -> web.Response:
+        self._store.add(
+            "TEAMS_GRAPH",
+            {
+                "team_id": request.match_info["team_id"],
+                "channel_id": request.match_info["channel_id"],
+                "message_id": request.match_info.get("message_id"),
+                **_request_contract(request),
+            },
+        )
+        return web.json_response(
+            {
+                "value": [
+                    {
+                        "id": "teams-context-001",
+                        "body": {
+                            "contentType": "html",
+                            "content": "<p>Earlier customer context</p>",
+                        },
+                        "from": {
+                            "user": {
+                                "id": "teams-context-user",
+                                "displayName": "Earlier Participant",
+                            }
+                        },
+                        "attachments": [],
+                    },
+                    {
+                        "id": "1776236638028",
+                        "body": {"contentType": "text", "content": "Current message"},
+                        "from": {
+                            "user": {
+                                "id": "b20e77ef-bd6b-4636-9f5b-20dd28beba24",
+                                "displayName": "Surface Test User",
+                            }
+                        },
+                        "attachments": [],
+                    },
+                ]
+            }
+        )
+
 
 class FakeWhatsAppServer:
     """Lightweight aiohttp server mimicking the WhatsApp Business API."""
@@ -343,6 +604,8 @@ class FakeWhatsAppServer:
             "/v21.0/{phone_number_id}/media",
             self._upload_media,
         )
+        app.router.add_get("/v21.0/{media_id}", self._get_media_info)
+        app.router.add_get("/media/{media_id}", self._download_media)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -374,6 +637,31 @@ class FakeWhatsAppServer:
         )
         return web.json_response({"id": media_id})
 
+    async def _get_media_info(self, request: web.Request) -> web.Response:
+        media_id = request.match_info["media_id"]
+        self._store.add(
+            "WHATSAPP_MEDIA_INFO",
+            {"media_id": media_id, **_request_contract(request)},
+        )
+        return web.json_response(
+            {
+                "id": media_id,
+                "mime_type": "text/plain",
+                "url": f"{self.api_base}/media/{media_id}",
+            }
+        )
+
+    async def _download_media(self, request: web.Request) -> web.Response:
+        media_id = request.match_info["media_id"]
+        self._store.add(
+            "WHATSAPP_MEDIA_DOWNLOAD",
+            {"media_id": media_id, **_request_contract(request)},
+        )
+        return web.Response(
+            body=f"fake WhatsApp media {media_id}".encode(),
+            content_type="text/plain",
+        )
+
     async def _send_message(self, request: web.Request) -> web.Response:
         body = await request.json()
         self._store.add("WHATSAPP", {**body, **_request_contract(request)})
@@ -401,6 +689,7 @@ class FakeTelegramServer:
         self._port: int | None = None
         self._registered_webhook: dict | None = None
         self.fail_next: dict[str, int] = {}
+        self._updates: list[dict[str, Any]] = []
 
     async def start(self) -> None:
         app = web.Application()
@@ -413,6 +702,7 @@ class FakeTelegramServer:
         app.router.add_post("/bot{token}/setWebhook", self._set_webhook)
         app.router.add_post("/bot{token}/deleteWebhook", self._delete_webhook)
         app.router.add_post("/bot{token}/getWebhookInfo", self._get_webhook_info)
+        app.router.add_post("/bot{token}/getUpdates", self._get_updates)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -428,6 +718,34 @@ class FakeTelegramServer:
     @property
     def api_base(self) -> str:
         return f"http://127.0.0.1:{self._port}"
+
+    def queue_update(self, payload: dict[str, Any]) -> None:
+        """Make one deterministic update available to the polling receiver."""
+        self._updates.append(payload)
+
+    async def _get_updates(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        offset = int(str(form.get("offset") or "0"))
+        ready = [
+            update
+            for update in self._updates
+            if int(update.get("update_id") or 0) >= offset
+        ]
+        if ready:
+            delivered_ids = {int(update.get("update_id") or 0) for update in ready}
+            self._updates = [
+                update
+                for update in self._updates
+                if int(update.get("update_id") or 0) not in delivered_ids
+            ]
+        else:
+            # Avoid a hot loop while retaining a fast deterministic poll.
+            await asyncio.sleep(0.05)
+        self._store.add(
+            "TELEGRAM_GET_UPDATES",
+            {"offset": offset, "count": len(ready), **_request_contract(request)},
+        )
+        return web.json_response({"ok": True, "result": ready})
 
     @property
     def webhook_calls(self) -> list[str]:

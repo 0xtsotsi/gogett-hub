@@ -79,16 +79,26 @@ class FakeDocumentProcessorServer:
             await asyncio.sleep(0.4)
 
         needle = f"Deterministic extracted content for {filename}"
+        content = (
+            ""
+            if filename.startswith("pages-only")
+            else f"<!-- PAGE 1 -->\n\n# Extracted\n\n{needle}\n\n![](figure.png)"
+        )
+        chunks = (
+            []
+            if filename.startswith("chunk-fallback")
+            else [
+                {
+                    "text": needle,
+                    "metadata": {"first_page": 1, "last_page": 1},
+                }
+            ]
+        )
         return web.json_response(
             [
                 {
-                    "content": f"<!-- PAGE 1 -->\n\n# Extracted\n\n{needle}\n\n![](figure.png)",
-                    "chunks": [
-                        {
-                            "text": needle,
-                            "metadata": {"first_page": 1, "last_page": 1},
-                        }
-                    ],
+                    "content": content,
+                    "chunks": chunks,
                     "pages": [
                         {
                             "page_number": 1,

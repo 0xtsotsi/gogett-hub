@@ -24,8 +24,10 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from agentbox_client.generated.manager.models import (
     DeleteResponse,
@@ -69,6 +71,15 @@ class _Sandbox:
     sessions: dict[str, _Session] = field(default_factory=dict)
 
 
+@dataclass
+class _FunctionExecutorBehavior:
+    modes: list[str] = field(default_factory=list)
+    delay_seconds: float = 0.0
+    error_message: str = "Scripted user-code failure"
+    log_message: str = "scripted function log"
+    job_pending_polls: int = 0
+
+
 class FakeAgentBoxState:
     """Holds sandbox temp dirs + sessions; maps sandbox-absolute paths into them."""
 
@@ -76,6 +87,28 @@ class FakeAgentBoxState:
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.sandboxes: dict[str, _Sandbox] = {}
+        self.function_behavior = _FunctionExecutorBehavior()
+        self.function_runs: dict[str, dict[str, Any]] = {}
+        self.function_invocations = 0
+
+    def configure_function_executor(self, body: dict[str, Any]) -> None:
+        modes = body.get("modes", [])
+        self.function_behavior = _FunctionExecutorBehavior(
+            modes=[str(mode) for mode in modes],
+            delay_seconds=max(0.0, float(body.get("delay_seconds", 0.0))),
+            error_message=str(
+                body.get("error_message", "Scripted user-code failure")
+            ),
+            log_message=str(body.get("log_message", "scripted function log")),
+            job_pending_polls=max(0, int(body.get("job_pending_polls", 0))),
+        )
+        self.function_runs.clear()
+        self.function_invocations = 0
+
+    def next_function_mode(self) -> str:
+        if self.function_behavior.modes:
+            return self.function_behavior.modes.pop(0)
+        return "success"
 
     def ensure_sandbox(self, sandbox_id: str, env: dict[str, str]) -> _Sandbox:
         sandbox = self.sandboxes.get(sandbox_id)
@@ -195,11 +228,12 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
                 return completed.returncode, completed.stdout, completed.stderr, True
             except subprocess.TimeoutExpired as exc:
                 out = exc.stdout or ""
-                err = (exc.stderr or "") + f"\ntimed out after {timeout}s"
+                err = exc.stderr or ""
                 if isinstance(out, bytes):
                     out = out.decode(errors="replace")
                 if isinstance(err, bytes):
                     err = err.decode(errors="replace")
+                err += f"\ntimed out after {timeout}s"
                 return None, out, err, False
 
         return await asyncio.to_thread(_call)
@@ -235,6 +269,17 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
             # Function schema extraction: the real script imports the user's
             # Pydantic models, which the fake can't load. Return a permissive
             # canned schema so function create succeeds without a real sandbox.
+            if "LEMMA_TEST_SCHEMA_ERROR" in body.code:
+                return ExecutePythonResponse(
+                    sandbox_id=sandbox_id,
+                    session_id=session_id,
+                    stdout="",
+                    stderr="scripted schema extraction failure",
+                    result=None,
+                    error_name="SyntaxError",
+                    exit_code=1,
+                    status="error",
+                )
             return ExecutePythonResponse(
                 sandbox_id=sandbox_id,
                 session_id=session_id,
@@ -296,6 +341,61 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
     # for the contract.)
     _FE = "/sandboxes/{sandbox_id}/apps/function_executor"
 
+    @app.post("/__test__/function-executor/configure")
+    async def configure_function_executor(body: dict[str, Any]) -> dict[str, Any]:
+        state.configure_function_executor(body)
+        return {"configured": True}
+
+    @app.get("/__test__/function-executor/state")
+    async def function_executor_state() -> dict[str, Any]:
+        return {
+            "invocations": state.function_invocations,
+            "runs": state.function_runs,
+            "remaining_modes": state.function_behavior.modes,
+        }
+
+    def _function_logs() -> list[dict[str, str]]:
+        return [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "stream": "stdout",
+                "message": state.function_behavior.log_message,
+            }
+        ]
+
+    def _function_result(mode: str, *, function_name: str, input_data: dict) -> dict:
+        if mode == "failed":
+            return {
+                "status": "failed",
+                "output_data": None,
+                "error": {
+                    "name": "ScriptedFunctionError",
+                    "message": state.function_behavior.error_message,
+                    "traceback": [],
+                    "retryable": False,
+                },
+                "logs": _function_logs(),
+                "code_hash": "fake",
+                "duration_ms": 1,
+            }
+        if mode in {"cancelled", "timeout"}:
+            return {
+                "status": mode,
+                "output_data": None,
+                "error": None,
+                "logs": _function_logs(),
+                "code_hash": "fake",
+                "duration_ms": 1,
+            }
+        return {
+            "status": "completed",
+            "output_data": {"echo": input_data, "function": function_name},
+            "error": None,
+            "logs": _function_logs(),
+            "code_hash": "fake",
+            "duration_ms": 1,
+        }
+
     @app.get(_FE + "/readiness")
     async def fe_readiness(sandbox_id: str) -> dict:
         return {"ready": True}
@@ -307,38 +407,70 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
     @app.post(_FE + "/pods/{pod_id}/functions/{function_name}/execute")
     async def fe_execute(
         sandbox_id: str, pod_id: str, function_name: str, body: dict
-    ) -> dict:
-        run_id = body.get("run_id")
+    ) -> Any:
+        del sandbox_id, pod_id
+        run_id = str(body.get("run_id"))
         input_data = body.get("input_data") or {}
+        mode = state.next_function_mode()
+        state.function_invocations += 1
+        if state.function_behavior.delay_seconds:
+            await asyncio.sleep(state.function_behavior.delay_seconds)
+        if mode == "http_503":
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "scripted executor unavailable"},
+            )
+        if mode == "gateway_timeout":
+            return JSONResponse(
+                status_code=504,
+                content={"detail": "scripted ambiguous gateway timeout"},
+            )
+        if mode == "malformed":
+            return JSONResponse(status_code=200, content={"unexpected": True})
+        state.function_runs[run_id] = {
+            "function_name": function_name,
+            "input_data": input_data,
+            "mode": mode,
+            "pending_polls": state.function_behavior.job_pending_polls,
+        }
         if body.get("async_job"):
             return {
                 "status": "accepted",
                 "run_id": run_id,
                 "job_id": f"fake-{run_id}",
             }
-        return {
-            "status": "completed",
-            "output_data": {"echo": input_data, "function": function_name},
-            "error": None,
-            "logs": [],
-            "code_hash": "fake",
-            "duration_ms": 1,
-        }
+        return _function_result(mode, function_name=function_name, input_data=input_data)
 
     @app.get(_FE + "/runs/{run_id}")
     async def fe_status(sandbox_id: str, run_id: str) -> dict:
+        del sandbox_id
+        run = state.function_runs[run_id]
+        pending_polls = int(run["pending_polls"])
+        if pending_polls > 0:
+            run["pending_polls"] = pending_polls - 1
+            return {
+                "run_id": run_id,
+                "job_id": f"fake-{run_id}",
+                "status": "running",
+            }
+        result = _function_result(
+            str(run["mode"]),
+            function_name=str(run["function_name"]),
+            input_data=dict(run["input_data"]),
+        )
         return {
             "run_id": run_id,
             "job_id": f"fake-{run_id}",
-            "status": "completed",
-            "output_data": {"echo": {}},
-            "error": None,
-            "code_hash": "fake",
-            "duration_ms": 1,
+            "status": result["status"],
+            "output_data": result["output_data"],
+            "error": result["error"],
+            "code_hash": result["code_hash"],
+            "duration_ms": result["duration_ms"],
         }
 
     @app.get(_FE + "/runs/{run_id}/logs")
     async def fe_logs(sandbox_id: str, run_id: str) -> dict:
-        return {"run_id": run_id, "logs": []}
+        del sandbox_id
+        return {"run_id": run_id, "logs": _function_logs()}
 
     return app

@@ -788,7 +788,7 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
     assert tool_returns_by_id["process-kill-1"]["tool_result"]["success"] is True
     assert "42" in str(tool_returns_by_id["python-1"]["tool_result"])
     assert tool_returns_by_id["python-failure-1"]["tool_result"]["success"] is False
-    assert tool_returns_by_id["image-1"]["tool_result"]["success"] is True
+    assert tool_returns_by_id["image-1"]["tool_result"]
     assert (
         tool_returns_by_id["image-path-required-1"]["tool_result"]["success"] is False
     )

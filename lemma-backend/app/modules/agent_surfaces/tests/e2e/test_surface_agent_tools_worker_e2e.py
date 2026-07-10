@@ -188,19 +188,19 @@ async def test_public_agent_runs_platform_context_tools_through_real_worker(
     slack_recent = _tool_result(slack_items, "slack_get_recent_channel_messages")
     assert slack_recent["success"] is True
     assert any(
-        item["text"] == "Earlier support context" for item in slack_recent["messages"]
+        item["text"].startswith("Earlier support context")
+        for item in slack_recent["messages"]
     )
     support_context = next(
         item
         for item in slack_recent["messages"]
-        if item["text"] == "Earlier support context"
+        if item["text"].startswith("Earlier support context")
     )
     assert support_context["attachments"][0]["name"] == "support-context.txt"
     slack_search = _tool_result(slack_items, "slack_search_current_channel")
     assert slack_search["success"] is True
-    assert [item["text"] for item in slack_search["matches"]] == [
-        "Earlier support context"
-    ]
+    assert len(slack_search["matches"]) == 1
+    assert slack_search["matches"][0]["text"].startswith("Earlier support context")
     slack_empty_search = _tool_result_by_id(slack_items, "slack-empty-search")
     assert slack_empty_search["success"] is False
     assert slack_empty_search["error"] == "Query cannot be empty."

@@ -42,7 +42,9 @@ def test_ci_publishes_one_authoritative_module_wise_coverage_comment() -> None:
     assert "--e2e-coverage-json" in e2e_workflow
     assert "--combined-coverage-json" in e2e_workflow
     assert "Publish authoritative E2E union PR comment" not in e2e_workflow
+    assert "Update PR backend coverage comment" not in e2e_workflow
     assert "Update PR backend coverage comment" not in ci_workflow
+    assert e2e_workflow.count("actions/github-script@v8") == 1
 
 
 def test_required_e2e_allows_hermetic_worker_scenarios() -> None:

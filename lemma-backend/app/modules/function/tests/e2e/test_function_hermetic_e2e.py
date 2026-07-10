@@ -139,10 +139,14 @@ async def test_function_definition_lifecycle_permissions_and_validation(
 
     updated = await authenticated_client.patch(
         f"/pods/{pod_id}/functions/{name}",
-        json={"description": "Updated through the public API"},
+        json={
+            "description": "Updated through the public API",
+            "code": _function_source(name, extra="# updated schema extraction"),
+        },
     )
     assert updated.status_code == status.HTTP_200_OK, updated.text
     assert updated.json()["description"] == "Updated through the public API"
+    assert updated.json()["status"] == "READY"
 
     replaced = await authenticated_client.put(
         f"/pods/{pod_id}/functions/{name}/permissions",
@@ -172,11 +176,28 @@ async def test_function_definition_lifecycle_permissions_and_validation(
     assert malformed.json()["code"] == "FUNCTION_VALIDATION_ERROR"
     # The durable draft remains available for correction instead of pretending
     # a READY definition was created.
-    draft = await authenticated_client.get(
-        f"/pods/{pod_id}/functions/{malformed_name}"
-    )
+    draft = await authenticated_client.get(f"/pods/{pod_id}/functions/{malformed_name}")
     assert draft.status_code == status.HTTP_200_OK, draft.text
     assert draft.json()["status"] == "DRAFT"
+
+    extraction_error_name = f"schema_error_{uuid4().hex[:8]}"
+    extraction_error = await authenticated_client.post(
+        f"/pods/{pod_id}/functions",
+        json={
+            "name": extraction_error_name,
+            "code": _function_source(
+                extraction_error_name,
+                extra="# LEMMA_TEST_SCHEMA_ERROR",
+            ),
+        },
+    )
+    assert extraction_error.status_code == status.HTTP_400_BAD_REQUEST
+    assert extraction_error.json()["code"] == "FUNCTION_VALIDATION_ERROR"
+    extraction_draft = await authenticated_client.get(
+        f"/pods/{pod_id}/functions/{extraction_error_name}"
+    )
+    assert extraction_draft.status_code == status.HTTP_200_OK
+    assert extraction_draft.json()["status"] == "DRAFT"
 
     deleted = await authenticated_client.delete(f"/pods/{pod_id}/functions/{name}")
     assert deleted.status_code == status.HTTP_200_OK, deleted.text
@@ -212,9 +233,7 @@ async def test_api_runs_persist_output_logs_history_and_reuse_hot_session(
     )
     assert persisted.status_code == status.HTTP_200_OK, persisted.text
     assert persisted.json() == first
-    history = await authenticated_client.get(
-        f"/pods/{pod_id}/functions/{name}/runs"
-    )
+    history = await authenticated_client.get(f"/pods/{pod_id}/functions/{name}/runs")
     assert history.status_code == status.HTTP_200_OK, history.text
     assert {item["id"] for item in history.json()["items"]} >= {
         first["id"],
@@ -296,7 +315,9 @@ async def test_api_gateway_timeout_and_malformed_executor_response_are_terminal(
         {"value": "malformed"},
     )
     assert malformed["status"] == "FAILED"
-    assert malformed["error"] == "The function failed to execute due to an internal error."
+    assert (
+        malformed["error"] == "The function failed to execute due to an internal error."
+    )
     persisted = await authenticated_client.get(
         f"/pods/{pod_id}/functions/{name}/runs/{malformed['id']}"
     )
@@ -350,8 +371,6 @@ async def test_job_run_crosses_outbox_stream_worker_and_retries_by_run_id(
     assert state["invocations"] == 2
     assert accepted["id"] in state["runs"]
 
-    history = await authenticated_client.get(
-        f"/pods/{pod_id}/functions/{name}/runs"
-    )
+    history = await authenticated_client.get(f"/pods/{pod_id}/functions/{name}/runs")
     assert history.status_code == status.HTTP_200_OK, history.text
     assert any(item["id"] == accepted["id"] for item in history.json()["items"])

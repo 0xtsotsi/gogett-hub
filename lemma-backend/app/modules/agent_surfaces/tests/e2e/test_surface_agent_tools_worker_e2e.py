@@ -87,6 +87,20 @@ def _tool_result(items: list[dict[str, Any]], tool_name: str) -> dict[str, Any]:
     return payload
 
 
+def _tool_result_by_id(
+    items: list[dict[str, Any]], tool_call_id: str
+) -> dict[str, Any]:
+    result = next(
+        item
+        for item in items
+        if item.get("kind") == "TOOL_RETURN"
+        and item.get("tool_call_id") == tool_call_id
+    )
+    payload = result["tool_result"]
+    assert isinstance(payload, dict), payload
+    return payload
+
+
 @pytest.mark.asyncio
 async def test_public_agent_runs_platform_context_tools_through_real_worker(
     authenticated_client,
@@ -158,6 +172,17 @@ async def test_public_agent_runs_platform_context_tools_through_real_worker(
                 },
                 tool_call_id="slack-search",
             ),
+            script_tool_call(
+                "slack_search_current_channel",
+                {
+                    "request": {
+                        "query": " ",
+                        "limit": 5,
+                        "scan_limit": 10,
+                    }
+                },
+                tool_call_id="slack-empty-search",
+            ),
         ],
     )
     slack_recent = _tool_result(slack_items, "slack_get_recent_channel_messages")
@@ -165,11 +190,42 @@ async def test_public_agent_runs_platform_context_tools_through_real_worker(
     assert any(
         item["text"] == "Earlier support context" for item in slack_recent["messages"]
     )
+    support_context = next(
+        item
+        for item in slack_recent["messages"]
+        if item["text"] == "Earlier support context"
+    )
+    assert support_context["attachments"][0]["name"] == "support-context.txt"
     slack_search = _tool_result(slack_items, "slack_search_current_channel")
     assert slack_search["success"] is True
     assert [item["text"] for item in slack_search["matches"]] == [
         "Earlier support context"
     ]
+    slack_empty_search = _tool_result_by_id(slack_items, "slack-empty-search")
+    assert slack_empty_search["success"] is False
+    assert slack_empty_search["error"] == "Query cannot be empty."
+
+    slack_missing_context_items = await _run_public_surface_tool_script(
+        authenticated_client,
+        pod_id=pod_id,
+        agent_name=slack_agent["name"],
+        metadata={
+            "surface_id": slack_surface["id"],
+            "surface_platform": "SLACK",
+        },
+        script=[
+            script_tool_call(
+                "slack_get_recent_channel_messages",
+                {"request": {"limit": 10}},
+                tool_call_id="slack-missing-context",
+            )
+        ],
+    )
+    slack_missing_context = _tool_result_by_id(
+        slack_missing_context_items, "slack-missing-context"
+    )
+    assert slack_missing_context["success"] is False
+    assert "missing channel credentials" in slack_missing_context["error"]
 
     teams_account = await _ensure_connector_account(
         db_session,
@@ -200,27 +256,26 @@ async def test_public_agent_runs_platform_context_tools_through_real_worker(
         "teams-graph-token",
     )
     await token_cache.close()
+    teams_conversation_metadata = {
+        "surface_id": teams_surface["id"],
+        "surface_platform": "TEAMS",
+        "surface_event_metadata": {
+            "platform": "TEAMS",
+            "team_id": ("19:OHV_1hj7zqTYZp07gcOvjWBdiwR8UML4cj3vny7OANk1@thread.tacv2"),
+            "team_aad_group_id": "27029c82-5e8f-48a5-ae72-4cb914987d30",
+            "channel_id": REAL_TEAMS_CHANNEL_ID,
+            "service_url": fake_teams.service_url,
+            "conversation_id": "teams-surface-tool-thread",
+        },
+        "external_channel_id": REAL_TEAMS_CHANNEL_ID,
+        "external_thread_id": "1776236638028",
+        "external_user_id": "teams-surface-tool-user",
+    }
     teams_items = await _run_public_surface_tool_script(
         authenticated_client,
         pod_id=pod_id,
         agent_name=teams_agent["name"],
-        metadata={
-            "surface_id": teams_surface["id"],
-            "surface_platform": "TEAMS",
-            "surface_event_metadata": {
-                "platform": "TEAMS",
-                "team_id": (
-                    "19:OHV_1hj7zqTYZp07gcOvjWBdiwR8UML4cj3vny7OANk1@thread.tacv2"
-                ),
-                "team_aad_group_id": "27029c82-5e8f-48a5-ae72-4cb914987d30",
-                "channel_id": REAL_TEAMS_CHANNEL_ID,
-                "service_url": fake_teams.service_url,
-                "conversation_id": "teams-surface-tool-thread",
-            },
-            "external_channel_id": REAL_TEAMS_CHANNEL_ID,
-            "external_thread_id": "1776236638028",
-            "external_user_id": "teams-surface-tool-user",
-        },
+        metadata=teams_conversation_metadata,
         script=[
             script_tool_call(
                 "teams_get_recent_channel_messages",
@@ -232,6 +287,11 @@ async def test_public_agent_runs_platform_context_tools_through_real_worker(
                 {"request": {"limit": 10, "scope": "channel"}},
                 tool_call_id="teams-channel",
             ),
+            script_tool_call(
+                "teams_get_recent_channel_messages",
+                {"request": {"limit": 10, "scope": "auto"}},
+                tool_call_id="teams-auto",
+            ),
         ],
     )
     teams_results = [
@@ -240,13 +300,83 @@ async def test_public_agent_runs_platform_context_tools_through_real_worker(
         if item.get("kind") == "TOOL_RETURN"
         and item.get("tool_name") == "teams_get_recent_channel_messages"
     ]
-    assert len(teams_results) == 2
+    assert len(teams_results) == 3
     assert all(result["success"] is True for result in teams_results)
     assert any(
         message["text"] == "Earlier customer context"
         for result in teams_results
         for message in result["messages"]
     )
+    assert any(
+        attachment["name"] == "customer-context.pdf"
+        for result in teams_results
+        for message in result["messages"]
+        for attachment in message["attachments"]
+    )
+
+    teams_no_thread_items = await _run_public_surface_tool_script(
+        authenticated_client,
+        pod_id=pod_id,
+        agent_name=teams_agent["name"],
+        metadata={
+            **teams_conversation_metadata,
+            "external_thread_id": REAL_TEAMS_CHANNEL_ID,
+        },
+        script=[
+            script_tool_call(
+                "teams_get_recent_channel_messages",
+                {"request": {"limit": 10, "scope": "thread"}},
+                tool_call_id="teams-no-thread",
+            )
+        ],
+    )
+    teams_no_thread = _tool_result_by_id(teams_no_thread_items, "teams-no-thread")
+    assert teams_no_thread["success"] is False
+    assert "no current Teams thread" in teams_no_thread["error"]
+
+    teams_missing_channel_items = await _run_public_surface_tool_script(
+        authenticated_client,
+        pod_id=pod_id,
+        agent_name=teams_agent["name"],
+        metadata={
+            key: value
+            for key, value in teams_conversation_metadata.items()
+            if key != "external_channel_id"
+        },
+        script=[
+            script_tool_call(
+                "teams_get_recent_channel_messages",
+                {"request": {"limit": 10, "scope": "channel"}},
+                tool_call_id="teams-missing-channel",
+            )
+        ],
+    )
+    teams_missing_channel = _tool_result_by_id(
+        teams_missing_channel_items, "teams-missing-channel"
+    )
+    assert teams_missing_channel["success"] is False
+    assert "team channel conversations" in teams_missing_channel["error"]
+
+    fake_teams.graph_failure_status = 503
+    teams_provider_failure_items = await _run_public_surface_tool_script(
+        authenticated_client,
+        pod_id=pod_id,
+        agent_name=teams_agent["name"],
+        metadata=teams_conversation_metadata,
+        script=[
+            script_tool_call(
+                "teams_get_recent_channel_messages",
+                {"request": {"limit": 10, "scope": "channel"}},
+                tool_call_id="teams-provider-failure",
+            )
+        ],
+    )
+    teams_provider_failure = _tool_result_by_id(
+        teams_provider_failure_items, "teams-provider-failure"
+    )
+    assert teams_provider_failure["success"] is False
+    assert teams_provider_failure["error"] == "Graph API returned HTTP 503."
+    assert teams_provider_failure["messages"] == []
 
     telegram_account = await _ensure_connector_account(
         db_session,

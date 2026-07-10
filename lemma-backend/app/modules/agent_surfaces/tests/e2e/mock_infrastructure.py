@@ -172,9 +172,7 @@ class FakeSlackServer:
         app.router.add_route(
             "*", "/api/conversations.replies", self._conversations_replies
         )
-        app.router.add_route(
-            "*", "/api/conversations.list", self._conversations_list
-        )
+        app.router.add_route("*", "/api/conversations.list", self._conversations_list)
         app.router.add_route("*", "/api/chat.postMessage", self._chat_post_message)
         app.router.add_route("*", "/api/chat.update", self._chat_update)
         app.router.add_route("*", "/api/chat.delete", self._chat_delete)
@@ -187,7 +185,9 @@ class FakeSlackServer:
             "*", "/api/files.getUploadURLExternal", self._files_get_upload_url_external
         )
         app.router.add_route(
-            "*", "/api/files.completeUploadExternal", self._files_complete_upload_external
+            "*",
+            "/api/files.completeUploadExternal",
+            self._files_complete_upload_external,
         )
         app.router.add_post("/upload/{file_id}", self._upload_raw_file)
         app.router.add_get("/files/{file_id}", self._download_file)
@@ -254,6 +254,18 @@ class FakeSlackServer:
                         "user": "U-CONTEXT",
                         "text": "Earlier support context",
                         "user_profile": {"display_name": "Earlier Teammate"},
+                        "files": [
+                            {
+                                "id": "F-CONTEXT",
+                                "name": "support-context.txt",
+                                "mimetype": "text/plain",
+                                "filetype": "txt",
+                                "size": 128,
+                                "url_private_download": (
+                                    f"{self.base_url}/files/F-CONTEXT/download"
+                                ),
+                            }
+                        ],
                     },
                 ],
                 "response_metadata": {"next_cursor": ""},
@@ -359,7 +371,9 @@ class FakeSlackServer:
         self._store.add("SLACK_STATUS", params)
         return web.json_response({"ok": True})
 
-    async def _files_get_upload_url_external(self, request: web.Request) -> web.Response:
+    async def _files_get_upload_url_external(
+        self, request: web.Request
+    ) -> web.Response:
         params = await self._collect_params(request)
         file_id = f"F{len(self._store.get_all('SLACK_FILE_UPLOAD')) + 1:09d}"
         self._store.add("SLACK_FILE_UPLOAD_URL", params)
@@ -379,12 +393,16 @@ class FakeSlackServer:
             {
                 "file_id": request.match_info["file_id"],
                 "filename": getattr(uploaded, "filename", None),
-                "size": len(uploaded.file.read()) if hasattr(uploaded, "file") else None,
+                "size": len(uploaded.file.read())
+                if hasattr(uploaded, "file")
+                else None,
             },
         )
         return web.Response(text="OK")
 
-    async def _files_complete_upload_external(self, request: web.Request) -> web.Response:
+    async def _files_complete_upload_external(
+        self, request: web.Request
+    ) -> web.Response:
         params = await self._collect_params(request)
         self._store.add("SLACK_FILE_COMPLETE", params)
         return web.json_response({"ok": True, "files": []})
@@ -399,6 +417,7 @@ class FakeTeamsServer:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._port: int | None = None
+        self.graph_failure_status: int | None = None
         self._private_key = rsa.generate_private_key(
             public_exponent=65537, key_size=2048
         )
@@ -495,7 +514,8 @@ class FakeTeamsServer:
     async def _post_activity(self, request: web.Request) -> web.Response:
         body = await request.json()
         self._store.add(
-            "TEAMS", {"path": str(request.rel_url), "body": body, **_request_contract(request)}
+            "TEAMS",
+            {"path": str(request.rel_url), "body": body, **_request_contract(request)},
         )
         return web.json_response(
             {"id": f"activity-{len(self._store.get_all('TEAMS'))}"}
@@ -553,6 +573,13 @@ class FakeTeamsServer:
                 **_request_contract(request),
             },
         )
+        if self.graph_failure_status is not None:
+            status = self.graph_failure_status
+            self.graph_failure_status = None
+            return web.json_response(
+                {"error": {"code": "ScriptedGraphFailure"}},
+                status=status,
+            )
         earlier_reply = {
             "id": "teams-context-001",
             "body": {
@@ -565,7 +592,13 @@ class FakeTeamsServer:
                     "displayName": "Earlier Participant",
                 }
             },
-            "attachments": [],
+            "attachments": [
+                {
+                    "name": "customer-context.pdf",
+                    "contentType": "application/pdf",
+                    "contentUrl": self.attachment_url("customer-context"),
+                }
+            ],
         }
         values = [earlier_reply]
         # Microsoft Graph's thread-replies endpoint returns replies only; the
@@ -782,7 +815,11 @@ class FakeTelegramServer:
         text = body.get("text") or ""
         if len(text) > 4096:
             return web.json_response(
-                {"ok": False, "error_code": 400, "description": "Bad Request: message is too long"},
+                {
+                    "ok": False,
+                    "error_code": 400,
+                    "description": "Bad Request: message is too long",
+                },
                 status=400,
             )
         self._store.add("TELEGRAM", {**body, **_request_contract(request)})
@@ -993,7 +1030,9 @@ class FakeResendServer:
     async def _send_email(self, request: web.Request) -> web.Response:
         body = await request.json()
         self._store.add("RESEND", {**body, **_request_contract(request)})
-        return web.json_response({"id": f"resend-message-{len(self._store.get_all('RESEND'))}"})
+        return web.json_response(
+            {"id": f"resend-message-{len(self._store.get_all('RESEND'))}"}
+        )
 
 
 class FakeOutlookServer:
@@ -1047,7 +1086,11 @@ class FakeOutlookServer:
             return web.json_response({"error": {"message": "Not found"}}, status=404)
         self._store.add(
             "OUTLOOK_FETCH",
-            {"message_id": message_id, "query": dict(request.query), **_request_contract(request)},
+            {
+                "message_id": message_id,
+                "query": dict(request.query),
+                **_request_contract(request),
+            },
         )
         return web.json_response(payload)
 
@@ -1109,7 +1152,10 @@ class FakeOutlookServer:
     async def _send_draft(self, request: web.Request) -> web.Response:
         self._store.add(
             "OUTLOOK_DRAFT_SEND",
-            {"message_id": request.match_info["message_id"], **_request_contract(request)},
+            {
+                "message_id": request.match_info["message_id"],
+                **_request_contract(request),
+            },
         )
         return web.Response(status=202)
 

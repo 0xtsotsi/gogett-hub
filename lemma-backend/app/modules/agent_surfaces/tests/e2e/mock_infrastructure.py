@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 import jwt
@@ -1186,11 +1187,13 @@ async def wait_for_messages(
     platform: str,
     min_count: int = 1,
     timeout_seconds: float = 30.0,
+    predicate: Callable[[dict], bool] | None = None,
 ) -> list[dict]:
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     while asyncio.get_running_loop().time() < deadline:
         messages = store.get_all(platform)
-        if len(messages) >= min_count:
+        matching = messages if predicate is None else list(filter(predicate, messages))
+        if len(matching) >= min_count:
             return messages
         await asyncio.sleep(0.2)
     return store.get_all(platform)

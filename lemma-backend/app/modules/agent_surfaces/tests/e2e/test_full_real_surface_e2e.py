@@ -725,7 +725,11 @@ async def test_whatsapp_account_webhook_replies_via_worker(
     assert response.status_code == 200, response.text
 
     messages = await wait_for_messages(
-        message_store, "WHATSAPP", min_count=1, timeout_seconds=REAL_REPLY_TIMEOUT
+        message_store,
+        "WHATSAPP",
+        min_count=1,
+        timeout_seconds=REAL_REPLY_TIMEOUT,
+        predicate=lambda item: item.get("type") == "text",
     )
     final_messages = [item for item in messages if item.get("type") == "text"]
     assert final_messages

@@ -272,12 +272,13 @@ async def _create_surface(
     # creates its surface directly and therefore still verifies the pending
     # state and rejection paths before activation.
     if platform == "TEAMS":
-        tenant_id = surface.get("external_tenant_id")
-        assert tenant_id, surface
         consent = await client.get(
             "/surfaces/teams/admin-consent/callback",
             params={
-                "tenant": tenant_id,
+                # Binding internals such as the tenant id are deliberately not
+                # exposed by AgentSurfaceResponse. The hermetic provider uses
+                # one stable tenant across all Teams fixtures.
+                "tenant": REAL_TEAMS_TENANT_ID,
                 "admin_consent": "True",
                 "state": surface["id"],
             },

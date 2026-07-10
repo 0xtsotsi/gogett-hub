@@ -617,6 +617,44 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
             tool_call_id="shell-1",
         ),
         script_tool_call(
+            "exec_command",
+            {
+                "cmd": "printf 'tty-proof'",
+                "tty": True,
+                "yield_time_ms": 10,
+                "comment": "Exercise the interactive command contract",
+            },
+            tool_call_id="shell-tty-1",
+        ),
+        script_tool_call(
+            "exec_command",
+            {
+                "cmd": "printf 'blocking-proof'",
+                "timeout_seconds": 10,
+                "comment": "Exercise the blocking timeout contract",
+            },
+            tool_call_id="shell-blocking-1",
+        ),
+        script_tool_call(
+            "manage_process",
+            {
+                "action": "input",
+                "process_id": "fake-interactive-process",
+                "chars": "status\n",
+                "yield_time_ms": 10,
+            },
+            tool_call_id="process-input-1",
+        ),
+        script_tool_call(
+            "manage_process",
+            {
+                "action": "kill",
+                "process_id": "fake-interactive-process",
+                "comment": "Stop the deterministic process",
+            },
+            tool_call_id="process-kill-1",
+        ),
+        script_tool_call(
             "execute_python",
             {
                 "code": (
@@ -631,9 +669,27 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
             tool_call_id="python-1",
         ),
         script_tool_call(
+            "execute_python",
+            {
+                "code": "raise RuntimeError('scripted user-code failure')",
+                "comment": "Exercise a user-code failure",
+            },
+            tool_call_id="python-failure-1",
+        ),
+        script_tool_call(
             "view_image",
             {"workspace_file_path": "pixel.png"},
             tool_call_id="image-1",
+        ),
+        script_tool_call(
+            "view_image",
+            {},
+            tool_call_id="image-path-required-1",
+        ),
+        script_tool_call(
+            "view_image",
+            {"workspace_file_path": "proof.txt"},
+            tool_call_id="image-type-invalid-1",
         ),
         script_tool_call(
             "manage_process",
@@ -723,9 +779,20 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
     } <= tool_calls.keys()
     assert tool_returns["write_todos"]["tool_result"]["success"] is True
     assert "workspace-proof" in str(tool_returns_by_id["shell-1"]["tool_result"])
+    assert "tty-proof" in str(tool_returns_by_id["shell-tty-1"]["tool_result"])
+    assert "blocking-proof" in str(
+        tool_returns_by_id["shell-blocking-1"]["tool_result"]
+    )
     assert tool_returns_by_id["shell-failure-1"]["tool_result"]["success"] is False
-    assert "42" in str(tool_returns["execute_python"]["tool_result"])
-    assert tool_returns["view_image"]["tool_result"]
+    assert tool_returns_by_id["process-input-1"]["tool_result"]["success"] is True
+    assert tool_returns_by_id["process-kill-1"]["tool_result"]["success"] is True
+    assert "42" in str(tool_returns_by_id["python-1"]["tool_result"])
+    assert tool_returns_by_id["python-failure-1"]["tool_result"]["success"] is False
+    assert tool_returns_by_id["image-1"]["tool_result"]["success"] is True
+    assert (
+        tool_returns_by_id["image-path-required-1"]["tool_result"]["success"] is False
+    )
+    assert tool_returns_by_id["image-type-invalid-1"]["tool_result"]["success"] is False
     assert tool_returns["list_skills"]["tool_result"]["success"] is True
     assert tool_returns_by_id["skill-load-1"]["tool_result"]["success"] is True
     assert tool_returns_by_id["skill-missing-1"]["tool_result"]["success"] is False

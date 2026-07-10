@@ -66,6 +66,13 @@ _RESEND_SIGNING_SECRET = (
 )
 
 
+def _is_teams_text_message(item: dict) -> bool:
+    body = item.get("body") or {}
+    return body.get("type") == "message" and bool(
+        str(body.get("text") or "").strip()
+    )
+
+
 class _FakeScheduleManager:
     async def create_schedule(self, *, account, app_trigger, config) -> str:
         del account, config
@@ -935,7 +942,11 @@ async def test_teams_authenticated_dm_replies_through_bot_framework_worker(
     assert response.status_code == 200, response.text
 
     messages = await wait_for_messages(
-        message_store, "TEAMS", min_count=1, timeout_seconds=REAL_REPLY_TIMEOUT
+        message_store,
+        "TEAMS",
+        min_count=1,
+        timeout_seconds=REAL_REPLY_TIMEOUT,
+        predicate=_is_teams_text_message,
     )
     text_messages = [
         item["body"]
@@ -1065,7 +1076,11 @@ async def test_teams_channel_mention_ingests_attachment_and_channel_context(
     )
     assert graph_calls[-1]["channel_id"] == channel_id
     teams_messages = await wait_for_messages(
-        message_store, "TEAMS", min_count=1, timeout_seconds=REAL_REPLY_TIMEOUT
+        message_store,
+        "TEAMS",
+        min_count=1,
+        timeout_seconds=REAL_REPLY_TIMEOUT,
+        predicate=_is_teams_text_message,
     )
     assert any(
         str(item.get("body", {}).get("text") or "").strip()

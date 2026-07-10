@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,8 @@ from typing import Any
 from fastapi import FastAPI
 
 from agentbox_client.generated.manager.models import (
+    AppAccessRequest,
+    AppAccessResponse,
     DeleteResponse,
     ExecCommandRequest,
     ExecCommandResponse,
@@ -340,11 +342,23 @@ def create_fake_agentbox_app(*, base_dir: Path | None = None) -> FastAPI:
         return ListProcessesResponse(processes=[])
 
     @app.post("/sandboxes/{sandbox_id}/apps/{app_name}/access")
-    async def app_access(sandbox_id: str, app_name: str) -> dict[str, str]:
-        return {
-            "url": f"http://fake-agentbox.local/{sandbox_id}/{app_name}",
-            "token": uuid.uuid4().hex,
-        }
+    async def app_access(
+        sandbox_id: str,
+        app_name: str,
+        request: AppAccessRequest,
+    ) -> AppAccessResponse:
+        """Mirror the manager contract consumed by ``AgentBoxClient``.
+
+        The former fake returned the manager's obsolete ``{url, token}``
+        response. Pydantic therefore rejected hermetic browser-display calls
+        before they could exercise the public agent and surface path.
+        """
+        return AppAccessResponse(
+            sandbox_id=sandbox_id,
+            app=app_name,
+            url=f"http://fake-agentbox.local/{sandbox_id}/{app_name}",
+            expires_at=int(time.time()) + request.ttl_seconds,
+        )
 
     register_fake_function_executor(app, state)
     return app

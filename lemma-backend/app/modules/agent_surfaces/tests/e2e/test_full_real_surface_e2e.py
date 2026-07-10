@@ -39,6 +39,7 @@ from app.modules.agent_surfaces.tests.e2e.helpers import (
     _load_slack_dm_fixture,
     _load_teams_channel_mention_fixture,
     _messages_for_conversation,
+    _wait_for_conversation_message,
     _outlook_payload,
     _resend_payload,
     _seed_external_user,
@@ -61,16 +62,14 @@ pytestmark = pytest.mark.e2e
 
 # Worker + queued run round-trip. Real-LLM mode can be slower, so keep room.
 REAL_REPLY_TIMEOUT = 180.0
-_RESEND_SIGNING_SECRET = (
-    "whsec_" + base64.b64encode(b"resend-e2e-signing-secret").decode("ascii")
-)
+_RESEND_SIGNING_SECRET = "whsec_" + base64.b64encode(
+    b"resend-e2e-signing-secret"
+).decode("ascii")
 
 
 def _is_teams_text_message(item: dict) -> bool:
     body = item.get("body") or {}
-    return body.get("type") == "message" and bool(
-        str(body.get("text") or "").strip()
-    )
+    return body.get("type") == "message" and bool(str(body.get("text") or "").strip())
 
 
 class _FakeScheduleManager:
@@ -247,7 +246,9 @@ async def test_telegram_webhook_multi_turn_reuses_conversation_with_real_agent(
     secret = get_secret_cipher().decrypt_str(surface_row.webhook_secret)
 
     async def _send(text: str, message_id: int) -> None:
-        payload = _telegram_payload(text=text, message_id=message_id, sender_id=sender_id)
+        payload = _telegram_payload(
+            text=text, message_id=message_id, sender_id=sender_id
+        )
         resp = await authenticated_client.post(
             f"/surfaces/{surface_id}/webhook",
             content=json.dumps(payload).encode("utf-8"),
@@ -844,12 +845,16 @@ async def test_whatsapp_document_is_downloaded_and_persisted_via_worker(
         external_thread_id="15550550456@1234567890",
     )
     assert conversation is not None
-    persisted = await _messages_for_conversation(
+    inbound = await _wait_for_conversation_message(
         authenticated_client,
         pod_id=pod_id,
         conversation_id=conversation["id"],
+        predicate=lambda item: (
+            item.get("role") == "user"
+            and bool((item.get("metadata") or {}).get("ingested_files"))
+        ),
+        timeout_seconds=REAL_REPLY_TIMEOUT,
     )
-    inbound = next(item for item in persisted if item["role"] == "user")
     assert (inbound.get("metadata") or {})["ingested_files"]
 
 
@@ -882,9 +887,7 @@ async def test_teams_authenticated_dm_replies_through_bot_framework_worker(
         connector_id="microsoft_teams",
         credentials={
             "access_token": "teams-account-token",
-            "user_data": {
-                "tenant_id": "1b5c589f-1718-42c8-8244-166fbe5dd8fc"
-            },
+            "user_data": {"tenant_id": "1b5c589f-1718-42c8-8244-166fbe5dd8fc"},
         },
     )
     agent_name = await _create_system_lemma_agent(authenticated_client, pod_id)
@@ -924,9 +927,7 @@ async def test_teams_authenticated_dm_replies_through_bot_framework_worker(
         "tenantId": "1b5c589f-1718-42c8-8244-166fbe5dd8fc",
         "id": "teams-dm-conversation-e2e",
     }
-    payload["channelData"] = {
-        "tenant": {"id": "1b5c589f-1718-42c8-8244-166fbe5dd8fc"}
-    }
+    payload["channelData"] = {"tenant": {"id": "1b5c589f-1718-42c8-8244-166fbe5dd8fc"}}
     raw_body = json.dumps(payload).encode("utf-8")
     response = await authenticated_client.post(
         "/surfaces/webhooks/teams",
@@ -934,8 +935,7 @@ async def test_teams_authenticated_dm_replies_through_bot_framework_worker(
         headers={
             "Content-Type": "application/json",
             "Authorization": (
-                "Bearer "
-                f"{fake_teams.issue_webhook_token(audience='teams-app-id')}"
+                f"Bearer {fake_teams.issue_webhook_token(audience='teams-app-id')}"
             ),
         },
     )
@@ -1055,8 +1055,7 @@ async def test_teams_channel_mention_ingests_attachment_and_channel_context(
         headers={
             "Content-Type": "application/json",
             "Authorization": (
-                "Bearer "
-                f"{fake_teams.issue_webhook_token(audience='teams-app-id')}"
+                f"Bearer {fake_teams.issue_webhook_token(audience='teams-app-id')}"
             ),
         },
     )

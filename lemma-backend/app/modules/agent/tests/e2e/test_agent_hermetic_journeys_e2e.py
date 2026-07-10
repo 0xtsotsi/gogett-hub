@@ -6,9 +6,11 @@ import asyncio
 import json
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import status
 
+from app.modules.datastore.tests.e2e.harness import DatastoreApi
 from app.modules.test_support.e2e.scripted_model import (
     script_text,
     script_tool_call,
@@ -445,3 +447,431 @@ async def test_scripted_todo_and_workspace_tools_stream_and_persist_real_results
         {"content": "Inspect input", "done": False},
         {"content": "Persist result", "done": True},
     ]
+
+
+@pytest.mark.asyncio
+async def test_scripted_pod_data_and_file_tools_cross_worker_authorization_boundaries(
+    authenticated_client,
+    fixed_test_org,
+    e2e_settings,
+    worker,
+):
+    """Use every pod data/file tool from the public conversation boundary."""
+    del worker
+    runtime = await _create_runtime_profile(
+        authenticated_client,
+        fixed_test_org,
+        e2e_settings,
+    )
+    pod = await _create_pod(authenticated_client, fixed_test_org)
+    pod_id = pod["id"]
+    owner = DatastoreApi(authenticated_client, pod_id)
+    table_name = f"agent_notes_{uuid4().hex[:8]}"
+    await owner.create_table(
+        {
+            "name": table_name,
+            "primary_key_column": "id",
+            "enable_rls": False,
+            "columns": [
+                {"name": "id", "type": "UUID", "required": True, "auto": True},
+                {"name": "title", "type": "TEXT", "required": True},
+            ],
+        }
+    )
+    seeded_record = await owner.create_record(table_name, {"title": "seeded"})
+    record_id = seeded_record["id"]
+    root = f"/agent-tool-e2e-{uuid4().hex[:8]}"
+    await owner.create_folder(root)
+    await owner.upload_file(
+        "seed.md",
+        b"Seeded public-boundary file",
+        directory_path=root,
+        search_enabled=False,
+    )
+
+    agent_name = f"pod_tools_{uuid4().hex[:8]}"
+    create_agent = await authenticated_client.post(
+        f"/pods/{pod_id}/agents",
+        json={
+            "name": agent_name,
+            "instruction": "Use the scripted pod tools.",
+            "agent_runtime": {
+                "profile_id": runtime["id"],
+                "model_name": "mock-safe-model",
+            },
+            "toolsets": ["POD"],
+        },
+    )
+    assert create_agent.status_code == status.HTTP_201_CREATED, create_agent.text
+    grants = await authenticated_client.put(
+        f"/pods/{pod_id}/agents/{agent_name}/permissions",
+        json={
+            "grants": [
+                {
+                    "resource_type": "agent",
+                    "resource_name": agent_name,
+                    "permission_ids": ["agent.read"],
+                },
+                {
+                    "resource_type": "datastore_table",
+                    "resource_name": table_name,
+                    "permission_ids": [
+                        "datastore.table.read",
+                        "datastore.record.read",
+                        "datastore.record.write",
+                    ],
+                },
+                {
+                    "resource_type": "folder",
+                    "resource_name": root,
+                    "permission_ids": ["folder.read", "folder.write"],
+                },
+            ]
+        },
+    )
+    assert grants.status_code == status.HTTP_200_OK, grants.text
+
+    script = [
+        script_tool_call("pod_tables", {}, tool_call_id="tables-list"),
+        script_tool_call(
+            "pod_tables",
+            {"table_name": table_name},
+            tool_call_id="tables-get",
+        ),
+        script_tool_call(
+            "pod_get_records",
+            {
+                "table_name": table_name,
+                "filters": [{"column": "title", "op": "eq", "value": "seeded"}],
+                "sorts": [{"column": "title", "direction": "desc"}],
+            },
+            tool_call_id="records-list",
+        ),
+        script_tool_call(
+            "pod_get_records",
+            {"table_name": table_name, "record_id": record_id},
+            tool_call_id="record-get",
+        ),
+        script_tool_call(
+            "pod_write_record",
+            {
+                "action": "create",
+                "table_name": table_name,
+                "data": '{"title":"created by model"}',
+            },
+            tool_call_id="record-create",
+        ),
+        script_tool_call(
+            "pod_write_record",
+            {
+                "action": "update",
+                "table_name": table_name,
+                "record_id": record_id,
+                "data": {"title": "updated by model"},
+            },
+            tool_call_id="record-update",
+        ),
+        script_tool_call(
+            "pod_write_record",
+            {
+                "action": "delete",
+                "table_name": table_name,
+                "record_id": record_id,
+            },
+            tool_call_id="record-delete",
+        ),
+        script_tool_call(
+            "pod_write_record",
+            {"action": "update", "table_name": table_name, "data": {}},
+            tool_call_id="record-invalid",
+        ),
+        script_tool_call(
+            "pod_query",
+            {"sql": f'SELECT title FROM "{table_name}" ORDER BY title'},
+            tool_call_id="query-readonly",
+        ),
+        script_tool_call(
+            "pod_write_file",
+            {"path": f"{root}/created.md", "content": "first version"},
+            tool_call_id="file-create",
+        ),
+        script_tool_call(
+            "pod_write_file",
+            {
+                "path": f"{root}/created.md",
+                "content": "must not replace",
+                "overwrite": False,
+            },
+            tool_call_id="file-conflict",
+        ),
+        script_tool_call(
+            "pod_write_file",
+            {"path": f"{root}/created.md", "content": "replacement version"},
+            tool_call_id="file-overwrite",
+        ),
+        script_tool_call(
+            "pod_list_files",
+            {"path": root},
+            tool_call_id="files-list",
+        ),
+        script_tool_call(
+            "pod_list_files",
+            {"path": root, "recursive": True},
+            tool_call_id="files-tree",
+        ),
+        script_tool_call(
+            "pod_read_file",
+            {"path": f"{root}/created.md", "format": "text", "max_chars": 100},
+            tool_call_id="file-read",
+        ),
+        script_tool_call(
+            "pod_get_file_url",
+            {"path": f"{root}/created.md", "url_type": "app"},
+            tool_call_id="file-app-url",
+        ),
+        script_tool_call(
+            "pod_get_file_url",
+            {
+                "path": f"{root}/created.md",
+                "url_type": "public",
+                "expires_seconds": 60,
+                "max_hits": 2,
+            },
+            tool_call_id="file-public-url",
+        ),
+        script_tool_call(
+            "pod_search_files",
+            {"query": "replacement", "method": "TEXT", "scope_path": root},
+            tool_call_id="files-search",
+        ),
+        script_tool_call(
+            "pod_view_document_pages",
+            {"path": f"{root}/created.md", "page_start": 1},
+            tool_call_id="file-pages-invalid",
+        ),
+        script_text("Pod records and files completed."),
+    ]
+    conversation = await authenticated_client.post(
+        f"/pods/{pod_id}/conversations",
+        json={
+            "agent_name": agent_name,
+            "title": "Pod tool boundary",
+            "metadata": {"mock_llm_script": script},
+        },
+    )
+    assert conversation.status_code == status.HTTP_201_CREATED, conversation.text
+    conversation_id = conversation.json()["id"]
+    events = await _send_message(
+        authenticated_client,
+        pod_id,
+        conversation_id,
+        "Exercise authorized pod data and file operations.",
+    )
+    assert events[-1]["type"] == "completed", events
+
+    messages = await authenticated_client.get(
+        f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+    )
+    assert messages.status_code == status.HTTP_200_OK, messages.text
+    returns = {
+        item["tool_call_id"]: item["tool_result"]
+        for item in messages.json()["items"]
+        if item["kind"] == "TOOL_RETURN"
+    }
+    for tool_call_id in (
+        "tables-list",
+        "tables-get",
+        "records-list",
+        "record-get",
+        "record-create",
+        "record-update",
+        "record-delete",
+        "query-readonly",
+        "file-create",
+        "file-overwrite",
+        "files-list",
+        "files-tree",
+        "file-read",
+        "file-app-url",
+        "file-public-url",
+        "files-search",
+    ):
+        assert returns[tool_call_id]["success"] is True, (tool_call_id, returns)
+    assert returns["record-invalid"]["success"] is False
+    assert returns["file-conflict"]["success"] is False
+    assert returns["file-pages-invalid"]["success"] is False
+    assert returns["record-create"]["record"]["title"] == "created by model"
+    assert returns["record-update"]["record"]["title"] == "updated by model"
+    assert returns["record-delete"]["deleted"] is True
+    assert returns["file-overwrite"]["created"] is False
+    assert returns["file-read"]["text"] == "replacement version"
+    assert returns["file-public-url"]["max_hits"] == 2
+
+    records = await owner.list_records(table_name)
+    assert [item["title"] for item in records["items"]] == ["created by model"]
+    file_content = await owner.download_file(f"{root}/created.md")
+    assert file_content == b"replacement version"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_function_and_agent_tools_create_durable_child_runs(
+    authenticated_client,
+    fixed_test_org,
+    e2e_settings,
+    worker,
+):
+    """Invoke granted functions and agents through the generated tool schemas."""
+    del worker
+    runtime = await _create_runtime_profile(
+        authenticated_client,
+        fixed_test_org,
+        e2e_settings,
+    )
+    pod = await _create_pod(authenticated_client, fixed_test_org)
+    pod_id = pod["id"]
+
+    function_name = f"callable_{uuid4().hex[:8]}"
+    source = f"""#input_type_name: FunctionInput
+#output_type_name: FunctionOutput
+#function_name: {function_name}
+
+from pydantic import BaseModel
+from lemma_sdk import FunctionContext
+
+class FunctionInput(BaseModel):
+    value: str
+
+class FunctionOutput(BaseModel):
+    value: str
+
+async def {function_name}(
+    ctx: FunctionContext, data: FunctionInput
+) -> FunctionOutput:
+    return FunctionOutput(value=data.value)
+"""
+    created_function = await authenticated_client.post(
+        f"/pods/{pod_id}/functions",
+        json={
+            "name": function_name,
+            "description": "Public dynamic callable E2E",
+            "code": source,
+        },
+    )
+    assert created_function.status_code == status.HTTP_201_CREATED, (
+        created_function.text
+    )
+    async with httpx.AsyncClient(base_url=e2e_settings.agentbox_api_url) as client:
+        configured = await client.post(
+            "/__test__/function-executor/configure",
+            json={"modes": ["success"], "log_message": "dynamic function completed"},
+        )
+    assert configured.status_code == status.HTTP_200_OK, configured.text
+
+    child_name = f"child_{uuid4().hex[:8]}"
+    child = await authenticated_client.post(
+        f"/pods/{pod_id}/agents",
+        json={
+            "name": child_name,
+            "instruction": "Return the delegated input briefly.",
+            "agent_runtime": {
+                "profile_id": runtime["id"],
+                "model_name": "mock-safe-model",
+            },
+            "toolsets": [],
+        },
+    )
+    assert child.status_code == status.HTTP_201_CREATED, child.text
+
+    parent_name = f"parent_{uuid4().hex[:8]}"
+    parent = await authenticated_client.post(
+        f"/pods/{pod_id}/agents",
+        json={
+            "name": parent_name,
+            "instruction": "Invoke the two scripted dynamic tools.",
+            "agent_runtime": {
+                "profile_id": runtime["id"],
+                "model_name": "mock-safe-model",
+            },
+            "toolsets": [],
+        },
+    )
+    assert parent.status_code == status.HTTP_201_CREATED, parent.text
+    permissions = await authenticated_client.put(
+        f"/pods/{pod_id}/agents/{parent_name}/permissions",
+        json={
+            "grants": [
+                {
+                    "resource_type": "function",
+                    "resource_name": function_name,
+                    "permission_ids": ["function.execute"],
+                },
+                {
+                    "resource_type": "agent",
+                    "resource_name": child_name,
+                    "permission_ids": ["agent.execute"],
+                },
+            ]
+        },
+    )
+    assert permissions.status_code == status.HTTP_200_OK, permissions.text
+
+    conversation = await authenticated_client.post(
+        f"/pods/{pod_id}/conversations",
+        json={
+            "agent_name": parent_name,
+            "title": "Dynamic callable tools",
+            "metadata": {
+                "mock_llm_script": [
+                    script_tool_call(
+                        f"function_{function_name}",
+                        {"value": "function input"},
+                        tool_call_id="dynamic-function",
+                    ),
+                    script_tool_call(
+                        f"agent_{child_name}",
+                        {"input": "delegated child input"},
+                        tool_call_id="dynamic-agent",
+                    ),
+                    script_text("Dynamic function and child agent completed."),
+                ]
+            },
+        },
+    )
+    assert conversation.status_code == status.HTTP_201_CREATED, conversation.text
+    conversation_id = conversation.json()["id"]
+    events = await _send_message(
+        authenticated_client,
+        pod_id,
+        conversation_id,
+        "Invoke the configured function and child agent.",
+    )
+    assert events[-1]["type"] == "completed", events
+
+    messages = await authenticated_client.get(
+        f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+    )
+    assert messages.status_code == status.HTTP_200_OK, messages.text
+    returns = {
+        item["tool_call_id"]: item["tool_result"]
+        for item in messages.json()["items"]
+        if item["kind"] == "TOOL_RETURN"
+    }
+    assert returns["dynamic-function"] == {
+        "echo": {"value": "function input"},
+        "function": function_name,
+    }
+    assert "delegated child input" in str(returns["dynamic-agent"])
+
+    children = await authenticated_client.get(
+        f"/pods/{pod_id}/conversations",
+        params={"parent_id": conversation_id},
+    )
+    assert children.status_code == status.HTTP_200_OK, children.text
+    child_items = children.json()["items"]
+    assert len(child_items) == 1
+    assert child_items[0]["parent_id"] == conversation_id
+    child_detail = await authenticated_client.get(
+        f"/pods/{pod_id}/conversations/{child_items[0]['id']}"
+    )
+    assert child_detail.status_code == status.HTTP_200_OK, child_detail.text
+    assert child_detail.json()["status"] == "COMPLETED"

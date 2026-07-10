@@ -403,7 +403,10 @@ async def test_display_resource_slack_routes_pod_resource_catalog_to_deep_links(
         message_store, "SLACK", min_count=len(resource_calls) + 1
     )
     rendered = json.dumps(slack_messages)
-    assert rendered.count("https://app.example.test/pod/") >= len(resource_calls)
+    # Every Lemma-owned resource gets a frontend deep link. BROWSER is the one
+    # exception: it intentionally opens the short-lived AgentBox URL asserted
+    # separately below.
+    assert rendered.count("https://app.example.test/pod/") >= len(resource_calls) - 1
     assert "incidents" in rendered
     assert "fake-agentbox.local" in rendered
     assert "incident-triage" in rendered

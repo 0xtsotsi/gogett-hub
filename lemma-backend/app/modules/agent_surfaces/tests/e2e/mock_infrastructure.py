@@ -162,6 +162,7 @@ class FakeSlackServer:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._port: int | None = None
+        self.chat_post_blocks_error: str | None = None
 
     async def start(self) -> None:
         app = web.Application()
@@ -315,6 +316,11 @@ class FakeSlackServer:
 
     async def _chat_post_message(self, request: web.Request) -> web.Response:
         params = await self._collect_params(request)
+        if self.chat_post_blocks_error is not None and params.get("blocks"):
+            error = self.chat_post_blocks_error
+            self.chat_post_blocks_error = None
+            self._store.add("SLACK_FAILED", {"error": error, **params})
+            return web.json_response({"ok": False, "error": error})
         self._store.add("SLACK", params)
         ts = f"1700000000.{len(self._store.get_all('SLACK')):06d}"
         return web.json_response(

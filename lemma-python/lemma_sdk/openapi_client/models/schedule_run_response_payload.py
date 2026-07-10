@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="ScheduleFireResponseLlmOutput")
+T = TypeVar("T", bound="ScheduleRunResponsePayload")
 
 
 @_attrs_define
-class ScheduleFireResponseLlmOutput:
+class ScheduleRunResponsePayload:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class ScheduleFireResponseLlmOutput:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        schedule_fire_response_llm_output = cls()
+        schedule_run_response_payload = cls()
 
-        schedule_fire_response_llm_output.additional_properties = d
-        return schedule_fire_response_llm_output
+        schedule_run_response_payload.additional_properties = d
+        return schedule_run_response_payload
 
     @property
     def additional_keys(self) -> list[str]:

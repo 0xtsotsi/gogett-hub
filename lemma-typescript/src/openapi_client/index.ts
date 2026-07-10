@@ -246,11 +246,11 @@ export type { ScheduledWorkflowStartConfigOutput } from './models/ScheduledWorkf
 export { ScheduledWorkflowStartConfigType } from './models/ScheduledWorkflowStartConfigType.js';
 export type { ScheduledWorkflowStartInput } from './models/ScheduledWorkflowStartInput.js';
 export type { ScheduledWorkflowStartOutput } from './models/ScheduledWorkflowStartOutput.js';
-export { ScheduleFireDeliveryStatus } from './models/ScheduleFireDeliveryStatus.js';
-export type { ScheduleFireListResponse } from './models/ScheduleFireListResponse.js';
-export type { ScheduleFireResponse } from './models/ScheduleFireResponse.js';
 export { ScheduleFireStatus } from './models/ScheduleFireStatus.js';
 export type { ScheduleListResponse } from './models/ScheduleListResponse.js';
+export type { ScheduleRunListResponse } from './models/ScheduleRunListResponse.js';
+export type { ScheduleRunResponse } from './models/ScheduleRunResponse.js';
+export { ScheduleRunStatus } from './models/ScheduleRunStatus.js';
 export { ScheduleType } from './models/ScheduleType.js';
 export { SearchMethod } from './models/SearchMethod.js';
 export type { SearchResult } from './models/SearchResult.js';

@@ -6768,7 +6768,7 @@
         "type": "string"
       },
       "ImportStatusResponse": {
-        "description": "Status of a pod import job (pure Redis read).",
+        "description": "Status of a durable pod import job.",
         "properties": {
           "cancel_requested_at": {
             "anyOf": [
@@ -10099,23 +10099,54 @@
         "title": "ScheduleDetailResponse",
         "type": "object"
       },
-      "ScheduleFireDeliveryStatus": {
+      "ScheduleFireStatus": {
+        "description": "Outcome of the most recent fire attempt, recorded for debuggability.",
         "enum": [
-          "RECEIVED",
-          "PROCESSING",
-          "DELIVERED",
+          "TRIGGERED",
           "FILTERED",
-          "FAILED",
-          "DEAD_LETTERED"
+          "ERROR"
         ],
-        "title": "ScheduleFireDeliveryStatus",
+        "title": "ScheduleFireStatus",
         "type": "string"
       },
-      "ScheduleFireListResponse": {
+      "ScheduleListResponse": {
+        "description": "Schedule list response.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/ScheduleFireResponse"
+              "$ref": "#/components/schemas/ScheduleDetailResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_page_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Page Token"
+          }
+        },
+        "required": [
+          "items",
+          "limit"
+        ],
+        "title": "ScheduleListResponse",
+        "type": "object"
+      },
+      "ScheduleRunListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScheduleRunResponse"
             },
             "title": "Items",
             "type": "array"
@@ -10129,10 +10160,10 @@
           "items",
           "limit"
         ],
-        "title": "ScheduleFireListResponse",
+        "title": "ScheduleRunListResponse",
         "type": "object"
       },
-      "ScheduleFireResponse": {
+      "ScheduleRunResponse": {
         "properties": {
           "attempts": {
             "title": "Attempts",
@@ -10219,7 +10250,7 @@
             "title": "Started At"
           },
           "status": {
-            "$ref": "#/components/schemas/ScheduleFireDeliveryStatus"
+            "$ref": "#/components/schemas/ScheduleRunStatus"
           },
           "target_kind": {
             "title": "Target Kind",
@@ -10255,51 +10286,20 @@
           "created_at",
           "updated_at"
         ],
-        "title": "ScheduleFireResponse",
+        "title": "ScheduleRunResponse",
         "type": "object"
       },
-      "ScheduleFireStatus": {
-        "description": "Outcome of the most recent fire attempt, recorded for debuggability.",
+      "ScheduleRunStatus": {
         "enum": [
-          "TRIGGERED",
+          "RECEIVED",
+          "PROCESSING",
+          "DISPATCHED",
           "FILTERED",
-          "ERROR"
+          "FAILED",
+          "DEAD_LETTERED"
         ],
-        "title": "ScheduleFireStatus",
+        "title": "ScheduleRunStatus",
         "type": "string"
-      },
-      "ScheduleListResponse": {
-        "description": "Schedule list response.",
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ScheduleDetailResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "limit": {
-            "title": "Limit",
-            "type": "integer"
-          },
-          "next_page_token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Page Token"
-          }
-        },
-        "required": [
-          "items",
-          "limit"
-        ],
-        "title": "ScheduleListResponse",
-        "type": "object"
       },
       "ScheduleType": {
         "description": "Type of schedule source.",
@@ -14713,7 +14713,7 @@
   "info": {
     "description": "Authentication API with JWT, user management, and OAuth support",
     "title": "Lemma Backend",
-    "version": "4.0.0"
+    "version": "4.0.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -20819,7 +20819,7 @@
         }
       },
       "put": {
-        "description": "Attach (or replace) a user-authored markdown version of a document, plus\nany images it references.\n\nThe uploaded markdown becomes the document's agent-facing ``document.md`` and\nis chunked/indexed on the original's behalf; the source file is unchanged.\nEach uploaded image is stored as a sibling child artifact so a reference like\n``![](fig1.png)`` resolves through the children endpoint \u2014 send the images\nunder repeated ``images`` fields, named to match the markdown references.\nApplies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, \u2026).",
+        "description": "Attach user-authored markdown and referenced images to a document.\n\nThe source file remains unchanged; the markdown is indexed for agent use.",
         "operationId": "file.markdown.attach",
         "parameters": [
           {
@@ -25399,9 +25399,9 @@
         }
       }
     },
-    "/pods/{pod_id}/schedules/{schedule_id}/fires": {
+    "/pods/{pod_id}/schedules/{schedule_id}/runs": {
       "get": {
-        "operationId": "schedule.fire.list",
+        "operationId": "schedule.run.list",
         "parameters": [
           {
             "in": "path",
@@ -25439,7 +25439,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ScheduleFireListResponse"
+                  "$ref": "#/components/schemas/ScheduleRunListResponse"
                 }
               }
             },
@@ -25456,22 +25456,22 @@
             "description": "Validation Error"
           }
         },
-        "summary": "List Schedule Fires",
+        "summary": "List Schedule Runs",
         "tags": [
           "Schedules"
         ],
         "x-lemma": {
           "kind": "query",
           "paginates": true,
-          "resource": "schedule.fire",
+          "resource": "schedule.run",
           "result": "collection",
           "verb": "list"
         }
       }
     },
-    "/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry": {
+    "/pods/{pod_id}/schedules/{schedule_id}/runs/{run_id}/retry": {
       "post": {
-        "operationId": "schedule.fire.retry",
+        "operationId": "schedule.run.retry",
         "parameters": [
           {
             "in": "path",
@@ -25495,11 +25495,11 @@
           },
           {
             "in": "path",
-            "name": "fire_id",
+            "name": "run_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Fire Id",
+              "title": "Run Id",
               "type": "string"
             }
           }
@@ -25509,7 +25509,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ScheduleFireResponse"
+                  "$ref": "#/components/schemas/ScheduleRunResponse"
                 }
               }
             },
@@ -25526,17 +25526,17 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Retry Schedule Fire",
+        "summary": "Retry Schedule Run",
         "tags": [
           "Schedules"
         ],
         "x-lemma": {
           "invalidates": [
-            "schedule.fire"
+            "schedule.run"
           ],
           "kind": "mutation",
           "paginates": false,
-          "resource": "schedule.fire",
+          "resource": "schedule.run",
           "result": "entity",
           "verb": "retry"
         }

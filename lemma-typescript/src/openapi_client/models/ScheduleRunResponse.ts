@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { ScheduleFireDeliveryStatus } from './ScheduleFireDeliveryStatus.js';
-export type ScheduleFireResponse = {
+import type { ScheduleRunStatus } from './ScheduleRunStatus.js';
+export type ScheduleRunResponse = {
     attempts: number;
     completed_at?: (string | null);
     created_at: string;
@@ -16,7 +16,7 @@ export type ScheduleFireResponse = {
     schedule_id: string;
     source_event_id: string;
     started_at?: (string | null);
-    status: ScheduleFireDeliveryStatus;
+    status: ScheduleRunStatus;
     target_kind: string;
     target_run_id?: (string | null);
     updated_at: string;

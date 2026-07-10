@@ -334,14 +334,14 @@ _NAME_TO_MODULE = {
     'ScheduleDetailResponse': 'schedule_detail_response',
     'ScheduleDetailResponseConfig': 'schedule_detail_response_config',
     'ScheduleDetailResponseFilterOutputSchemaType0': 'schedule_detail_response_filter_output_schema_type_0',
-    'ScheduleFireDeliveryStatus': 'schedule_fire_delivery_status',
-    'ScheduleFireListResponse': 'schedule_fire_list_response',
-    'ScheduleFireResponse': 'schedule_fire_response',
-    'ScheduleFireResponseLlmOutput': 'schedule_fire_response_llm_output',
-    'ScheduleFireResponseMetadata': 'schedule_fire_response_metadata',
-    'ScheduleFireResponsePayload': 'schedule_fire_response_payload',
     'ScheduleFireStatus': 'schedule_fire_status',
     'ScheduleListResponse': 'schedule_list_response',
+    'ScheduleRunListResponse': 'schedule_run_list_response',
+    'ScheduleRunResponse': 'schedule_run_response',
+    'ScheduleRunResponseLlmOutput': 'schedule_run_response_llm_output',
+    'ScheduleRunResponseMetadata': 'schedule_run_response_metadata',
+    'ScheduleRunResponsePayload': 'schedule_run_response_payload',
+    'ScheduleRunStatus': 'schedule_run_status',
     'ScheduleType': 'schedule_type',
     'ScheduledWorkflowStartConfigInput': 'scheduled_workflow_start_config_input',
     'ScheduledWorkflowStartConfigOutput': 'scheduled_workflow_start_config_output',
@@ -791,14 +791,14 @@ if TYPE_CHECKING:
     from .schedule_detail_response import ScheduleDetailResponse
     from .schedule_detail_response_config import ScheduleDetailResponseConfig
     from .schedule_detail_response_filter_output_schema_type_0 import ScheduleDetailResponseFilterOutputSchemaType0
-    from .schedule_fire_delivery_status import ScheduleFireDeliveryStatus
-    from .schedule_fire_list_response import ScheduleFireListResponse
-    from .schedule_fire_response import ScheduleFireResponse
-    from .schedule_fire_response_llm_output import ScheduleFireResponseLlmOutput
-    from .schedule_fire_response_metadata import ScheduleFireResponseMetadata
-    from .schedule_fire_response_payload import ScheduleFireResponsePayload
     from .schedule_fire_status import ScheduleFireStatus
     from .schedule_list_response import ScheduleListResponse
+    from .schedule_run_list_response import ScheduleRunListResponse
+    from .schedule_run_response import ScheduleRunResponse
+    from .schedule_run_response_llm_output import ScheduleRunResponseLlmOutput
+    from .schedule_run_response_metadata import ScheduleRunResponseMetadata
+    from .schedule_run_response_payload import ScheduleRunResponsePayload
+    from .schedule_run_status import ScheduleRunStatus
     from .schedule_type import ScheduleType
     from .scheduled_workflow_start_config_input import ScheduledWorkflowStartConfigInput
     from .scheduled_workflow_start_config_output import ScheduledWorkflowStartConfigOutput
@@ -1261,14 +1261,14 @@ __all__ = [
     'ScheduleDetailResponse',
     'ScheduleDetailResponseConfig',
     'ScheduleDetailResponseFilterOutputSchemaType0',
-    'ScheduleFireDeliveryStatus',
-    'ScheduleFireListResponse',
-    'ScheduleFireResponse',
-    'ScheduleFireResponseLlmOutput',
-    'ScheduleFireResponseMetadata',
-    'ScheduleFireResponsePayload',
     'ScheduleFireStatus',
     'ScheduleListResponse',
+    'ScheduleRunListResponse',
+    'ScheduleRunResponse',
+    'ScheduleRunResponseLlmOutput',
+    'ScheduleRunResponseMetadata',
+    'ScheduleRunResponsePayload',
+    'ScheduleRunStatus',
     'ScheduleType',
     'ScheduledWorkflowStartConfigInput',
     'ScheduledWorkflowStartConfigOutput',

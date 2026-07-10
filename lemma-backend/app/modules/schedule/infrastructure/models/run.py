@@ -1,4 +1,4 @@
-"""Durable schedule-fire delivery ledger."""
+"""Durable schedule-run dispatch ledger."""
 
 from __future__ import annotations
 
@@ -11,20 +11,20 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.infrastructure.db.base import UUIDAuditBase
 from app.modules.schedule.domain.schedule import (
-    ScheduleFireDeliveryStatus,
-    ScheduleFireEntity,
+    ScheduleRunEntity,
+    ScheduleRunStatus,
 )
 
 
-class ScheduleFire(UUIDAuditBase):
-    __tablename__ = "schedule_fires"
+class ScheduleRun(UUIDAuditBase):
+    __tablename__ = "schedule_runs"
 
     schedule_id: Mapped[UUID] = mapped_column(
         ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False, index=True
     )
     source_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default=ScheduleFireDeliveryStatus.RECEIVED.value
+        String(32), nullable=False, default=ScheduleRunStatus.RECEIVED.value
     )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     target_kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -39,19 +39,19 @@ class ScheduleFire(UUIDAuditBase):
 
     __table_args__ = (
         UniqueConstraint(
-            "schedule_id", "source_event_id", name="uq_schedule_fire_source_event"
+            "schedule_id", "source_event_id", name="uq_schedule_run_source_event"
         ),
-        Index("ix_schedule_fires_status_updated", "status", "updated_at"),
+        Index("ix_schedule_runs_status_updated", "status", "updated_at"),
     )
 
-    def to_entity(self) -> ScheduleFireEntity:
-        return ScheduleFireEntity(
+    def to_entity(self) -> ScheduleRunEntity:
+        return ScheduleRunEntity(
             id=self.id,
             created_at=self.created_at,
             updated_at=self.updated_at,
             schedule_id=self.schedule_id,
             source_event_id=self.source_event_id,
-            status=ScheduleFireDeliveryStatus(self.status),
+            status=ScheduleRunStatus(self.status),
             attempts=self.attempts,
             target_kind=self.target_kind,
             target_run_id=self.target_run_id,

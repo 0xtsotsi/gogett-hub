@@ -1,4 +1,4 @@
-"""Persistence operations for durable schedule-fire delivery."""
+"""Persistence operations for durable schedule-run dispatch."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.core.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from app.modules.schedule.domain.schedule import (
-    ScheduleFireDeliveryStatus,
-    ScheduleFireEntity,
+    ScheduleRunEntity,
+    ScheduleRunStatus,
 )
-from app.modules.schedule.infrastructure.models.fire import ScheduleFire
+from app.modules.schedule.infrastructure.models.run import ScheduleRun
 
 
-class ScheduleFireRepository:
+class ScheduleRunRepository:
     MAX_ATTEMPTS = 10
     ABANDON_AFTER = timedelta(seconds=60)
 
@@ -33,14 +33,14 @@ class ScheduleFireRepository:
         payload: dict,
         metadata: dict | None,
         llm_output: dict | None,
-    ) -> ScheduleFireEntity | None:
+    ) -> ScheduleRunEntity | None:
         now = datetime.now(timezone.utc)
         created_id = await self.session.scalar(
-            insert(ScheduleFire)
+            insert(ScheduleRun)
             .values(
                 schedule_id=schedule_id,
                 source_event_id=source_event_id,
-                status=ScheduleFireDeliveryStatus.PROCESSING.value,
+                status=ScheduleRunStatus.PROCESSING.value,
                 attempts=1,
                 target_kind=target_kind,
                 payload=payload,
@@ -49,43 +49,43 @@ class ScheduleFireRepository:
                 started_at=now,
             )
             .on_conflict_do_nothing(
-                constraint="uq_schedule_fire_source_event"
+                constraint="uq_schedule_run_source_event"
             )
-            .returning(ScheduleFire.id)
+            .returning(ScheduleRun.id)
         )
         if created_id is not None:
-            model = await self.session.get(ScheduleFire, created_id)
+            model = await self.session.get(ScheduleRun, created_id)
             assert model is not None
             return model.to_entity()
 
         model = await self.session.scalar(
-            select(ScheduleFire)
+            select(ScheduleRun)
             .where(
-                ScheduleFire.schedule_id == schedule_id,
-                ScheduleFire.source_event_id == source_event_id,
+                ScheduleRun.schedule_id == schedule_id,
+                ScheduleRun.source_event_id == source_event_id,
             )
             .with_for_update()
         )
         if model is None:
             return None
         if model.status in {
-            ScheduleFireDeliveryStatus.DELIVERED.value,
-            ScheduleFireDeliveryStatus.FILTERED.value,
+            ScheduleRunStatus.DISPATCHED.value,
+            ScheduleRunStatus.FILTERED.value,
         }:
             return None
         if (
-            model.status == ScheduleFireDeliveryStatus.PROCESSING.value
+            model.status == ScheduleRunStatus.PROCESSING.value
             and model.started_at is not None
             and model.started_at > now - self.ABANDON_AFTER
         ):
             return None
         if model.attempts >= self.MAX_ATTEMPTS:
-            model.status = ScheduleFireDeliveryStatus.DEAD_LETTERED.value
+            model.status = ScheduleRunStatus.DEAD_LETTERED.value
             model.completed_at = now
             await self.session.flush()
             return None
 
-        model.status = ScheduleFireDeliveryStatus.PROCESSING.value
+        model.status = ScheduleRunStatus.PROCESSING.value
         model.attempts += 1
         model.started_at = now
         model.completed_at = None
@@ -94,33 +94,33 @@ class ScheduleFireRepository:
         await self.session.flush()
         return model.to_entity()
 
-    async def mark_delivered(self, fire_id: UUID, *, target_run_id: str | None) -> None:
+    async def mark_dispatched(self, run_id: UUID, *, target_run_id: str | None) -> None:
         await self._mark(
-            fire_id,
-            status=ScheduleFireDeliveryStatus.DELIVERED,
+            run_id,
+            status=ScheduleRunStatus.DISPATCHED,
             target_run_id=target_run_id,
         )
 
-    async def mark_failed(self, fire_id: UUID, exc: Exception) -> None:
+    async def mark_failed(self, run_id: UUID, exc: Exception) -> None:
         await self._mark(
-            fire_id,
-            status=ScheduleFireDeliveryStatus.FAILED,
+            run_id,
+            status=ScheduleRunStatus.FAILED,
             error_type=type(exc).__name__,
             error_code=getattr(exc, "code", None),
         )
 
     async def _mark(
         self,
-        fire_id: UUID,
+        run_id: UUID,
         *,
-        status: ScheduleFireDeliveryStatus,
+        status: ScheduleRunStatus,
         target_run_id: str | None = None,
         error_type: str | None = None,
         error_code: str | None = None,
     ) -> None:
         await self.session.execute(
-            update(ScheduleFire)
-            .where(ScheduleFire.id == fire_id)
+            update(ScheduleRun)
+            .where(ScheduleRun.id == run_id)
             .values(
                 status=status.value,
                 target_run_id=target_run_id,
@@ -132,29 +132,29 @@ class ScheduleFireRepository:
 
     async def list_for_schedule(
         self, schedule_id: UUID, *, limit: int = 100
-    ) -> list[ScheduleFireEntity]:
+    ) -> list[ScheduleRunEntity]:
         rows = await self.session.scalars(
-            select(ScheduleFire)
-            .where(ScheduleFire.schedule_id == schedule_id)
-            .order_by(ScheduleFire.created_at.desc(), ScheduleFire.id.desc())
+            select(ScheduleRun)
+            .where(ScheduleRun.schedule_id == schedule_id)
+            .order_by(ScheduleRun.created_at.desc(), ScheduleRun.id.desc())
             .limit(limit)
         )
         return [row.to_entity() for row in rows.all()]
 
     async def reset_for_retry(
-        self, *, schedule_id: UUID, fire_id: UUID
-    ) -> ScheduleFireEntity | None:
+        self, *, schedule_id: UUID, run_id: UUID
+    ) -> ScheduleRunEntity | None:
         model = await self.session.scalar(
-            select(ScheduleFire)
-            .where(ScheduleFire.id == fire_id, ScheduleFire.schedule_id == schedule_id)
+            select(ScheduleRun)
+            .where(ScheduleRun.id == run_id, ScheduleRun.schedule_id == schedule_id)
             .with_for_update()
         )
         if model is None or model.status not in {
-            ScheduleFireDeliveryStatus.FAILED.value,
-            ScheduleFireDeliveryStatus.DEAD_LETTERED.value,
+            ScheduleRunStatus.FAILED.value,
+            ScheduleRunStatus.DEAD_LETTERED.value,
         }:
             return None
-        model.status = ScheduleFireDeliveryStatus.RECEIVED.value
+        model.status = ScheduleRunStatus.RECEIVED.value
         model.attempts = 0
         model.completed_at = None
         model.error_type = None

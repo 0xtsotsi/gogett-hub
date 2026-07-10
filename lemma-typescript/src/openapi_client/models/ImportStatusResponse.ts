@@ -6,7 +6,7 @@ import type { ExportProgressResponse } from './ExportProgressResponse.js';
 import type { ImportPlanResponse } from './ImportPlanResponse.js';
 import type { ImportStatus } from './ImportStatus.js';
 /**
- * Status of a pod import job (pure Redis read).
+ * Status of a durable pod import job.
  */
 export type ImportStatusResponse = {
     cancel_requested_at?: (string | null);

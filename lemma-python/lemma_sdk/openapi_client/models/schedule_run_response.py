@@ -9,31 +9,31 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from dateutil.parser import isoparse
 
-from ..models.schedule_fire_delivery_status import ScheduleFireDeliveryStatus
+from ..models.schedule_run_status import ScheduleRunStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.schedule_fire_response_llm_output import ScheduleFireResponseLlmOutput
-    from ..models.schedule_fire_response_metadata import ScheduleFireResponseMetadata
-    from ..models.schedule_fire_response_payload import ScheduleFireResponsePayload
+    from ..models.schedule_run_response_llm_output import ScheduleRunResponseLlmOutput
+    from ..models.schedule_run_response_metadata import ScheduleRunResponseMetadata
+    from ..models.schedule_run_response_payload import ScheduleRunResponsePayload
 
 
-T = TypeVar("T", bound="ScheduleFireResponse")
+T = TypeVar("T", bound="ScheduleRunResponse")
 
 
 @_attrs_define
-class ScheduleFireResponse:
+class ScheduleRunResponse:
     """
     Attributes:
         attempts (int):
         created_at (datetime.datetime):
         id (UUID):
-        llm_output (ScheduleFireResponseLlmOutput):
-        metadata (ScheduleFireResponseMetadata):
-        payload (ScheduleFireResponsePayload):
+        llm_output (ScheduleRunResponseLlmOutput):
+        metadata (ScheduleRunResponseMetadata):
+        payload (ScheduleRunResponsePayload):
         schedule_id (UUID):
         source_event_id (str):
-        status (ScheduleFireDeliveryStatus):
+        status (ScheduleRunStatus):
         target_kind (str):
         updated_at (datetime.datetime):
         completed_at (datetime.datetime | None | Unset):
@@ -46,12 +46,12 @@ class ScheduleFireResponse:
     attempts: int
     created_at: datetime.datetime
     id: UUID
-    llm_output: ScheduleFireResponseLlmOutput
-    metadata: ScheduleFireResponseMetadata
-    payload: ScheduleFireResponsePayload
+    llm_output: ScheduleRunResponseLlmOutput
+    metadata: ScheduleRunResponseMetadata
+    payload: ScheduleRunResponsePayload
     schedule_id: UUID
     source_event_id: str
-    status: ScheduleFireDeliveryStatus
+    status: ScheduleRunStatus
     target_kind: str
     updated_at: datetime.datetime
     completed_at: datetime.datetime | None | Unset = UNSET
@@ -150,13 +150,11 @@ class ScheduleFireResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.schedule_fire_response_llm_output import (
-            ScheduleFireResponseLlmOutput,
+        from ..models.schedule_run_response_llm_output import (
+            ScheduleRunResponseLlmOutput,
         )
-        from ..models.schedule_fire_response_metadata import (
-            ScheduleFireResponseMetadata,
-        )
-        from ..models.schedule_fire_response_payload import ScheduleFireResponsePayload
+        from ..models.schedule_run_response_metadata import ScheduleRunResponseMetadata
+        from ..models.schedule_run_response_payload import ScheduleRunResponsePayload
 
         d = dict(src_dict)
         attempts = d.pop("attempts")
@@ -165,17 +163,17 @@ class ScheduleFireResponse:
 
         id = UUID(d.pop("id"))
 
-        llm_output = ScheduleFireResponseLlmOutput.from_dict(d.pop("llm_output"))
+        llm_output = ScheduleRunResponseLlmOutput.from_dict(d.pop("llm_output"))
 
-        metadata = ScheduleFireResponseMetadata.from_dict(d.pop("metadata"))
+        metadata = ScheduleRunResponseMetadata.from_dict(d.pop("metadata"))
 
-        payload = ScheduleFireResponsePayload.from_dict(d.pop("payload"))
+        payload = ScheduleRunResponsePayload.from_dict(d.pop("payload"))
 
         schedule_id = UUID(d.pop("schedule_id"))
 
         source_event_id = d.pop("source_event_id")
 
-        status = ScheduleFireDeliveryStatus(d.pop("status"))
+        status = ScheduleRunStatus(d.pop("status"))
 
         target_kind = d.pop("target_kind")
 
@@ -242,7 +240,7 @@ class ScheduleFireResponse:
 
         target_run_id = _parse_target_run_id(d.pop("target_run_id", UNSET))
 
-        schedule_fire_response = cls(
+        schedule_run_response = cls(
             attempts=attempts,
             created_at=created_at,
             id=id,
@@ -261,8 +259,8 @@ class ScheduleFireResponse:
             target_run_id=target_run_id,
         )
 
-        schedule_fire_response.additional_properties = d
-        return schedule_fire_response
+        schedule_run_response.additional_properties = d
+        return schedule_run_response
 
     @property
     def additional_keys(self) -> list[str]:

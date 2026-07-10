@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { ScheduleFireResponse } from './ScheduleFireResponse.js';
-export type ScheduleFireListResponse = {
-    items: Array<ScheduleFireResponse>;
+import type { ScheduleRunResponse } from './ScheduleRunResponse.js';
+export type ScheduleRunListResponse = {
+    items: Array<ScheduleRunResponse>;
     limit: number;
 };

@@ -175,7 +175,7 @@ def _repair_usage_counter_uniqueness() -> None:
     )
 
 
-def _add_schedule_fire_ledger() -> None:
+def _add_schedule_run_ledger() -> None:
     op.add_column(
         "schedules",
         sa.Column(
@@ -186,7 +186,7 @@ def _add_schedule_fire_ledger() -> None:
         ),
     )
     op.create_table(
-        "schedule_fires",
+        "schedule_runs",
         sa.Column("schedule_id", sa.Uuid(), nullable=False),
         sa.Column("source_event_id", sa.String(length=255), nullable=False),
         sa.Column("status", sa.String(length=32), server_default="RECEIVED", nullable=False),
@@ -206,15 +206,15 @@ def _add_schedule_fire_ledger() -> None:
         sa.ForeignKeyConstraint(["schedule_id"], ["schedules.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
-            "schedule_id", "source_event_id", name="uq_schedule_fire_source_event"
+            "schedule_id", "source_event_id", name="uq_schedule_run_source_event"
         ),
     )
-    op.create_index("ix_schedule_fires_id", "schedule_fires", ["id"])
+    op.create_index("ix_schedule_runs_id", "schedule_runs", ["id"])
     op.create_index(
-        "ix_schedule_fires_schedule_id", "schedule_fires", ["schedule_id"]
+        "ix_schedule_runs_schedule_id", "schedule_runs", ["schedule_id"]
     )
     op.create_index(
-        "ix_schedule_fires_status_updated", "schedule_fires", ["status", "updated_at"]
+        "ix_schedule_runs_status_updated", "schedule_runs", ["status", "updated_at"]
     )
 
 
@@ -315,7 +315,7 @@ def _add_pod_bundle_jobs() -> None:
 def upgrade() -> None:
     _add_event_delivery_tables()
     _repair_usage_counter_uniqueness()
-    _add_schedule_fire_ledger()
+    _add_schedule_run_ledger()
     _add_pod_provisioning_state()
     _add_pod_bundle_jobs()
 
@@ -332,7 +332,7 @@ def downgrade() -> None:
     op.drop_column("pods", "provisioning_attempts")
     op.drop_column("pods", "provisioning_status")
 
-    op.drop_table("schedule_fires")
+    op.drop_table("schedule_runs")
     op.drop_column("schedules", "consecutive_failures")
 
     op.drop_index("uq_usage_limit_counter_window", table_name="usage_limit_counters")

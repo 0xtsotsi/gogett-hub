@@ -71,15 +71,9 @@ def sync_detailed(
 ) -> Response[ErrorResponse | FileDetailResponse]:
     """Attach Document Markdown
 
-     Attach (or replace) a user-authored markdown version of a document, plus
-    any images it references.
+     Attach user-authored markdown and referenced images to a document.
 
-    The uploaded markdown becomes the document's agent-facing ``document.md`` and
-    is chunked/indexed on the original's behalf; the source file is unchanged.
-    Each uploaded image is stored as a sibling child artifact so a reference like
-    ``![](fig1.png)`` resolves through the children endpoint — send the images
-    under repeated ``images`` fields, named to match the markdown references.
-    Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+    The source file remains unchanged; the markdown is indexed for agent use.
 
     Args:
         pod_id (UUID):
@@ -113,15 +107,9 @@ def sync(
 ) -> ErrorResponse | FileDetailResponse | None:
     """Attach Document Markdown
 
-     Attach (or replace) a user-authored markdown version of a document, plus
-    any images it references.
+     Attach user-authored markdown and referenced images to a document.
 
-    The uploaded markdown becomes the document's agent-facing ``document.md`` and
-    is chunked/indexed on the original's behalf; the source file is unchanged.
-    Each uploaded image is stored as a sibling child artifact so a reference like
-    ``![](fig1.png)`` resolves through the children endpoint — send the images
-    under repeated ``images`` fields, named to match the markdown references.
-    Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+    The source file remains unchanged; the markdown is indexed for agent use.
 
     Args:
         pod_id (UUID):
@@ -150,15 +138,9 @@ async def asyncio_detailed(
 ) -> Response[ErrorResponse | FileDetailResponse]:
     """Attach Document Markdown
 
-     Attach (or replace) a user-authored markdown version of a document, plus
-    any images it references.
+     Attach user-authored markdown and referenced images to a document.
 
-    The uploaded markdown becomes the document's agent-facing ``document.md`` and
-    is chunked/indexed on the original's behalf; the source file is unchanged.
-    Each uploaded image is stored as a sibling child artifact so a reference like
-    ``![](fig1.png)`` resolves through the children endpoint — send the images
-    under repeated ``images`` fields, named to match the markdown references.
-    Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+    The source file remains unchanged; the markdown is indexed for agent use.
 
     Args:
         pod_id (UUID):
@@ -190,15 +172,9 @@ async def asyncio(
 ) -> ErrorResponse | FileDetailResponse | None:
     """Attach Document Markdown
 
-     Attach (or replace) a user-authored markdown version of a document, plus
-    any images it references.
+     Attach user-authored markdown and referenced images to a document.
 
-    The uploaded markdown becomes the document's agent-facing ``document.md`` and
-    is chunked/indexed on the original's behalf; the source file is unchanged.
-    Each uploaded image is stored as a sibling child artifact so a reference like
-    ``![](fig1.png)`` resolves through the children endpoint — send the images
-    under repeated ``images`` fields, named to match the markdown references.
-    Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+    The source file remains unchanged; the markdown is indexed for agent use.
 
     Args:
         pod_id (UUID):

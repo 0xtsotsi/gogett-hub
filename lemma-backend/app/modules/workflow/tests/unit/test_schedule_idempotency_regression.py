@@ -100,11 +100,11 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
     )
 
     # The durable dedup claim reports "already delivered".
-    import app.modules.schedule.repositories.schedule_fire_repository as fire_repo_mod
+    import app.modules.schedule.repositories.schedule_run_repository as run_repo_mod
 
-    fire_repo = Mock()
-    fire_repo.claim = AsyncMock(return_value=None)
-    monkeypatch.setattr(fire_repo_mod, "ScheduleFireRepository", lambda uow: fire_repo)
+    run_repo = Mock()
+    run_repo.claim = AsyncMock(return_value=None)
+    monkeypatch.setattr(run_repo_mod, "ScheduleRunRepository", lambda uow: run_repo)
 
     await svc.handle_schedule_fired(
         schedule_id=str(schedule.id),
@@ -112,7 +112,7 @@ async def test_duplicate_agent_schedule_fire_is_skipped(monkeypatch):
         schedule_event_id="evt-1",
     )
 
-    fire_repo.claim.assert_awaited_once()
+    run_repo.claim.assert_awaited_once()
     engine.agent_adapter.run_agent_by_id.assert_not_awaited()
 
 

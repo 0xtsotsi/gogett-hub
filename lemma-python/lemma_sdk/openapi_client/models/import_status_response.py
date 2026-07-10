@@ -22,7 +22,7 @@ T = TypeVar("T", bound="ImportStatusResponse")
 
 @_attrs_define
 class ImportStatusResponse:
-    """Status of a pod import job (pure Redis read).
+    """Status of a durable pod import job.
 
     Attributes:
         events_url (str):

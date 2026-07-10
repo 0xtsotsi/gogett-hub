@@ -7,21 +7,21 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.schedule_fire_response import ScheduleFireResponse
+    from ..models.schedule_run_response import ScheduleRunResponse
 
 
-T = TypeVar("T", bound="ScheduleFireListResponse")
+T = TypeVar("T", bound="ScheduleRunListResponse")
 
 
 @_attrs_define
-class ScheduleFireListResponse:
+class ScheduleRunListResponse:
     """
     Attributes:
-        items (list[ScheduleFireResponse]):
+        items (list[ScheduleRunResponse]):
         limit (int):
     """
 
-    items: list[ScheduleFireResponse]
+    items: list[ScheduleRunResponse]
     limit: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -46,25 +46,25 @@ class ScheduleFireListResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.schedule_fire_response import ScheduleFireResponse
+        from ..models.schedule_run_response import ScheduleRunResponse
 
         d = dict(src_dict)
         items = []
         _items = d.pop("items")
         for items_item_data in _items:
-            items_item = ScheduleFireResponse.from_dict(items_item_data)
+            items_item = ScheduleRunResponse.from_dict(items_item_data)
 
             items.append(items_item)
 
         limit = d.pop("limit")
 
-        schedule_fire_list_response = cls(
+        schedule_run_list_response = cls(
             items=items,
             limit=limit,
         )
 
-        schedule_fire_list_response.additional_properties = d
-        return schedule_fire_list_response
+        schedule_run_list_response.additional_properties = d
+        return schedule_run_list_response
 
     @property
     def additional_keys(self) -> list[str]:

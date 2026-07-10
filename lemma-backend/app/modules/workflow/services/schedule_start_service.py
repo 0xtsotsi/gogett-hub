@@ -51,8 +51,8 @@ class ScheduleStartService:
             ScheduleRepository,
         )
         from app.modules.schedule.domain.schedule import ScheduleFireStatus
-        from app.modules.schedule.repositories.schedule_fire_repository import (
-            ScheduleFireRepository,
+        from app.modules.schedule.repositories.schedule_run_repository import (
+            ScheduleRunRepository,
         )
 
         # 1. A wake for a specific run (wait_until timers carry the run id, and —
@@ -83,8 +83,8 @@ class ScheduleStartService:
         if not schedule_event_id:
             raise ValueError("schedule_event_id is required for durable delivery")
 
-        fire_repo = ScheduleFireRepository(self._uow)
-        fire = await fire_repo.claim(
+        run_repo = ScheduleRunRepository(self._uow)
+        schedule_run = await run_repo.claim(
             schedule_id=schedule.id,
             source_event_id=schedule_event_id,
             target_kind="WORKFLOW" if schedule.workflow_id is not None else "AGENT",
@@ -92,9 +92,9 @@ class ScheduleStartService:
             metadata=metadata,
             llm_output=llm_output,
         )
-        if fire is None:
+        if schedule_run is None:
             logger.info(
-                "Duplicate or terminal schedule fire skipped",
+                "Duplicate or terminal schedule run skipped",
                 schedule_id=str(schedule.id),
                 source_event_id=schedule_event_id,
             )
@@ -114,10 +114,12 @@ class ScheduleStartService:
                     trigger=trigger,
                     schedule_event_id=schedule_event_id,
                 )
-                await fire_repo.mark_delivered(fire.id, target_run_id=run_id)
+                await run_repo.mark_dispatched(
+                    schedule_run.id, target_run_id=run_id
+                )
                 await self._record_fire(schedule_repo, schedule, run_id=run_id)
             except Exception as exc:
-                await fire_repo.mark_failed(fire.id, exc)
+                await run_repo.mark_failed(schedule_run.id, exc)
                 await self._record_fire(
                     schedule_repo,
                     schedule,
@@ -137,14 +139,14 @@ class ScheduleStartService:
                     source="SCHEDULE",
                     conversation_metadata={"schedule_id": str(schedule_id)},
                 )
-                await fire_repo.mark_delivered(
-                    fire.id, target_run_id=str(conversation_id)
+                await run_repo.mark_dispatched(
+                    schedule_run.id, target_run_id=str(conversation_id)
                 )
                 await self._record_fire(
                     schedule_repo, schedule, run_id=str(conversation_id)
                 )
             except Exception as exc:
-                await fire_repo.mark_failed(fire.id, exc)
+                await run_repo.mark_failed(schedule_run.id, exc)
                 logger.exception(
                     "Failed to start agent for schedule",
                     agent_id=str(schedule.agent_id),

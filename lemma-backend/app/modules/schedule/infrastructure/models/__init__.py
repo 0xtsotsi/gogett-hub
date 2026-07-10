@@ -1,4 +1,4 @@
-from .fire import ScheduleFire
+from .run import ScheduleRun
 from .schedule import Schedule
 
-__all__ = ["Schedule", "ScheduleFire"]
+__all__ = ["Schedule", "ScheduleRun"]

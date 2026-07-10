@@ -242,10 +242,10 @@ run `uv run python scripts/generate_route_inventory.py`.
 | DELETE | `/pods/{pod_id}/schedules/{schedule_id}` | `schedule.delete` | Delete Schedule |
 | GET | `/pods/{pod_id}/schedules` | `schedule.list` | List Schedules |
 | GET | `/pods/{pod_id}/schedules/{schedule_id}` | `schedule.get` | Get Schedule |
-| GET | `/pods/{pod_id}/schedules/{schedule_id}/fires` | `schedule.fire.list` | List Schedule Fires |
+| GET | `/pods/{pod_id}/schedules/{schedule_id}/runs` | `schedule.run.list` | List Schedule Runs |
 | PATCH | `/pods/{pod_id}/schedules/{schedule_id}` | `schedule.update` | Update Schedule |
 | POST | `/pods/{pod_id}/schedules` | `schedule.create` | Create Schedule |
-| POST | `/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry` | `schedule.fire.retry` | Retry Schedule Fire |
+| POST | `/pods/{pod_id}/schedules/{schedule_id}/runs/{run_id}/retry` | `schedule.run.retry` | Retry Schedule Run |
 
 ## usage
 

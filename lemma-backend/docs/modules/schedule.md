@@ -19,7 +19,7 @@ or surfaces; target modules decide how to execute the fire.
 ## Data and schedule types
 
 `schedules` stores target, active state, type-specific config, optional filter
-instruction/schema, and external scheduler metadata. `schedule_fires` is the
+instruction/schema, and external scheduler metadata. `schedule_runs` is the
 durable idempotency/delivery ledger keyed by schedule plus source event; it
 records attempts, target run, payload, and terminal outcome. Supported logical
 types include time/cron or once, webhook, datastore, and application-triggered
@@ -34,7 +34,7 @@ schedules. APScheduler owns the concrete time job store.
 | `GET /webhooks/{source}/verify` | Provider challenge/verification path |
 | `/scheduler/jobs...` | Internal create/list/status/pause/resume/delete operations used by the scheduler client |
 
-## Fire flow
+## Trigger and run flow
 
 ```mermaid
 flowchart LR
@@ -50,8 +50,10 @@ flowchart LR
 ```
 
 The service mirrors logical changes into the external scheduler through an
-adapter. PostgreSQL deduplicates every target dispatch and tracks retry/dead
-letter state. Consecutive-failure policy is durable on the schedule row, and a
+adapter. Each `schedule.fired` trigger claims one durable schedule run;
+PostgreSQL deduplicates target dispatch and tracks retry/dead-letter state.
+`DISPATCHED` means the target run was created, not that the target completed.
+Consecutive-failure policy is durable on the schedule row, and a
 deactivation event is staged in the same transaction as that state change.
 Publishers use the shared transactional outbox/core Redis Streams bus.
 
@@ -64,6 +66,6 @@ a pod is consumed as a system event to tear down schedules and external jobs.
 ## Tests and operations
 
 Tests cover normalization, filters, adapters, CRUD, scheduler calls, event
-consumers, concurrent fire deduplication, retry, and atomic deactivation.
+consumers, concurrent schedule-run deduplication, retry, and atomic deactivation.
 Operational status and remaining cross-module debt are tracked in
 [issues.md](issues.md).

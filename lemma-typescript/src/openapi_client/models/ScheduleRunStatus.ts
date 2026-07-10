@@ -2,10 +2,10 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export enum ScheduleFireDeliveryStatus {
+export enum ScheduleRunStatus {
     RECEIVED = 'RECEIVED',
     PROCESSING = 'PROCESSING',
-    DELIVERED = 'DELIVERED',
+    DISPATCHED = 'DISPATCHED',
     FILTERED = 'FILTERED',
     FAILED = 'FAILED',
     DEAD_LETTERED = 'DEAD_LETTERED',

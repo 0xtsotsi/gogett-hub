@@ -4,9 +4,9 @@
 /* eslint-disable */
 import type { CreateScheduleRequest } from '../models/CreateScheduleRequest.js';
 import type { ScheduleDetailResponse } from '../models/ScheduleDetailResponse.js';
-import type { ScheduleFireListResponse } from '../models/ScheduleFireListResponse.js';
-import type { ScheduleFireResponse } from '../models/ScheduleFireResponse.js';
 import type { ScheduleListResponse } from '../models/ScheduleListResponse.js';
+import type { ScheduleRunListResponse } from '../models/ScheduleRunListResponse.js';
+import type { ScheduleRunResponse } from '../models/ScheduleRunResponse.js';
 import type { ScheduleType } from '../models/ScheduleType.js';
 import type { UpdateScheduleRequest } from '../models/UpdateScheduleRequest.js';
 import type { CancelablePromise } from '../core/CancelablePromise.js';
@@ -159,21 +159,21 @@ export class SchedulesService {
         });
     }
     /**
-     * List Schedule Fires
+     * List Schedule Runs
      * @param podId
      * @param scheduleId
      * @param limit
-     * @returns ScheduleFireListResponse Successful Response
+     * @returns ScheduleRunListResponse Successful Response
      * @throws ApiError
      */
-    public static scheduleFireList(
+    public static scheduleRunList(
         podId: string,
         scheduleId: string,
         limit: number = 100,
-    ): CancelablePromise<ScheduleFireListResponse> {
+    ): CancelablePromise<ScheduleRunListResponse> {
         return __request(OpenAPI, {
             method: 'GET',
-            url: '/pods/{pod_id}/schedules/{schedule_id}/fires',
+            url: '/pods/{pod_id}/schedules/{schedule_id}/runs',
             path: {
                 'pod_id': podId,
                 'schedule_id': scheduleId,
@@ -187,25 +187,25 @@ export class SchedulesService {
         });
     }
     /**
-     * Retry Schedule Fire
+     * Retry Schedule Run
      * @param podId
      * @param scheduleId
-     * @param fireId
-     * @returns ScheduleFireResponse Successful Response
+     * @param runId
+     * @returns ScheduleRunResponse Successful Response
      * @throws ApiError
      */
-    public static scheduleFireRetry(
+    public static scheduleRunRetry(
         podId: string,
         scheduleId: string,
-        fireId: string,
-    ): CancelablePromise<ScheduleFireResponse> {
+        runId: string,
+    ): CancelablePromise<ScheduleRunResponse> {
         return __request(OpenAPI, {
             method: 'POST',
-            url: '/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry',
+            url: '/pods/{pod_id}/schedules/{schedule_id}/runs/{run_id}/retry',
             path: {
                 'pod_id': podId,
                 'schedule_id': scheduleId,
-                'fire_id': fireId,
+                'run_id': runId,
             },
             errors: {
                 422: `Validation Error`,

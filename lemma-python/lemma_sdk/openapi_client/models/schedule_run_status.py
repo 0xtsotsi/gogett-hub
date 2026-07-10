@@ -1,9 +1,9 @@
 from enum import Enum
 
 
-class ScheduleFireDeliveryStatus(str, Enum):
+class ScheduleRunStatus(str, Enum):
     DEAD_LETTERED = "DEAD_LETTERED"
-    DELIVERED = "DELIVERED"
+    DISPATCHED = "DISPATCHED"
     FAILED = "FAILED"
     FILTERED = "FILTERED"
     PROCESSING = "PROCESSING"

@@ -84,19 +84,19 @@ class ScheduleFireStatus(str, Enum):
     ERROR = "ERROR"
 
 
-class ScheduleFireDeliveryStatus(str, Enum):
+class ScheduleRunStatus(str, Enum):
     RECEIVED = "RECEIVED"
     PROCESSING = "PROCESSING"
-    DELIVERED = "DELIVERED"
+    DISPATCHED = "DISPATCHED"
     FILTERED = "FILTERED"
     FAILED = "FAILED"
     DEAD_LETTERED = "DEAD_LETTERED"
 
 
-class ScheduleFireEntity(Entity):
+class ScheduleRunEntity(Entity):
     schedule_id: UUID
     source_event_id: str
-    status: ScheduleFireDeliveryStatus
+    status: ScheduleRunStatus
     attempts: int = 0
     target_kind: str
     target_run_id: str | None = None

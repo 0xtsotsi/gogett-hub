@@ -26,8 +26,8 @@ from app.modules.schedule.domain.schedule import (
     normalize_datastore_schedule_config,
 )
 from app.modules.schedule.domain.events.schedule import ScheduleFired
-from app.modules.schedule.repositories.schedule_fire_repository import (
-    ScheduleFireRepository,
+from app.modules.schedule.repositories.schedule_run_repository import (
+    ScheduleRunRepository,
 )
 from app.modules.schedule.infrastructure.adapters.external_schedule_writer import (
     ExternalScheduleWriterAdapter,
@@ -66,9 +66,9 @@ class ScheduleService:
             )
         )
         self.authorization_service = authorization_service
-        self.fire_repository = ScheduleFireRepository(uow)
+        self.run_repository = ScheduleRunRepository(uow)
 
-    async def list_schedule_fires(
+    async def list_schedule_runs(
         self,
         *,
         pod_id: UUID,
@@ -80,14 +80,14 @@ class ScheduleService:
         if schedule is None or schedule.pod_id != pod_id:
             return None
         await ctx.require(Permissions.SCHEDULE_READ, ResourceRef.schedule(pod_id, schedule_id))
-        return await self.fire_repository.list_for_schedule(schedule_id, limit=limit)
+        return await self.run_repository.list_for_schedule(schedule_id, limit=limit)
 
-    async def retry_schedule_fire(
+    async def retry_schedule_run(
         self,
         *,
         pod_id: UUID,
         schedule_id: UUID,
-        fire_id: UUID,
+        run_id: UUID,
         ctx: Context,
     ):
         schedule = await self.get_schedule(schedule_id, ctx=ctx)
@@ -96,10 +96,10 @@ class ScheduleService:
         await ctx.require(
             Permissions.SCHEDULE_UPDATE, ResourceRef.schedule(pod_id, schedule_id)
         )
-        fire = await self.fire_repository.reset_for_retry(
-            schedule_id=schedule_id, fire_id=fire_id
+        schedule_run = await self.run_repository.reset_for_retry(
+            schedule_id=schedule_id, run_id=run_id
         )
-        if fire is None:
+        if schedule_run is None:
             return None
         self.uow.collect_events(
             [
@@ -109,15 +109,15 @@ class ScheduleService:
                     schedule_type=schedule.schedule_type,
                     pod_id=schedule.pod_id,
                     account_id=schedule.account_id,
-                    payload=fire.payload,
-                    metadata=fire.metadata,
-                    llm_output=fire.llm_output,
-                    source_event_id=fire.source_event_id,
-                    causation_id=fire.id,
+                    payload=schedule_run.payload,
+                    metadata=schedule_run.metadata,
+                    llm_output=schedule_run.llm_output,
+                    source_event_id=schedule_run.source_event_id,
+                    causation_id=schedule_run.id,
                 )
             ]
         )
-        return fire
+        return schedule_run
 
     async def create_schedule(
         self,

@@ -8,22 +8,22 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.schedule_fire_response import ScheduleFireResponse
+from ...models.schedule_run_response import ScheduleRunResponse
 from ...types import Response
 
 
 def _get_kwargs(
     pod_id: UUID,
     schedule_id: UUID,
-    fire_id: UUID,
+    run_id: UUID,
 ) -> dict[str, Any]:
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry".format(
+        "url": "/pods/{pod_id}/schedules/{schedule_id}/runs/{run_id}/retry".format(
             pod_id=quote(str(pod_id), safe=""),
             schedule_id=quote(str(schedule_id), safe=""),
-            fire_id=quote(str(fire_id), safe=""),
+            run_id=quote(str(run_id), safe=""),
         ),
     }
 
@@ -32,9 +32,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorResponse | ScheduleFireResponse | None:
+) -> ErrorResponse | ScheduleRunResponse | None:
     if response.status_code == 202:
-        response_202 = ScheduleFireResponse.from_dict(response.json())
+        response_202 = ScheduleRunResponse.from_dict(response.json())
 
         return response_202
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorResponse | ScheduleFireResponse]:
+) -> Response[ErrorResponse | ScheduleRunResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,29 +63,29 @@ def _build_response(
 def sync_detailed(
     pod_id: UUID,
     schedule_id: UUID,
-    fire_id: UUID,
+    run_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | ScheduleFireResponse]:
-    """Retry Schedule Fire
+) -> Response[ErrorResponse | ScheduleRunResponse]:
+    """Retry Schedule Run
 
     Args:
         pod_id (UUID):
         schedule_id (UUID):
-        fire_id (UUID):
+        run_id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | ScheduleFireResponse]
+        Response[ErrorResponse | ScheduleRunResponse]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
         schedule_id=schedule_id,
-        fire_id=fire_id,
+        run_id=run_id,
     )
 
     response = client.get_httpx_client().request(
@@ -98,29 +98,29 @@ def sync_detailed(
 def sync(
     pod_id: UUID,
     schedule_id: UUID,
-    fire_id: UUID,
+    run_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | ScheduleFireResponse | None:
-    """Retry Schedule Fire
+) -> ErrorResponse | ScheduleRunResponse | None:
+    """Retry Schedule Run
 
     Args:
         pod_id (UUID):
         schedule_id (UUID):
-        fire_id (UUID):
+        run_id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | ScheduleFireResponse
+        ErrorResponse | ScheduleRunResponse
     """
 
     return sync_detailed(
         pod_id=pod_id,
         schedule_id=schedule_id,
-        fire_id=fire_id,
+        run_id=run_id,
         client=client,
     ).parsed
 
@@ -128,29 +128,29 @@ def sync(
 async def asyncio_detailed(
     pod_id: UUID,
     schedule_id: UUID,
-    fire_id: UUID,
+    run_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ErrorResponse | ScheduleFireResponse]:
-    """Retry Schedule Fire
+) -> Response[ErrorResponse | ScheduleRunResponse]:
+    """Retry Schedule Run
 
     Args:
         pod_id (UUID):
         schedule_id (UUID):
-        fire_id (UUID):
+        run_id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse | ScheduleFireResponse]
+        Response[ErrorResponse | ScheduleRunResponse]
     """
 
     kwargs = _get_kwargs(
         pod_id=pod_id,
         schedule_id=schedule_id,
-        fire_id=fire_id,
+        run_id=run_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -161,30 +161,30 @@ async def asyncio_detailed(
 async def asyncio(
     pod_id: UUID,
     schedule_id: UUID,
-    fire_id: UUID,
+    run_id: UUID,
     *,
     client: AuthenticatedClient | Client,
-) -> ErrorResponse | ScheduleFireResponse | None:
-    """Retry Schedule Fire
+) -> ErrorResponse | ScheduleRunResponse | None:
+    """Retry Schedule Run
 
     Args:
         pod_id (UUID):
         schedule_id (UUID):
-        fire_id (UUID):
+        run_id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse | ScheduleFireResponse
+        ErrorResponse | ScheduleRunResponse
     """
 
     return (
         await asyncio_detailed(
             pod_id=pod_id,
             schedule_id=schedule_id,
-            fire_id=fire_id,
+            run_id=run_id,
             client=client,
         )
     ).parsed

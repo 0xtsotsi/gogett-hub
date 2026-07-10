@@ -9794,7 +9794,7 @@ var LemmaClient = (() => {
   }
 
   // src/version.ts
-  var SDK_VERSION = "1.0.0";
+  var SDK_VERSION = "1.0.1";
   var CLIENT_HEADER_NAME = "X-Lemma-Client";
   var CLIENT_HEADER_VALUE = `lemma-sdk-ts/${SDK_VERSION}`;
 
@@ -10196,7 +10196,7 @@ var LemmaClient = (() => {
   // src/openapi_client/core/OpenAPI.ts
   var OpenAPI = {
     BASE: "",
-    VERSION: "4.0.0",
+    VERSION: "4.0.1",
     WITH_CREDENTIALS: false,
     CREDENTIALS: "include",
     TOKEN: void 0,
@@ -11567,15 +11567,9 @@ var LemmaClient = (() => {
     }
     /**
      * Attach Document Markdown
-     * Attach (or replace) a user-authored markdown version of a document, plus
-     * any images it references.
+     * Attach user-authored markdown and referenced images to a document.
      *
-     * The uploaded markdown becomes the document's agent-facing ``document.md`` and
-     * is chunked/indexed on the original's behalf; the source file is unchanged.
-     * Each uploaded image is stored as a sibling child artifact so a reference like
-     * ``![](fig1.png)`` resolves through the children endpoint — send the images
-     * under repeated ``images`` fields, named to match the markdown references.
-     * Applies to non-markdown documents (PDF, Word/ODT, HTML, RTF, EPUB, …).
+     * The source file remains unchanged; the markdown is indexed for agent use.
      * @param podId
      * @param formData
      * @returns FileDetailResponse Successful Response
@@ -14967,17 +14961,17 @@ var LemmaClient = (() => {
       });
     }
     /**
-     * List Schedule Fires
+     * List Schedule Runs
      * @param podId
      * @param scheduleId
      * @param limit
-     * @returns ScheduleFireListResponse Successful Response
+     * @returns ScheduleRunListResponse Successful Response
      * @throws ApiError
      */
-    static scheduleFireList(podId, scheduleId, limit = 100) {
+    static scheduleRunList(podId, scheduleId, limit = 100) {
       return request(OpenAPI, {
         method: "GET",
-        url: "/pods/{pod_id}/schedules/{schedule_id}/fires",
+        url: "/pods/{pod_id}/schedules/{schedule_id}/runs",
         path: {
           "pod_id": podId,
           "schedule_id": scheduleId
@@ -14991,21 +14985,21 @@ var LemmaClient = (() => {
       });
     }
     /**
-     * Retry Schedule Fire
+     * Retry Schedule Run
      * @param podId
      * @param scheduleId
-     * @param fireId
-     * @returns ScheduleFireResponse Successful Response
+     * @param runId
+     * @returns ScheduleRunResponse Successful Response
      * @throws ApiError
      */
-    static scheduleFireRetry(podId, scheduleId, fireId) {
+    static scheduleRunRetry(podId, scheduleId, runId) {
       return request(OpenAPI, {
         method: "POST",
-        url: "/pods/{pod_id}/schedules/{schedule_id}/fires/{fire_id}/retry",
+        url: "/pods/{pod_id}/schedules/{schedule_id}/runs/{run_id}/retry",
         path: {
           "pod_id": podId,
           "schedule_id": scheduleId,
-          "fire_id": fireId
+          "run_id": runId
         },
         errors: {
           422: `Validation Error`

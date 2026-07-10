@@ -49,3 +49,11 @@ def test_env_py_imports_every_model_module() -> None:
         "`alembic revision --autogenerate` drops their tables from the baseline: "
         f"{missing}"
     )
+
+
+def test_schedule_run_ledger_uses_only_the_new_table_name() -> None:
+    from app.core.infrastructure.db.base import Base
+    from app.modules.schedule.infrastructure import models as schedule_models  # noqa: F401
+
+    assert "schedule_runs" in Base.metadata.tables
+    assert "schedule_fires" not in Base.metadata.tables

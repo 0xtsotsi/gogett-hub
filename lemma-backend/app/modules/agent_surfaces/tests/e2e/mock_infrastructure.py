@@ -553,37 +553,43 @@ class FakeTeamsServer:
                 **_request_contract(request),
             },
         )
-        return web.json_response(
-            {
-                "value": [
-                    {
-                        "id": "teams-context-001",
-                        "body": {
-                            "contentType": "html",
-                            "content": "<p>Earlier customer context</p>",
-                        },
-                        "from": {
-                            "user": {
-                                "id": "teams-context-user",
-                                "displayName": "Earlier Participant",
-                            }
-                        },
-                        "attachments": [],
+        earlier_reply = {
+            "id": "teams-context-001",
+            "body": {
+                "contentType": "html",
+                "content": "<p>Earlier customer context</p>",
+            },
+            "from": {
+                "user": {
+                    "id": "teams-context-user",
+                    "displayName": "Earlier Participant",
+                }
+            },
+            "attachments": [],
+        }
+        values = [earlier_reply]
+        # Microsoft Graph's thread-replies endpoint returns replies only; the
+        # root message is returned by the channel messages endpoint. Mirroring
+        # that distinction prevents an impossible duplicate "current message"
+        # from entering production's thread-context normalization path.
+        if request.match_info.get("message_id") is None:
+            values.append(
+                {
+                    "id": "1776236638028",
+                    "body": {
+                        "contentType": "text",
+                        "content": "Current message",
                     },
-                    {
-                        "id": "1776236638028",
-                        "body": {"contentType": "text", "content": "Current message"},
-                        "from": {
-                            "user": {
-                                "id": "b20e77ef-bd6b-4636-9f5b-20dd28beba24",
-                                "displayName": "Surface Test User",
-                            }
-                        },
-                        "attachments": [],
+                    "from": {
+                        "user": {
+                            "id": "b20e77ef-bd6b-4636-9f5b-20dd28beba24",
+                            "displayName": "Surface Test User",
+                        }
                     },
-                ]
-            }
-        )
+                    "attachments": [],
+                }
+            )
+        return web.json_response({"value": values})
 
 
 class FakeWhatsAppServer:

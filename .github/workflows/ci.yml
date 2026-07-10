@@ -107,48 +107,6 @@ jobs:
             lemma-backend/coverage-backend/coverage.xml
             lemma-backend/coverage-backend/html
           if-no-files-found: ignore
-      - name: Update PR backend coverage comment
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          hashFiles('lemma-backend/coverage-backend/comment.md') != ''
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const fs = require('fs');
-            const marker = '<!-- lemma-backend-coverage:unit -->';
-            const body = fs.readFileSync('lemma-backend/coverage-backend/comment.md', 'utf8');
-            const issue_number = context.payload.pull_request.number;
-            const {owner, repo} = context.repo;
-            try {
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner,
-                repo,
-                issue_number,
-                per_page: 100,
-              });
-              const existing = comments.find((comment) =>
-                comment.user?.type === 'Bot' && comment.body?.includes(marker)
-              );
-              if (existing) {
-                await github.rest.issues.updateComment({
-                  owner,
-                  repo,
-                  comment_id: existing.id,
-                  body,
-                });
-              } else {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number,
-                  body,
-                });
-              }
-            } catch (error) {
-              core.warning(`Could not update backend coverage PR comment: ${error.message}`);
-            }
-
   backend-lint:
     name: lemma-backend quality gates
     needs: changes

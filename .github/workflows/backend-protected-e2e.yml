@@ -27,7 +27,7 @@ jobs:
       - name: Run protected suite
         run: >-
           uv run pytest
-          -m "e2e and (slow or worker or workspace or provider or surface_live or indexing)"
+          -m "e2e and (slow or workspace or provider or surface_live or indexing or local_cli or protected)"
           --junitxml=protected-e2e.xml
           -o timeout=300
         env:

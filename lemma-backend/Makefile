@@ -39,7 +39,7 @@ help:
 	@echo "  make test              # run backend tests"
 	@echo "  make test-unit         # run non-e2e tests"
 	@echo "  make test-e2e          # run all e2e tests"
-	@echo "  make test-e2e-fast     # fast API e2e (no slow/worker/workspace/provider/local_cli),"
+	@echo "  make test-e2e-fast     # hermetic API/worker e2e (no slow/workspace/provider/local_cli),"
 	@echo "                         #   parallel via pytest-xdist (E2E_WORKERS=$(E2E_WORKERS); auto|0 to override)"
 	@echo "  make test-e2e-runtime  # run slow worker/workspace/local/provider e2e tests (serial)"
 	@echo "  make test-module MODULE=pod"
@@ -96,7 +96,7 @@ test-e2e-real:
 	E2E_REAL=1 uv run pytest -m e2e
 
 test-e2e-fast:
-	uv run pytest $(E2E_PARALLEL) -m "e2e and not slow and not worker and not workspace and not provider and not local_cli and not indexing"
+	uv run pytest $(E2E_PARALLEL) -m "e2e and not slow and not workspace and not provider and not local_cli and not indexing and not protected"
 
 # One CI shard of the fast suite: same marker filter, scoped to the paths (or
 # --ignore excludes) passed in E2E_ARGS. CI runs several shards in parallel on
@@ -105,7 +105,7 @@ test-e2e-fast:
 # contention that makes -n2 flaky. The union of all shards' E2E_ARGS must equal
 # the whole fast suite (the last shard is a catch-all via --ignore).
 test-e2e-shard:
-	uv run pytest $(E2E_PARALLEL) $(E2E_ARGS) -m "e2e and not slow and not worker and not workspace and not provider and not local_cli and not indexing" -o timeout=120
+	uv run pytest $(E2E_PARALLEL) $(E2E_ARGS) -m "e2e and not slow and not workspace and not provider and not local_cli and not indexing and not protected" -o timeout=120
 
 # Kreuzberg-backed indexing/search e2e (real document extraction). Split out of
 # test-e2e-fast so that job stays fast and never boots the RAM-heavy Kreuzberg
@@ -116,7 +116,7 @@ test-e2e-indexing:
 
 # Real runtime suite only (real model + Docker), serial. Subset of test-e2e-real.
 test-e2e-runtime:
-	E2E_REAL=1 uv run pytest -m "e2e and (slow or worker or workspace or provider or local_cli)"
+	E2E_REAL=1 uv run pytest -m "e2e and (slow or workspace or provider or local_cli or indexing or surface_live or protected)"
 
 test-module:
 	@test -n "$(MODULE)" || (echo "MODULE is required, e.g. make test-module MODULE=pod" && exit 1)
@@ -147,7 +147,7 @@ coverage-backend-e2e-shard:
 	$(BACKEND_COVERAGE_DATA_ENV) uv run coverage erase
 	$(BACKEND_COVERAGE_RUN_ENV) uv run coverage run --parallel-mode -m pytest \
 		$(E2E_PARALLEL) $(E2E_ARGS) \
-		-m "e2e and not slow and not worker and not workspace and not provider and not local_cli and not indexing" \
+		-m "e2e and not slow and not workspace and not provider and not local_cli and not indexing and not protected" \
 		-o timeout=120 \
 		--junitxml=$(BACKEND_COVERAGE_DIR)/junit-$(COVERAGE_PHASE).xml
 	$(MAKE) coverage-backend-report COVERAGE_PHASE=$(COVERAGE_PHASE)

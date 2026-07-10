@@ -173,10 +173,16 @@ def _phase_title(phase: str) -> str:
 def render_markdown(summary: dict[str, Any]) -> str:
     phase = summary["phase"]
     lines = [comment_marker(phase), f"## Backend Coverage ({_phase_title(phase)})", ""]
-    lines.append(
-        "_The aggregate PR gate requires 70% overall, 65% for schedule, and "
-        "90% changed-code coverage._"
-    )
+    if phase == "e2e-union":
+        lines.append(
+            "_Authoritative E2E-only union across every shard. Agent, agent "
+            "surfaces, datastore, and function each require 80%._"
+        )
+    else:
+        lines.append(
+            "_The aggregate PR gate requires 70% overall, 65% for schedule, and "
+            "90% changed-code coverage._"
+        )
     lines.append("")
 
     tests = summary["tests"]
@@ -242,30 +248,188 @@ def render_markdown(summary: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def build_overall_summary(
+    unit_coverage: dict[str, Any] | None,
+    e2e_coverage: dict[str, Any] | None,
+    combined_coverage: dict[str, Any] | None,
+    *,
+    unit_junit_paths: list[Path],
+    e2e_junit_paths: list[Path],
+) -> dict[str, Any]:
+    """Build the single authoritative PR coverage view.
+
+    Shards are an execution detail. The public report compares the complete
+    unit suite, the complete E2E union, and their combined coverage by module.
+    """
+
+    phases = {
+        "unit": build_summary(
+            unit_coverage,
+            phase="unit",
+            junit_paths=unit_junit_paths,
+        ),
+        "e2e": build_summary(
+            e2e_coverage,
+            phase="e2e-union",
+            junit_paths=e2e_junit_paths,
+        ),
+        "combined": build_summary(
+            combined_coverage,
+            phase="combined",
+            junit_paths=[],
+        ),
+    }
+    module_names = sorted(
+        {
+            row["name"]
+            for phase in phases.values()
+            for row in phase["modules"]
+        }
+    )
+
+    module_rows: list[dict[str, Any]] = []
+    for module_name in module_names:
+        row: dict[str, Any] = {"name": module_name}
+        for phase_name, phase in phases.items():
+            module = next(
+                (
+                    module_row
+                    for module_row in phase["modules"]
+                    if module_row["name"] == module_name
+                ),
+                None,
+            )
+            row[phase_name] = module
+        module_rows.append(row)
+
+    return {
+        "phase": "overall",
+        "missing_coverage": any(
+            phase["missing_coverage"] for phase in phases.values()
+        ),
+        "unit": phases["unit"],
+        "e2e": phases["e2e"],
+        "combined": phases["combined"],
+        "modules": module_rows,
+    }
+
+
+def _coverage_cell(module: dict[str, Any] | None) -> str:
+    if module is None:
+        return "—"
+    return _format_pct(float(module["coverage"]))
+
+
+def _total_cell(summary: dict[str, Any]) -> str:
+    if summary["missing_coverage"]:
+        return "—"
+    return _format_pct(float(summary["totals"]["percent_covered"]))
+
+
+def render_overall_markdown(summary: dict[str, Any]) -> str:
+    lines = [comment_marker("overall"), "## Backend Coverage", ""]
+    lines.append(
+        "_Authoritative module-wise coverage for the complete unit suite, "
+        "the union of every E2E shard, and both suites combined._"
+    )
+    lines.append("")
+
+    unit_tests = summary["unit"]["tests"]
+    e2e_tests = summary["e2e"]["tests"]
+    lines.append(
+        "**Tests:** "
+        f"{unit_tests['tests']} unit "
+        f"({unit_tests['failures']} failed, {unit_tests['errors']} errors, "
+        f"{unit_tests['skipped']} skipped); "
+        f"{e2e_tests['tests']} E2E "
+        f"({e2e_tests['failures']} failed, {e2e_tests['errors']} errors, "
+        f"{e2e_tests['skipped']} skipped)"
+    )
+    lines.append("")
+    lines.append(
+        _table(
+            ["Module", "Unit", "E2E only", "Combined"],
+            [
+                [
+                    "**Overall**",
+                    _total_cell(summary["unit"]),
+                    _total_cell(summary["e2e"]),
+                    _total_cell(summary["combined"]),
+                ],
+                *[
+                    [
+                        row["name"],
+                        _coverage_cell(row["unit"]),
+                        _coverage_cell(row["e2e"]),
+                        _coverage_cell(row["combined"]),
+                    ]
+                    for row in summary["modules"]
+                ],
+            ],
+        )
+    )
+    lines.extend(
+        [
+            "",
+            "**Gates:** combined overall ≥70%; combined schedule ≥65%; "
+            "changed code ≥90%; E2E-only agent, agent_surfaces, datastore, "
+            "and function ≥80%.",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _paths_from_glob(patterns: list[str]) -> list[Path]:
     paths: list[Path] = []
     for pattern in patterns:
-        paths.extend(Path(path) for path in sorted(glob.glob(pattern)))
+        paths.extend(Path(path) for path in sorted(glob.glob(pattern, recursive=True)))
     return paths
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--coverage-json", type=Path, required=True)
-    parser.add_argument("--phase", required=True)
+    parser.add_argument("--coverage-json", type=Path)
+    parser.add_argument("--phase")
+    parser.add_argument("--unit-coverage-json", type=Path)
+    parser.add_argument("--e2e-coverage-json", type=Path)
+    parser.add_argument("--combined-coverage-json", type=Path)
     parser.add_argument("--junit", action="append", type=Path, default=[])
     parser.add_argument("--junit-glob", action="append", default=[])
+    parser.add_argument("--unit-junit-glob", action="append", default=[])
+    parser.add_argument("--e2e-junit-glob", action="append", default=[])
     parser.add_argument("--markdown-out", type=Path, required=True)
     parser.add_argument("--summary-json-out", type=Path, required=True)
     args = parser.parse_args()
 
-    junit_paths = list(args.junit) + _paths_from_glob(args.junit_glob)
-    summary = build_summary(
-        _load_coverage(args.coverage_json),
-        phase=args.phase,
-        junit_paths=junit_paths,
+    overall_paths = (
+        args.unit_coverage_json,
+        args.e2e_coverage_json,
+        args.combined_coverage_json,
     )
-    markdown = render_markdown(summary)
+    if any(overall_paths):
+        if not all(overall_paths):
+            parser.error(
+                "overall reporting requires --unit-coverage-json, "
+                "--e2e-coverage-json, and --combined-coverage-json"
+            )
+        summary = build_overall_summary(
+            _load_coverage(args.unit_coverage_json),
+            _load_coverage(args.e2e_coverage_json),
+            _load_coverage(args.combined_coverage_json),
+            unit_junit_paths=_paths_from_glob(args.unit_junit_glob),
+            e2e_junit_paths=_paths_from_glob(args.e2e_junit_glob),
+        )
+        markdown = render_overall_markdown(summary)
+    else:
+        if args.coverage_json is None or args.phase is None:
+            parser.error("phase reporting requires --coverage-json and --phase")
+        junit_paths = list(args.junit) + _paths_from_glob(args.junit_glob)
+        summary = build_summary(
+            _load_coverage(args.coverage_json),
+            phase=args.phase,
+            junit_paths=junit_paths,
+        )
+        markdown = render_markdown(summary)
 
     args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json_out.parent.mkdir(parents=True, exist_ok=True)

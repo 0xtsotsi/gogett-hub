@@ -102,6 +102,62 @@ def test_backend_coverage_report_missing_artifact_fallback():
     assert "Coverage artifact was not found" in markdown
 
 
+def test_e2e_union_report_describes_authoritative_module_gate():
+    reporter = _load_reporter()
+    summary = reporter.build_summary(
+        {
+            "files": {},
+            "totals": {
+                "covered_lines": 0,
+                "num_statements": 0,
+                "percent_covered": 100.0,
+                "missing_lines": 0,
+            },
+        },
+        phase="e2e-union",
+        junit_paths=[],
+    )
+
+    markdown = reporter.render_markdown(summary)
+
+    assert "Authoritative E2E-only union across every shard" in markdown
+    assert "each require 80%" in markdown
+
+
+def test_overall_report_is_one_module_wise_unit_e2e_and_combined_table():
+    reporter = _load_reporter()
+
+    def coverage(*, missing: int):
+        covered = 10 - missing
+        return {
+            "files": {
+                "app/modules/agent/runtime.py": {
+                    "summary": {"num_statements": 10, "missing_lines": missing}
+                }
+            },
+            "totals": {
+                "covered_lines": covered,
+                "num_statements": 10,
+                "percent_covered": covered * 10.0,
+                "missing_lines": missing,
+            },
+        }
+
+    summary = reporter.build_overall_summary(
+        coverage(missing=4),
+        coverage(missing=2),
+        coverage(missing=1),
+        unit_junit_paths=[],
+        e2e_junit_paths=[],
+    )
+    markdown = reporter.render_overall_markdown(summary)
+
+    assert reporter.comment_marker("overall") in markdown
+    assert "| Module | Unit | E2E only | Combined |" in markdown
+    assert "| agent | 60.0% | 80.0% | 90.0% |" in markdown
+    assert "Lowest-Covered Files" not in markdown
+
+
 def test_backend_coverage_report_cli_writes_markdown_and_summary(tmp_path):
     reporter = _load_reporter()
     coverage_json = tmp_path / "coverage.json"

@@ -12,6 +12,7 @@ from fastapi import status
 
 from app.modules.datastore.tests.e2e.harness import DatastoreApi
 from app.modules.test_support.e2e.scripted_model import (
+    script_model_error,
     script_text,
     script_tool_call,
 )
@@ -59,6 +60,30 @@ async def _create_pod(authenticated_client, fixed_test_org) -> dict:
     return response.json()
 
 
+async def _create_mock_agent(
+    authenticated_client,
+    *,
+    pod_id: str,
+    runtime_profile_id: str,
+    name_prefix: str,
+) -> dict:
+    agent_name = f"{name_prefix}_{uuid4().hex[:8]}"
+    response = await authenticated_client.post(
+        f"/pods/{pod_id}/agents",
+        json={
+            "name": agent_name,
+            "instruction": "Use the deterministic E2E model.",
+            "agent_runtime": {
+                "profile_id": runtime_profile_id,
+                "model_name": "mock-safe-model",
+            },
+            "toolsets": [],
+        },
+    )
+    assert response.status_code == status.HTTP_201_CREATED, response.text
+    return response.json()
+
+
 async def _collect_sse(response) -> list[dict]:
     events: list[dict] = []
     async with asyncio.timeout(30):
@@ -83,6 +108,24 @@ async def _send_message(
         "POST",
         url,
         json={"content": content, "metadata": {"client": "hermetic-e2e"}},
+        timeout=60,
+    ) as response:
+        assert response.status_code == status.HTTP_200_OK, await response.aread()
+        return await _collect_sse(response)
+
+
+async def _send_message_with_metadata(
+    authenticated_client,
+    pod_id: str,
+    conversation_id: str,
+    content: str,
+    metadata: dict,
+) -> list[dict]:
+    url = f"/pods/{pod_id}/conversations/{conversation_id}/messages"
+    async with authenticated_client.stream(
+        "POST",
+        url,
+        json={"content": content, "metadata": metadata},
         timeout=60,
     ) as response:
         assert response.status_code == status.HTTP_200_OK, await response.aread()
@@ -137,6 +180,259 @@ async def _wait_for_usage(
             return event
         await asyncio.sleep(0.1)
     raise AssertionError(f"Usage for agent run {run_id} was not persisted")
+
+
+@pytest.mark.asyncio
+async def test_public_sse_sanitizes_provider_failure_matrix_and_persists_failure(
+    authenticated_client,
+    fixed_test_org,
+    e2e_settings,
+    worker,
+):
+    """Provider HTTP, protocol, quota, and unexpected failures are sanitized."""
+    del worker
+    runtime = await _create_runtime_profile(
+        authenticated_client,
+        fixed_test_org,
+        e2e_settings,
+    )
+    pod = await _create_pod(authenticated_client, fixed_test_org)
+    agent = await _create_mock_agent(
+        authenticated_client,
+        pod_id=pod["id"],
+        runtime_profile_id=runtime["id"],
+        name_prefix="provider_failure",
+    )
+    canary = "CANARY_PROVIDER_EXCEPTION_SECRET_4d91"
+    scenarios = (
+        (
+            "model_http",
+            429,
+            "The model provider returned an error (HTTP 429).",
+        ),
+        (
+            "unexpected_model_behavior",
+            None,
+            "A tool failed repeatedly after several attempts",
+        ),
+        ("usage_limit", None, "The agent run hit a usage limit."),
+        ("generic", None, "The model provider returned an error."),
+    )
+
+    for kind, provider_status, expected_message in scenarios:
+        conversation = await authenticated_client.post(
+            f"/pods/{pod['id']}/conversations",
+            json={
+                "agent_name": agent["name"],
+                "metadata": {
+                    "mock_llm_script": [
+                        script_model_error(
+                            kind,
+                            message=f"{canary}:{kind}",
+                            status_code=provider_status,
+                        )
+                    ]
+                },
+            },
+        )
+        assert conversation.status_code == status.HTTP_201_CREATED, conversation.text
+        conversation_id = conversation.json()["id"]
+        events = await _send_message(
+            authenticated_client,
+            pod["id"],
+            conversation_id,
+            f"Trigger the {kind} provider failure.",
+        )
+        assert events[-1]["type"] == "error", events
+        assert expected_message in str(events[-1]["data"])
+        assert canary not in json.dumps(events)
+
+        durable = await authenticated_client.get(
+            f"/pods/{pod['id']}/conversations/{conversation_id}"
+        )
+        assert durable.status_code == status.HTTP_200_OK, durable.text
+        assert durable.json()["status"] == "FAILED"
+        messages = await authenticated_client.get(
+            f"/pods/{pod['id']}/conversations/{conversation_id}/messages"
+        )
+        assert messages.status_code == status.HTTP_200_OK, messages.text
+        assert canary not in messages.text
+
+
+@pytest.mark.asyncio
+async def test_public_sse_formats_external_context_files_state_and_email_guidance(
+    authenticated_client,
+    fixed_test_org,
+    e2e_settings,
+    worker,
+):
+    """External-message metadata reaches the model as clearly framed context."""
+    del worker
+    runtime = await _create_runtime_profile(
+        authenticated_client,
+        fixed_test_org,
+        e2e_settings,
+    )
+    pod = await _create_pod(authenticated_client, fixed_test_org)
+    agent = await _create_mock_agent(
+        authenticated_client,
+        pod_id=pod["id"],
+        runtime_profile_id=runtime["id"],
+        name_prefix="external_context",
+    )
+    conversation = await authenticated_client.post(
+        f"/pods/{pod['id']}/conversations",
+        json={"agent_name": agent["name"], "title": "External context"},
+    )
+    assert conversation.status_code == status.HTTP_201_CREATED, conversation.text
+    conversation_id = conversation.json()["id"]
+
+    first_events = await _send_message_with_metadata(
+        authenticated_client,
+        pod["id"],
+        conversation_id,
+        "Summarize the customer request.",
+        {
+            "surface_platform": "OUTLOOK",
+            "sender_display_name": "Ada Lovelace",
+            "channel_context": [
+                "ignored non-object context",
+                {"author": "Grace", "text": "Earlier customer context"},
+                {"author": "Empty", "text": ""},
+            ],
+            "attachments": [
+                {
+                    "name": "invoice.pdf",
+                    "mime_type": "application/pdf",
+                    "size": 2048,
+                }
+            ],
+            "state": {"selected_invoice": "INV-42", "tab": "review"},
+        },
+    )
+    assert first_events[-1]["type"] == "completed", first_events
+
+    second_events = await _send_message_with_metadata(
+        authenticated_client,
+        pod["id"],
+        conversation_id,
+        "Review the files saved from the follow-up.",
+        {
+            "surface_platform": "OUTLOOK",
+            "sender_email": "ada@example.test",
+            "ingested_files": ["/surface/follow-up.md", "/surface/chart.png"],
+        },
+    )
+    assert second_events[-1]["type"] == "completed", second_events
+
+    messages = await authenticated_client.get(
+        f"/pods/{pod['id']}/conversations/{conversation_id}/messages"
+    )
+    assert messages.status_code == status.HTTP_200_OK, messages.text
+    assistant_text = "\n".join(
+        str(item.get("text") or "")
+        for item in messages.json()["items"]
+        if item["role"] == "assistant"
+    )
+    for expected in (
+        "OUTLOOK | Ada Lovelace",
+        "Earlier customer context",
+        "invoice.pdf",
+        "INV-42",
+        "/surface/follow-up.md",
+        "/surface/chart.png",
+    ):
+        assert expected in assistant_text
+
+
+@pytest.mark.asyncio
+async def test_public_runtime_profile_anthropic_discovery_and_validation_matrix(
+    authenticated_client,
+    fixed_test_org,
+    e2e_settings,
+):
+    """Provider profiles discover models and reject unsafe or unusable config."""
+    canary = "CANARY_ANTHROPIC_PROFILE_KEY_b628"
+    created = await authenticated_client.post(
+        f"/organizations/{fixed_test_org['id']}/agent-runtime/profiles",
+        json={
+            "source": "ANTHROPIC_COMPATIBLE",
+            "name": f"Anthropic compatible {uuid4().hex[:8]}",
+            "base_url": f"{e2e_settings.agentbox_api_url}/v1",
+            "api_key": canary,
+            "default_model_name": "mock-safe-model",
+            "headers": {"X-E2E-Tenant": "runtime-profile"},
+            "model_settings": {"temperature": 0},
+        },
+    )
+    assert created.status_code == status.HTTP_201_CREATED, created.text
+    profile = created.json()
+    assert profile["protocol"] == "ANTHROPIC_COMPATIBLE"
+    assert profile["default_model_name"] == "mock-safe-model"
+    assert profile["has_credentials"] is True
+    assert canary not in created.text
+    model = next(
+        item for item in profile["model_catalog"] if item["name"] == "mock-safe-model"
+    )
+    assert set(model["capabilities"]) == {"TEXT", "TOOLS", "VISION"}
+
+    listed = await authenticated_client.get(
+        f"/organizations/{fixed_test_org['id']}/agent-runtime/profiles"
+    )
+    assert listed.status_code == status.HTTP_200_OK, listed.text
+    assert profile["id"] in {item["id"] for item in listed.json()["items"]}
+    assert canary not in listed.text
+
+    invalid_default = await authenticated_client.post(
+        f"/organizations/{fixed_test_org['id']}/agent-runtime/profiles",
+        json={
+            "source": "OPENAI_COMPATIBLE",
+            "name": "Missing default model",
+            "base_url": f"{e2e_settings.agentbox_api_url}/v1",
+            "api_key": "not-persisted",
+            "default_model_name": "model-that-was-not-discovered",
+        },
+    )
+    assert invalid_default.status_code == status.HTTP_400_BAD_REQUEST
+    assert "provider model names" in invalid_default.json()["message"]
+
+    empty_catalog = await authenticated_client.post(
+        f"/organizations/{fixed_test_org['id']}/agent-runtime/profiles",
+        json={
+            "source": "OPENAI_COMPATIBLE",
+            "name": "Empty provider catalog",
+            "base_url": f"{e2e_settings.agentbox_api_url}/missing",
+            "api_key": "not-persisted",
+        },
+    )
+    assert empty_catalog.status_code == status.HTTP_400_BAD_REQUEST
+    assert "provide model_names" in empty_catalog.json()["message"]
+
+    unsafe_url = await authenticated_client.post(
+        f"/organizations/{fixed_test_org['id']}/agent-runtime/profiles",
+        json={
+            "source": "OPENAI_COMPATIBLE",
+            "name": "Cloud metadata is forbidden",
+            "base_url": "http://169.254.169.254/latest",
+            "api_key": "CANARY_SSRF_KEY_must_not_leak",
+            "model_names": ["fallback-model"],
+        },
+    )
+    assert unsafe_url.status_code == status.HTTP_400_BAD_REQUEST
+    assert unsafe_url.json()["message"] == "base_url must be a public http(s) URL"
+    assert "CANARY_SSRF_KEY" not in unsafe_url.text
+
+    unavailable_daemon = await authenticated_client.post(
+        f"/organizations/{fixed_test_org['id']}/agent-runtime/profiles",
+        json={
+            "source": "USER_DAEMON",
+            "daemon_id": str(uuid4()),
+            "harness_kind": "CODEX",
+            "name": "Unavailable laptop",
+        },
+    )
+    assert unavailable_daemon.status_code == status.HTTP_400_BAD_REQUEST
+    assert "not available" in unavailable_daemon.json()["message"]
 
 
 @pytest.mark.asyncio

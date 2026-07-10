@@ -144,7 +144,7 @@ class PydanticAIHarness:
                 if event.type in {AgentEventType.ERROR, AgentEventType.STOPPED}:
                     terminal_event_seen = True
         except ModelHTTPError as exc:
-            logger.error("Model provider rejected agent request: %s", exc)
+            logger.error(f"Model request failed status={exc.status_code} model={exc.model_name}")
             yield AgentEvent(
                 type=AgentEventType.ERROR,
                 data=_user_facing_error_message(exc),
@@ -155,7 +155,7 @@ class PydanticAIHarness:
             # Reached only when a tool genuinely failed every retry (default 5) —
             # GracefulToolset turns ordinary execution errors into tool responses,
             # so this is the rare "model kept sending invalid arguments" case.
-            logger.warning("Agent run ended after repeated tool failures: %s", exc)
+            logger.warning("Agent run ended after repeated tool failures")
             yield AgentEvent(
                 type=AgentEventType.ERROR,
                 data=_user_facing_error_message(exc),
@@ -163,7 +163,7 @@ class PydanticAIHarness:
             )
             return
         except UsageLimitExceeded as exc:
-            logger.warning("Agent run hit a usage limit: %s", exc)
+            logger.warning("Agent run hit a usage limit")
             yield AgentEvent(
                 type=AgentEventType.ERROR,
                 data=_user_facing_error_message(exc),
@@ -175,7 +175,7 @@ class PydanticAIHarness:
             # rather than failing. The tool call is already persisted; the runner
             # finishes this run and flips the conversation to WAITING. The user's
             # submission later starts a fresh run that resumes from history.
-            logger.info("Agent run paused for user input: %s", exc)
+            logger.info(f"Agent input required kind={exc.kind} call={exc.tool_call_id}")
             yield AgentEvent(
                 type=AgentEventType.WAITING,
                 data={
@@ -187,7 +187,7 @@ class PydanticAIHarness:
             )
             return
         except Exception as exc:
-            logger.error("PydanticAI harness execution failed: %s", exc, exc_info=True)
+            logger.error(f"PydanticAI harness failed type={type(exc).__name__}")
             yield AgentEvent(
                 type=AgentEventType.ERROR,
                 data=_user_facing_error_message(exc),

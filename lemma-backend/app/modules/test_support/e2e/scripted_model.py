@@ -17,6 +17,19 @@ def script_text(text: str) -> ScriptTurn:
     return {"text": text, "tool_calls": []}
 
 
+def script_model_error(
+    kind: str,
+    *,
+    message: str,
+    status_code: int | None = None,
+) -> ScriptTurn:
+    """Raise a deterministic provider-side failure on the next model turn."""
+    error: dict[str, Any] = {"kind": kind, "message": message}
+    if status_code is not None:
+        error["status_code"] = status_code
+    return {"error": error}
+
+
 def script_tool_call(
     tool_name: str,
     args: dict[str, Any],
@@ -154,6 +167,7 @@ __all__ = [
     "script_ask_user",
     "script_display_resource",
     "script_email_reply",
+    "script_model_error",
     "script_progress",
     "script_request_approval",
     "script_say",

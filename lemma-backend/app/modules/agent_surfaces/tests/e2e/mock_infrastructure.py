@@ -887,7 +887,14 @@ class FakeTelegramServer:
         failure = self._maybe_fail("deleteWebhook")
         if failure is not None:
             return failure
-        body = await request.json()
+        # Telegram accepts form-encoded Bot API requests. Native polling uses
+        # that production contract, while webhook setup uses JSON, so the fake
+        # must support both instead of raising JSONDecodeError on valid form
+        # data.
+        if request.content_type == "application/json":
+            body = await request.json()
+        else:
+            body = dict(await request.post())
         self._registered_webhook = None
         self._store.add(
             "TELEGRAM_WEBHOOK",

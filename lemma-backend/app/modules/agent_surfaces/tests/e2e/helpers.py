@@ -264,7 +264,33 @@ async def _create_surface(
 
     response = await client.post(f"/pods/{pod_id}/surfaces", json=payload)
     assert response.status_code == 200, response.text
-    return response.json()
+    surface = response.json()
+
+    # Teams surfaces are intentionally non-deliverable until tenant admin
+    # consent is recorded. Behavioral journeys model an already-consented
+    # installation through the real public callback; the dedicated consent E2E
+    # creates its surface directly and therefore still verifies the pending
+    # state and rejection paths before activation.
+    if platform == "TEAMS":
+        tenant_id = surface.get("external_tenant_id")
+        assert tenant_id, surface
+        consent = await client.get(
+            "/surfaces/teams/admin-consent/callback",
+            params={
+                "tenant": tenant_id,
+                "admin_consent": "True",
+                "state": surface["id"],
+            },
+        )
+        assert consent.status_code == 200, consent.text
+        activated = await client.get(
+            f"/pods/{pod_id}/surfaces/{surface['name']}"
+        )
+        assert activated.status_code == 200, activated.text
+        surface = activated.json()
+        assert surface["status"] == "ACTIVE"
+
+    return surface
 
 
 async def _create_agent_surface(

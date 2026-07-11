@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Callable, Optional
 from uuid import UUID
 
+from app.core.api.uploads import upload_source_sha256, upload_source_size
 from app.core.authorization.context import Context
 from app.core.log.log import get_logger
-from app.core.api.uploads import upload_source_size
 from app.modules.datastore.domain.errors import (
     DatastoreFileNotFoundError,
     DatastoreValidationError,
@@ -21,6 +22,7 @@ from app.modules.datastore.domain.ports import (
     DatastoreStoragePort,
 )
 from app.modules.datastore.infrastructure.storage_paths import (
+    build_datastore_file_storage_key,
     build_datastore_folder_storage_prefix,
 )
 from app.modules.datastore.services.files.authorizer import FileAuthorizer
@@ -31,6 +33,7 @@ from app.modules.datastore.services.files.reader import FileReader
 from app.modules.datastore.services.files.storage_phase import (
     FileStoragePhase,
     _PathDeletionCleanup,
+    _StorageMove,
     _UpdatePlan,
 )
 from app.modules.datastore.services.files.transaction_writer import (
@@ -169,6 +172,10 @@ class FileWriter(FileTransactionWriter):
             # has no overlay entity; fall through to materialize it as a real,
             # pod-visible folder.
 
+        # Concurrent uploads commonly share a new directory. Hold a transaction-
+        # scoped lock across the check/create decision so all losers re-read the
+        # winner instead of surfacing a unique-constraint 500.
+        await self.file_repository.acquire_path_lock(pod_id, normalized_path)
         existing = await self.file_repository.get_by_path(
             pod_id=pod_id,
             path=normalized_path,
@@ -201,7 +208,9 @@ class FileWriter(FileTransactionWriter):
                 requester_user_id=requester_user_id,
                 pod_id=pod_id,
                 path=normalized_path,
-                resource_id=parent_directory.id if parent_directory is not None else None,
+                resource_id=parent_directory.id
+                if parent_directory is not None
+                else None,
                 ctx=ctx,
             )
         resolved_visibility = self.paths._resolve_visibility_for_path(
@@ -234,19 +243,7 @@ class FileWriter(FileTransactionWriter):
         """Resolve + authorize + apply in-memory mutations (incl. rename
         collision checks) — DB only. The byte upload/move and search sync happen
         outside this UoW via write_update_storage / persist / finalize."""
-        if not update_entity.path:
-            raise DatastoreValidationError("Path is required")
-        update_entity.path = self.paths._resolve_api_path(
-            update_entity.path,
-            requester_user_id=requester_user_id,
-        )
-        self.system_skill_files.ensure_writable(update_entity.path)
-        if update_entity.new_path is not None:
-            update_entity.new_path = self.paths._resolve_api_path(
-                update_entity.new_path,
-                requester_user_id=requester_user_id,
-            )
-            self.system_skill_files.ensure_writable(update_entity.new_path)
+        self._normalize_update_paths(update_entity, requester_user_id)
 
         file_entity = await self.reader.get_file_by_path(
             pod_id,
@@ -266,26 +263,11 @@ class FileWriter(FileTransactionWriter):
         previous_storage_key = (
             self.projection.storage_key(file_entity) if file_entity.is_file else None
         )
+        descendants = await self._move_descendants(
+            file_entity, previous_path, update_entity.new_path
+        )
 
-        if update_entity.description is not None:
-            file_entity.update_description(update_entity.description)
-        if update_entity.metadata is not None:
-            file_entity.update_metadata(update_entity.metadata)
-        # Replacement invalidates user-authored derived markdown and assets.
-        if update_entity.content is not None and file_entity.metadata:
-            cleared = dict(file_entity.metadata)
-            had_source = cleared.pop(_MARKDOWN_SOURCE_KEY, None) is not None
-            had_assets = cleared.pop(_MARKDOWN_ASSET_NAMES_KEY, None) is not None
-            if had_source or had_assets:
-                file_entity.update_metadata(cleared)
-        if update_entity.search_enabled is not None:
-            file_entity.set_search_enabled(update_entity.search_enabled)
-        if update_entity.visibility is not None:
-            file_entity.visibility = self.paths._resolve_visibility_for_path(
-                file_entity.path,
-                requester_user_id,
-                update_entity.visibility,
-            )
+        self._apply_update_fields(file_entity, update_entity, requester_user_id)
 
         if update_entity.new_path is not None:
             await self._apply_new_path(
@@ -296,26 +278,28 @@ class FileWriter(FileTransactionWriter):
                 ctx=ctx,
             )
 
+        has_content = await self._apply_content_update(file_entity, update_entity)
+
         new_storage_key = (
             self.projection.storage_key(file_entity) if file_entity.is_file else None
         )
-        has_content = update_entity.content is not None
-        rename_moved = (
-            not has_content
-            and previous_storage_key is not None
-            and previous_storage_key != new_storage_key
+        storage_moves = self._storage_moves(
+            file_entity=file_entity,
+            descendants=descendants,
+            previous_path=previous_path,
+            previous_storage_key=previous_storage_key,
+            new_storage_key=new_storage_key,
+            has_content=has_content,
         )
-        if has_content:
-            file_entity.size_bytes = upload_source_size(update_entity.content)
-
-        should_sync = previous_path != file_entity.path
-        if has_content or rename_moved:
-            should_sync = True
-        elif (
-            update_entity.search_enabled is not None
-            and update_entity.search_enabled != previous_search_enabled
-        ):
-            should_sync = True
+        rename_moved = not has_content and bool(storage_moves)
+        should_sync = self._update_requires_sync(
+            update_entity=update_entity,
+            file_entity=file_entity,
+            previous_path=previous_path,
+            previous_search_enabled=previous_search_enabled,
+            has_content=has_content,
+            rename_moved=rename_moved,
+        )
 
         return _UpdatePlan(
             file_entity=file_entity,
@@ -325,9 +309,130 @@ class FileWriter(FileTransactionWriter):
             new_storage_key=new_storage_key,
             has_content=has_content,
             rename_moved=rename_moved,
+            storage_moves=tuple(storage_moves),
             should_sync=should_sync,
             requester_user_id=requester_user_id,
         )
+
+    def _normalize_update_paths(
+        self,
+        update_entity: DatastoreFileUpdateEntity,
+        requester_user_id: UUID,
+    ) -> None:
+        if not update_entity.path:
+            raise DatastoreValidationError("Path is required")
+        update_entity.path = self.paths._resolve_api_path(
+            update_entity.path, requester_user_id=requester_user_id
+        )
+        self.system_skill_files.ensure_writable(update_entity.path)
+        if update_entity.new_path is not None:
+            update_entity.new_path = self.paths._resolve_api_path(
+                update_entity.new_path, requester_user_id=requester_user_id
+            )
+            self.system_skill_files.ensure_writable(update_entity.new_path)
+
+    def _apply_update_fields(
+        self,
+        file_entity: DatastoreFileEntity,
+        update_entity: DatastoreFileUpdateEntity,
+        requester_user_id: UUID,
+    ) -> None:
+        if update_entity.description is not None:
+            file_entity.update_description(update_entity.description)
+        if update_entity.metadata is not None:
+            file_entity.update_metadata(update_entity.metadata)
+        if update_entity.content is not None and file_entity.metadata:
+            cleared = dict(file_entity.metadata)
+            had_source = cleared.pop(_MARKDOWN_SOURCE_KEY, None) is not None
+            had_assets = cleared.pop(_MARKDOWN_ASSET_NAMES_KEY, None) is not None
+            if had_source or had_assets:
+                file_entity.update_metadata(cleared)
+        if update_entity.search_enabled is not None:
+            file_entity.set_search_enabled(update_entity.search_enabled)
+        if update_entity.visibility is not None:
+            file_entity.visibility = self.paths._resolve_visibility_for_path(
+                file_entity.path, requester_user_id, update_entity.visibility
+            )
+
+    async def _apply_content_update(
+        self,
+        file_entity: DatastoreFileEntity,
+        update_entity: DatastoreFileUpdateEntity,
+    ) -> bool:
+        content = update_entity.content
+        if content is None:
+            return False
+        file_entity.size_bytes = upload_source_size(content)
+        file_entity.content_sha256 = await asyncio.to_thread(
+            upload_source_sha256, content
+        )
+        return True
+
+    @staticmethod
+    def _update_requires_sync(
+        *,
+        update_entity: DatastoreFileUpdateEntity,
+        file_entity: DatastoreFileEntity,
+        previous_path: str,
+        previous_search_enabled: bool,
+        has_content: bool,
+        rename_moved: bool,
+    ) -> bool:
+        search_changed = (
+            update_entity.search_enabled is not None
+            and update_entity.search_enabled != previous_search_enabled
+        )
+        return (
+            previous_path != file_entity.path
+            or has_content
+            or rename_moved
+            or search_changed
+        )
+
+    async def _move_descendants(
+        self,
+        file_entity: DatastoreFileEntity,
+        previous_path: str,
+        new_path: str | None,
+    ) -> list[DatastoreFileEntity]:
+        if not file_entity.is_folder or new_path is None:
+            return []
+        return list(
+            await self.file_repository.get_descendants(
+                file_entity.pod_id, previous_path
+            )
+        )
+
+    def _storage_moves(
+        self,
+        *,
+        file_entity: DatastoreFileEntity,
+        descendants: list[DatastoreFileEntity],
+        previous_path: str,
+        previous_storage_key: str | None,
+        new_storage_key: str | None,
+        has_content: bool,
+    ) -> list[_StorageMove]:
+        moves: list[_StorageMove] = []
+        if not has_content and previous_storage_key and new_storage_key:
+            if previous_storage_key != new_storage_key:
+                moves.append(_StorageMove(previous_storage_key, new_storage_key))
+        if previous_path == file_entity.path or not file_entity.is_folder:
+            return moves
+        for descendant in descendants:
+            if not descendant.is_file:
+                continue
+            suffix = descendant.path.removeprefix(previous_path)
+            destination_path = f"{file_entity.path}{suffix}"
+            moves.append(
+                _StorageMove(
+                    self.projection.storage_key(descendant),
+                    build_datastore_file_storage_key(
+                        descendant.pod_id, destination_path
+                    ),
+                )
+            )
+        return moves
 
     async def write_update_storage(
         self, plan: _UpdatePlan, update_entity: DatastoreFileUpdateEntity
@@ -352,6 +457,9 @@ class FileWriter(FileTransactionWriter):
                 updated_entity, plan.previous_path, plan.requester_user_id
             )
         return updated_entity
+
+    async def cleanup_uncommitted_update(self, plan: _UpdatePlan) -> None:
+        await self._storage_phase.cleanup_uncommitted_update(plan)
 
     async def finalize_update_file(
         self, plan: _UpdatePlan, updated_entity: DatastoreFileEntity
@@ -398,9 +506,7 @@ class FileWriter(FileTransactionWriter):
 
         is_folder = file_entity.is_folder
         folder_prefix = (
-            build_datastore_folder_storage_prefix(
-                file_entity.pod_id, file_entity.path
-            )
+            build_datastore_folder_storage_prefix(file_entity.pod_id, file_entity.path)
             if is_folder
             else None
         )
@@ -502,6 +608,8 @@ class FileWriter(FileTransactionWriter):
         for descendant in descendants:
             suffix = descendant.path.removeprefix(previous_path)
             descendant.path = f"{folder_entity.path}{suffix}"
-            if descendant.is_file and self.paths._should_sync_projections(True, descendant):
+            if descendant.is_file and self.paths._should_sync_projections(
+                True, descendant
+            ):
                 descendant.mark_content_updated(requester_user_id)
             await self.file_repository.update(descendant)

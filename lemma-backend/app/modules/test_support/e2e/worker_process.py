@@ -53,6 +53,7 @@ async def production_worker_process(
     extra_env: Mapping[str, str] | None = None,
     readiness_markers: Sequence[str] = _DEFAULT_READINESS_MARKERS,
     startup_attempts: int = 600,
+    worker_entrypoint: str = "app.events:streaq_worker",
 ) -> AsyncIterator[ProductionWorkerProcess]:
     """Start the same worker entrypoint used in production with hermetic I/O.
 
@@ -89,6 +90,7 @@ async def production_worker_process(
         "EMAIL_TRANSPORT": "filesystem",
         "EMAIL_OUTPUT_DIR": e2e_settings.email_output_dir,
         "GCS_STORAGE_BUCKET": "",
+        "STORAGE_BUCKET": "",
         "PUBLIC_BUCKET_NAME": "",
         "STORAGE_BACKEND": "local",
         "EMBEDDING_PROVIDER": "local",
@@ -103,7 +105,7 @@ async def production_worker_process(
             [
                 str(backend_root / ".venv/bin/streaq"),
                 "run",
-                "app.events:streaq_worker",
+                worker_entrypoint,
             ],
             cwd=str(backend_root),
             env=environment,

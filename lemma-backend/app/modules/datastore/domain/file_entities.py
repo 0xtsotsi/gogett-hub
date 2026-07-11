@@ -55,6 +55,7 @@ class DatastoreFileEntity(AggregateRoot):
     indexed_at: datetime | None = None
     last_processing_error: str | None = None
     processing_attempts: int = 0
+    content_sha256: str | None = None
     allowed_actions: list[str] = Field(default_factory=list)
 
     @property
@@ -107,6 +108,7 @@ class DatastoreFileEntity(AggregateRoot):
             self.status = FileStatus.PENDING
             self.indexed_at = None
             self.processing_attempts = 0
+            self.last_processing_error = None
         else:
             self.status = FileStatus.NOT_REQUIRED
             self.indexed_at = None
@@ -144,6 +146,7 @@ class DatastoreFileEntity(AggregateRoot):
             self.indexed_at = None
             # New content gets a fresh processing-retry budget.
             self.processing_attempts = 0
+            self.last_processing_error = None
         else:
             self.status = FileStatus.NOT_REQUIRED
             self.indexed_at = None

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import update
 from supertokens_python.recipe.thirdparty.providers import config_utils
@@ -56,7 +58,9 @@ def mock_google_provider(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(config_utils, "discover_oidc_endpoints", _discover_oidc_endpoints)
+    monkeypatch.setattr(
+        config_utils, "discover_oidc_endpoints", _discover_oidc_endpoints
+    )
     monkeypatch.setattr(GenericProvider, "get_user_info", _get_user_info)
 
 
@@ -130,6 +134,69 @@ async def test_signup_does_not_create_personal_org(
     list_org_resp = await async_client.get("/organizations", headers=headers)
     assert list_org_resp.status_code == 200
     assert list_org_resp.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_desktop_browser_handoff_creates_cookie_session(
+    async_client: AsyncClient,
+    signup_user,
+    test_app,
+):
+    user = await signup_user(email=f"desktop-handoff-{uuid4().hex[:8]}@example.com")
+    verifier = "desktop-verifier-" + uuid4().hex + uuid4().hex
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+    create_response = await async_client.post(
+        "/auth/desktop/requests",
+        json={"code_challenge": challenge},
+    )
+    assert create_response.status_code == 200, create_response.text
+    request_id = create_response.json()["request_id"]
+
+    complete_response = await async_client.post(
+        f"/auth/desktop/requests/{request_id}/complete",
+        headers=_auth_headers(user["token"]),
+    )
+    assert complete_response.status_code == 200, complete_response.text
+
+    retry_complete_response = await async_client.post(
+        f"/auth/desktop/requests/{request_id}/complete",
+        headers=_auth_headers(user["token"]),
+    )
+    assert retry_complete_response.status_code == 200, retry_complete_response.text
+
+    replacement_user = await signup_user(
+        email=f"desktop-handoff-replacement-{uuid4().hex[:8]}@example.com"
+    )
+    replacement_response = await async_client.post(
+        f"/auth/desktop/requests/{request_id}/complete",
+        headers=_auth_headers(replacement_user["token"]),
+    )
+    assert replacement_response.status_code == 409, replacement_response.text
+
+    async with AsyncClient(
+        transport=ASGITransport(app=test_app),
+        base_url="http://test",
+    ) as webview_client:
+        exchange_response = await webview_client.post(
+            "/auth/desktop/session",
+            headers={"st-auth-mode": "cookie"},
+            json={
+                "request_id": request_id,
+                "code_verifier": verifier,
+            },
+        )
+        assert exchange_response.status_code == 200, exchange_response.text
+        assert webview_client.cookies.get("sAccessToken")
+        assert webview_client.cookies.get("sRefreshToken")
+
+        me_response = await webview_client.get("/users/me")
+        assert me_response.status_code == 200, me_response.text
+        assert me_response.json()["email"] == user["email"]
 
 
 @pytest.mark.asyncio
@@ -367,7 +434,9 @@ async def test_organization_full_api_flow(
         headers=owner_headers,
     )
     assert list_invites_resp.status_code == 200
-    assert any(item["id"] == invitation_id for item in list_invites_resp.json()["items"])
+    assert any(
+        item["id"] == invitation_id for item in list_invites_resp.json()["items"]
+    )
 
     list_my_invites_resp = await async_client.get(
         "/organizations/invitations",
@@ -409,7 +478,9 @@ async def test_organization_full_api_flow(
     assert members_after_accept_resp.status_code == 200
     members = members_after_accept_resp.json()["items"]
     invitee_member = next(
-        member for member in members if member.get("user", {}).get("email") == invitee["email"]
+        member
+        for member in members
+        if member.get("user", {}).get("email") == invitee["email"]
     )
 
     update_role_resp = await async_client.patch(
@@ -873,8 +944,7 @@ async def test_invite_with_pod_id_adds_user_to_pod_on_accept(
     )
     assert accept_resp.status_code == 200, accept_resp.text
     assert (
-        accept_resp.json()["redirect_uri"]
-        == "https://app.example.com/invite/accepted"
+        accept_resp.json()["redirect_uri"] == "https://app.example.com/invite/accepted"
     )
 
     members_resp = await async_client.get(
@@ -1157,7 +1227,9 @@ async def test_org_public_join_and_policy_update(
     signup_user,
 ):
     owner = await signup_user(email=f"owner-{uuid4().hex[:8]}@pubco-example.com")
-    outsider = await signup_user(email=f"outsider-{uuid4().hex[:8]}@elsewhere-example.com")
+    outsider = await signup_user(
+        email=f"outsider-{uuid4().hex[:8]}@elsewhere-example.com"
+    )
     owner_headers = _auth_headers(owner["token"])
     outsider_headers = _auth_headers(outsider["token"])
 

@@ -337,6 +337,10 @@ fn handle_supervisor_event(app: &AppHandle, event: &Value) {
                 ui.ready = true;
                 ui.running = true;
                 ui.error = false;
+                // Use the stack's sslip.io origin in local mode so the app,
+                // browser-auth page, API, and pod subdomains share the same
+                // cookie boundary. The frontend supplies a SHA-256 fallback
+                // for WebKit, where Web Crypto is unavailable over plain HTTP.
                 if let Some(url) = event["url"].as_str() {
                     ui.url = url.to_string();
                 }

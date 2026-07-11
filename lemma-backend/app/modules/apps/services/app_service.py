@@ -15,6 +15,7 @@ from app.core.authorization.context import Context, ResourceRef, ResourceType, R
 from app.core.html_document import wrap_html_fragment
 from app.core.ports.widget_content import WidgetArtifact
 from app.core.runtime_config import runtime_config_token
+from app.core.widget_html_validation import lint_app_html
 from app.core.authorization.permissions import Permissions
 from app.core.helpers.slug import normalize_public_slug, normalize_resource_name
 from app.modules.apps.domain.entities import (
@@ -34,7 +35,6 @@ from app.modules.apps.domain.ports import (
     AppStorageFactoryPort,
 )
 from app.modules.apps.services.app_dist_bundle import load_app_dist_bundle
-from app.modules.apps.services.app_html_validation import lint_app_html
 from app.modules.apps.services.app_storage_phase import (
     AppStoragePhase,
     _AppDeletionCleanup,
@@ -257,9 +257,9 @@ class AppService:
     ) -> AppEntity:
         """Promote a resolved widget artifact into a persisted app.
 
-        The widget and the app are the same artifact at two lifecycle stages:
-        the stored HTML is wrapped as a standalone document (no embed bridge)
-        and deployed as the app's bundle — identical to what the widget showed.
+        The widget and the app share one source artifact at two lifecycle stages:
+        the stored fragment is preserved, wrapped as a standalone document (no
+        embed bridge or conversation padding), and deployed as the app's bundle.
         """
         for issue in lint_app_html(artifact.content):
             logger.warning(

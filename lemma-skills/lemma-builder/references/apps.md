@@ -25,7 +25,7 @@ what the pod model allows them to see — nothing special, nothing extra.
 - **Connectors.** `client.connectors.operations.execute(...)` runs an operation on
   the user's connected account (delegated) — the app never holds credentials.
 - **Runtime context.** The host injects `window.__LEMMA_CONFIG__` (`podId`,
-  `apiUrl`, `authUrl`) at serve time, so the same artifact runs unchanged against
+  `apiUrl`, `authUrl`) at serve time, so the same app runs unchanged against
   local / staging / cloud. Auth is one bearer (`localStorage["lemma_token"]`) or a
   cookie session — the tooling below seeds it for you.
 
@@ -162,7 +162,9 @@ import { LemmaClient } from "lemma-sdk";
 export const client = new LemmaClient();
 ```
 
-Wrap the app in **`AuthGuard`** (from `lemma-sdk/react`). Prefer **hooks**
+Wrap the app in **`AuthGuard`** (from `lemma-sdk/react`). It uses the host-injected
+app name for its loader, sign-in, access-request, pending, and retry states;
+pass `appName` only to override that identity in local development. Prefer **hooks**
 (`lemma-sdk/react`) — the verified catalog:
 
 - **Auth/user**: `useAuth`, `useCurrentUser`, `usePodAccess`

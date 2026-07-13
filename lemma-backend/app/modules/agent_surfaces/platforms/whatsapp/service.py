@@ -220,6 +220,15 @@ class WhatsAppPlatformService:
         )
         sender_wa_id = event.reply_target.get("sender_wa_id") or event.sender_phone
         if not sender_wa_id or not phone_number_id or not self._access_token:
+            # Missing credentials/target — the caller's text fallback hits the same
+            # guard in send_message, so log here to make the double-skip diagnosable
+            # instead of a silent swallow.
+            logger.warning(
+                "WhatsApp send_questions skipped (missing token/phone/sender) "
+                "phone_number_id=%s sender=%s",
+                phone_number_id,
+                sender_wa_id,
+            )
             return False
         if any(q.multi_select for q in question_plan.questions):
             return False
@@ -349,8 +358,15 @@ class WhatsAppPlatformService:
                     message_id=message_id,
                 )
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                # Best-effort indicator; log at debug so it is diagnosable without
+                # spamming warnings, then fall through to the reaction fallback.
+                logger.debug(
+                    "WhatsApp mark_read_and_typing failed (best-effort) "
+                    "message_id=%s: %s",
+                    message_id,
+                    exc,
+                )
 
         # Fallback: no inbound id (or read/typing rejected) — post a reaction so
         # the user still sees the agent acknowledged the message.
@@ -363,8 +379,12 @@ class WhatsAppPlatformService:
                 message_id=message_id,
                 emoji="\U0001f4ac",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "WhatsApp reaction indicator failed (best-effort) message_id=%s: %s",
+                message_id,
+                exc,
+            )
 
     async def download_attachment_bytes(
         self,

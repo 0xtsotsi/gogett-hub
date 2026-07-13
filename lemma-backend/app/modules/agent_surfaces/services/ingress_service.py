@@ -11,7 +11,6 @@ from pydantic import TypeAdapter
 
 from app.core.authorization.current import reset_current_context, set_current_context
 from app.core.authorization.factory import create_authorization_data_service
-from app.core.config import settings
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.modules.agent.contracts import AgentRunApprovalDecision
 from app.composition.surface_agent import ConversationService
@@ -71,6 +70,14 @@ from app.modules.agent_surfaces.infrastructure.repositories.surface_repository i
 )
 from app.modules.agent_surfaces.services.credential_resolver import (
     SurfaceCredentialResolver,
+)
+from app.modules.agent_surfaces.services.fallback_reply_service import (
+    deliver_fallback_reply,
+    identity_confirmation_context,
+    nonmember_context,
+    prepare_unrouted_context,
+    surface_setup_context,
+    unresolved_sender_context,
 )
 from app.modules.agent_surfaces.services.identity_resolution_service import (
     SurfaceIdentityResolutionService,
@@ -276,7 +283,12 @@ class AgentSurfaceIngressService:
                 bool((parsed.metadata or {}).get("is_thread_reply")),
                 parsed.external_channel_id,
             )
-            return None
+            return await self._prepare_unrouted_platform_context(
+                platform=platform,
+                surface=self._scoped_fallback_surface(request, surfaces),
+                parsed=parsed,
+                adapter=adapter,
+            )
 
         # Resolve the sender once (using the first candidate's credentials) and
         # pick the surface this event belongs to (continuity → pod membership →
@@ -306,7 +318,13 @@ class AgentSurfaceIngressService:
                 platform,
                 parsed.tenant_id,
             )
-            return None
+            return await self._prepare_unrouted_platform_context(
+                platform=platform,
+                surface=identity_surface,
+                parsed=parsed,
+                adapter=adapter,
+                resolved_user=resolved_user,
+            )
 
         return await self._prepare_surface_context(
             surface=matched_surface,
@@ -398,25 +416,13 @@ class AgentSurfaceIngressService:
         )
 
         if isinstance(parsed_context, SurfaceReplyContext):
-            # Credentials are needed only to send the signup/reply message.
+            # Credentials are needed only to send the automated fallback.
             credentials = await self._resolve_credentials_from_context(parsed_context)
-            try:
-                reply_metadata = dict(
-                    getattr(parsed_context, "reply_metadata", {}) or {}
-                )
-                await adapter.send_message(
-                    credentials=credentials,
-                    event=parsed_context.event,
-                    message=parsed_context.reply_message or self._signup_message(),
-                    metadata={
-                        "agent_display_name": parsed_context.agent_display_name,
-                        **reply_metadata,
-                    },
-                )
-            except Exception as exc:
-                logger.error(
-                    "Failed sending signup surface reply: %s", exc, exc_info=True
-                )
+            await deliver_fallback_reply(
+                adapter=adapter,
+                context=parsed_context,
+                credentials=credentials,
+            )
             return
 
         await self.start_agent_chat(parsed_context)
@@ -1707,62 +1713,53 @@ class AgentSurfaceIngressService:
         platform = SurfacePlatform.from_source(source)
         return platform.value if platform else None
 
-    def _signup_message(self) -> str:
-        signup_url = settings.auth_frontend_url.rstrip("/")
-        return (
-            "Please sign up before chatting with this agent. "
-            f"You can get started here: {signup_url}"
-        )
+    @staticmethod
+    def _scoped_fallback_surface(
+        request: SurfacePlatformWebhookIngress,
+        surfaces: list[AgentSurfaceEntity],
+    ) -> AgentSurfaceEntity | None:
+        if request.receiver_surface_ids and surfaces:
+            return surfaces[0]
+        return None
 
-    def _pod_access_message(self, pod_id: UUID) -> str:
-        base = settings.auth_frontend_url.rstrip("/")
-        return (
-            "You're signed up, but don't have access to this workspace yet. "
-            f"Request access here: {base}/pods/{pod_id}"
-        )
-
-    def _ambiguous_system_surface_access_message(self) -> str:
-        return (
-            "You're signed up, but this shared bot can't determine which "
-            "workspace to connect you to. Ask a workspace admin to add you, or "
-            "open Lemma and choose the workspace there."
-        )
-
-    def _can_disclose_pod_access_link(self, surface: AgentSurfaceEntity) -> bool:
-        """Whether a non-member DM can safely receive a pod-specific link.
-
-        Shared system chat identities (Telegram/WhatsApp) can fan into many pod
-        surfaces. Sending a pod-specific URL to a signed-up non-member on those
-        shared identities can disclose an unrelated pod id. A custom/bound
-        account has a surface-specific credential, so its pod target is clear.
-        """
-        if surface.credential_mode is not SurfaceCredentialMode.SYSTEM:
-            return True
-        if surface.account_id is not None:
-            return True
-        return surface.surface_type not in {
-            SurfacePlatform.TELEGRAM,
-            SurfacePlatform.WHATSAPP,
-        }
-
-    def _reply_context(
+    async def _prepare_unrouted_platform_context(
         self,
         *,
-        surface: AgentSurfaceEntity,
+        platform: str,
+        surface: AgentSurfaceEntity | None,
         parsed: ParsedInboundSurfaceEvent,
-        agent_display_name: str | None,
-        reply: tuple[str, dict[str, Any]],
-    ) -> SurfaceReplyContext:
-        message, reply_metadata = reply
-        return SurfaceReplyContext(
-            platform=surface.surface_type,
-            surface_id=surface.id,
-            surface_account_id=surface.account_id,
-            surface_config=surface.config,
+        adapter: SurfacePlatformAdapterPort,
+        resolved_user: ResolvedSurfaceUser | None = None,
+    ) -> SurfaceReplyContext | None:
+        if not parsed.is_dm:
+            return None
+        if surface is not None:
+            if self._is_self_email_event(surface=surface, parsed=parsed):
+                return None
+            if surface.should_ignore_sender(parsed.sender_external_user_id):
+                return None
+        if resolved_user is None:
+            credentials = (
+                await self._resolve_credentials(surface)
+                if surface is not None
+                else await self.credential_resolver.for_platform(platform, None)
+            )
+            resolved_user = await self._resolve_sender_identity(
+                adapter=adapter,
+                parsed=parsed,
+                credentials=credentials,
+            )
+        agent_display_name = (
+            (await self._agent_name_for_surface(surface)) if surface else None
+        ) or "Lemma"
+        return await prepare_unrouted_context(
+            platform=platform,
+            surface=surface,
+            parsed=parsed,
+            adapter=adapter,
+            resolved_user=resolved_user,
             agent_display_name=agent_display_name,
-            reply_message=message,
-            reply_metadata=reply_metadata,
-            event=parsed,
+            event_dedup_store=self.event_dedup_store,
         )
 
     async def _prepare_surface_context(
@@ -1862,28 +1859,19 @@ class AgentSurfaceIngressService:
                 surface.surface_type,
                 parsed.sender_external_user_id,
             )
-            # In a group/channel, never post a contact-share / signup prompt — it
-            # would spam the group. Silently ignore senders we can't resolve; they
-            # can DM the bot or link their profile (telegram_username / number).
-            if not parsed.is_dm:
-                return None
-            reply = adapter.unresolved_sender_reply(parsed) or (
-                self._signup_message(),
-                {},
-            )
-            return self._reply_context(
+            return unresolved_sender_context(
                 surface=surface,
                 parsed=parsed,
+                adapter=adapter,
                 agent_display_name=fallback_agent_display_name,
-                reply=reply,
             )
         confirmation = adapter.linked_sender_confirmation(parsed)
         if confirmation is not None:
-            return self._reply_context(
+            return identity_confirmation_context(
                 surface=surface,
                 parsed=parsed,
                 agent_display_name=fallback_agent_display_name,
-                reply=confirmation,
+                confirmation=confirmation,
             )
         if (
             await self._match_surface_for_user(
@@ -1899,23 +1887,11 @@ class AgentSurfaceIngressService:
                 resolved_user.internal_user_id,
                 surface.pod_id,
             )
-            # Signed up but not a pod member: on a pod-specific DM surface,
-            # point them to the pod home page to request access. Shared system
-            # Telegram/WhatsApp identities can front many pods, so they receive
-            # a generic message that does not disclose this pod id.
-            if parsed.is_dm:
-                reply_message = (
-                    self._pod_access_message(surface.pod_id)
-                    if self._can_disclose_pod_access_link(surface)
-                    else self._ambiguous_system_surface_access_message()
-                )
-                return self._reply_context(
-                    surface=surface,
-                    parsed=parsed,
-                    agent_display_name=fallback_agent_display_name,
-                    reply=(reply_message, {}),
-                )
-            return None
+            return nonmember_context(
+                surface=surface,
+                parsed=parsed,
+                agent_display_name=fallback_agent_display_name,
+            )
         if not surface.config.identity.allows_email(resolved_user.email):
             logger.info(
                 "Agent surface identity policy rejected sender platform=%s surface=%s user=%s email=%s",
@@ -1924,7 +1900,11 @@ class AgentSurfaceIngressService:
                 resolved_user.internal_user_id,
                 resolved_user.email,
             )
-            return None
+            return surface_setup_context(
+                surface=surface,
+                parsed=parsed,
+                agent_display_name=fallback_agent_display_name,
+            )
 
         route = await self._resolve_route(surface=surface, parsed=parsed)
         if route is None:
@@ -1934,7 +1914,11 @@ class AgentSurfaceIngressService:
                 surface.id,
                 parsed.external_channel_id,
             )
-            return None
+            return surface_setup_context(
+                surface=surface,
+                parsed=parsed,
+                agent_display_name=fallback_agent_display_name,
+            )
 
         link = await self._get_or_create_conversation_link(
             surface=surface,

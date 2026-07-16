@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Callable
 from uuid import UUID
@@ -19,6 +20,13 @@ from app.modules.function.services.function_executor_cancellation import (
     managed_executor_client,
 )
 
+API_FUNCTION_POLL_INTERVAL_SECONDS = float(
+    os.getenv("LEMMA_API_FUNCTION_POLL_INTERVAL_SECONDS", "0.5")
+)
+JOB_FUNCTION_POLL_INTERVAL_SECONDS = float(
+    os.getenv("LEMMA_FUNCTION_POLL_INTERVAL_SECONDS", "5")
+)
+
 
 async def poll_executor_job(
     *,
@@ -27,7 +35,7 @@ async def poll_executor_job(
     run_id: UUID,
     timeout_seconds: int,
     retry_max_attempts: int,
-    poll_interval_seconds: int,
+    poll_interval_seconds: float,
 ) -> FunctionInvokeResponse:
     """Poll one idempotent run without holding an E2B request open."""
 
@@ -62,7 +70,7 @@ async def poll_session_executor_job(
     run_id: UUID,
     timeout_seconds: int,
     retry_max_attempts: int,
-    poll_interval_seconds: int,
+    poll_interval_seconds: float,
     client_factory: Callable[[str], FunctionExecutorClient],
 ) -> FunctionInvokeResponse:
     """Build the authenticated client and poll one session's accepted run."""

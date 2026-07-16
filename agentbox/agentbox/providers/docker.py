@@ -10,32 +10,41 @@ from urllib import error, request
 
 from fastapi import HTTPException
 
-from agentbox.apps import SANDBOX_APPS
+from agentbox.apps import SANDBOX_APPS, SandboxAppSpec
 from agentbox.config import settings
-from agentbox.runtime_proxy import RuntimeProxy
 from agentbox.sandbox_ids import validate_sandbox_id
 from agentbox.schemas import (
-    ExecCommandRequest,
-    ExecCommandResponse,
-    ExecutePythonResponse,
-    ListProcessesResponse,
-    RuntimeSessionRequest,
-    RuntimeSessionResponse,
     SandboxEnsureRequest,
     SandboxInternalAppStatus,
     SandboxInternalStatus,
-    WriteStdinRequest,
 )
 from agentbox.to_thread import run_sync
+
+from .legacy import LegacyRuntimeProviderMixin
+from .models import (
+    EndpointProtocol,
+    ManagedSandbox,
+    ProviderCapabilities,
+    SandboxEndpoint,
+    SandboxRef,
+)
 
 
 def docker_container_name(sandbox_id: str) -> str:
     return f"agentbox-{validate_sandbox_id(sandbox_id)}"
 
 
-class DockerSandboxProvider:
+class DockerSandboxProvider(LegacyRuntimeProviderMixin):
     cli_name = "docker"
     namespace = "docker"
+    provider_name = "docker"
+    capabilities = ProviderCapabilities(
+        stable_release_identity=True,
+        release_preserves_filesystem=True,
+        private_egress_isolation=False,
+        authenticated_http=False,
+        authenticated_websocket=False,
+    )
 
     def __init__(self) -> None:
         if not shutil.which(self.cli_name):
@@ -116,6 +125,8 @@ class DockerSandboxProvider:
             "app.kubernetes.io/name=agentbox-sandbox",
             "--label",
             f"agentbox.work/sandbox-id={sandbox_id}",
+            "--label",
+            f"agentbox.work/provider={self.provider_name}",
             "-v",
             workspace_mount,
         ]
@@ -156,86 +167,161 @@ class DockerSandboxProvider:
         except RuntimeError:
             return False
 
-    async def execute_code(
-        self,
-        sandbox_id: str,
-        session_id: str,
-        code: str,
-        timeout_seconds: int,
-    ) -> ExecutePythonResponse:
-        proxy = await self._runtime_proxy(sandbox_id)
-        stdout, stderr, result, error_name, exit_code = await proxy.execute_code(
-            code,
-            timeout_seconds,
-            session_id=session_id,
+    async def purge_storage(self, sandbox_id: str) -> bool:
+        """Permanently remove a sandbox workspace after compute is gone.
+
+        This is deliberately separate from ``delete`` because the lifecycle
+        manager also replaces compute for durable environment changes. Those
+        replacements must preserve user files; explicit DELETE and retention
+        expiry invoke this hook only after provider compute has been removed.
+        """
+
+        validated_id = validate_sandbox_id(sandbox_id)
+
+        def purge_locally() -> bool | None:
+            root = self.storage_root.resolve()
+            path = root / validated_id
+            if path.parent != root:
+                raise RuntimeError("Sandbox workspace escaped the storage root")
+            try:
+                if path.is_symlink():
+                    path.unlink()
+                    return True
+                if path.is_dir():
+                    shutil.rmtree(path)
+                    return True
+                if path.exists():
+                    path.unlink()
+                    return True
+                return False
+            except PermissionError:
+                # Runtime files use UID/GID 10001. A non-root Linux manager
+                # cannot remove their nested directories even though it owns
+                # the configured storage root. Fall through to a daemon-side
+                # cleanup container instead of weakening runtime ownership.
+                return None
+
+        local_result = await run_sync(purge_locally)
+        if local_result is not None:
+            return local_result
+
+        host_root = self.storage_host_root.expanduser().resolve()
+        workspace_mount = f"{host_root}:/agentbox-storage"
+        if self._selinux_enabled():
+            workspace_mount += ":z"
+        await self._run_docker(
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "--entrypoint",
+            "/bin/rm",
+            "-v",
+            workspace_mount,
+            settings.agentbox_runtime_image,
+            "-rf",
+            "--",
+            f"/agentbox-storage/{validated_id}",
         )
-        return ExecutePythonResponse(
-            sandbox_id=sandbox_id,
-            session_id=session_id,
-            stdout=stdout,
-            stderr=stderr,
-            result=result,
-            error_name=error_name,
-            exit_code=exit_code,
-            status="completed" if exit_code == 0 else "error",
+
+        def verify_purged() -> bool:
+            path = self.storage_root.resolve() / validated_id
+            if path.exists() or path.is_symlink():
+                raise RuntimeError(
+                    "Provider cleanup completed but sandbox workspace remains"
+                )
+            return True
+
+        return await run_sync(verify_purged)
+
+    async def release(self, sandbox_id: str) -> bool:
+        """Stop compute but retain the container and its workspace mount."""
+
+        validate_sandbox_id(sandbox_id)
+        existing = await self._inspect_sandbox(sandbox_id)
+        if existing is None or not existing.ready:
+            return False
+        try:
+            await self._run_docker("stop", self.container_name(sandbox_id))
+            return True
+        except RuntimeError:
+            return False
+
+    async def list_managed(self) -> list[ManagedSandbox]:
+        output = await self._run_docker(
+            "ps",
+            "-a",
+            "--filter",
+            "label=app.kubernetes.io/name=agentbox-sandbox",
+            "--format",
+            "{{.Names}}",
         )
+        managed: list[ManagedSandbox] = []
+        for container_name in output.splitlines():
+            if not container_name.startswith("agentbox-"):
+                continue
+            sandbox_id = container_name.removeprefix("agentbox-")
+            inspect_data = await self._inspect_raw(sandbox_id)
+            if inspect_data is None:
+                continue
+            config = inspect_data.get("Config")
+            config_data = config if isinstance(config, dict) else {}
+            labels = config_data.get("Labels")
+            label_data = labels if isinstance(labels, dict) else {}
+            labeled_id = label_data.get("agentbox.work/sandbox-id")
+            if not isinstance(labeled_id, str) or labeled_id != sandbox_id:
+                continue
+            provider_id = inspect_data.get("Id")
+            managed.append(
+                ManagedSandbox(
+                    ref=SandboxRef(
+                        sandbox_id=sandbox_id,
+                        provider_id=(
+                            provider_id
+                            if isinstance(provider_id, str)
+                            else container_name
+                        ),
+                    ),
+                    status=self._status_from_inspect(sandbox_id, inspect_data),
+                    instance_id=(
+                        provider_id if isinstance(provider_id, str) else container_name
+                    ),
+                    metadata={
+                        str(key): str(value) for key, value in label_data.items()
+                    },
+                )
+            )
+        return managed
 
-    async def create_session(
+    async def resolve_endpoint(
         self,
         sandbox_id: str,
-        session_id: str,
-        request_obj: RuntimeSessionRequest,
-    ) -> RuntimeSessionResponse:
-        proxy = await self._runtime_proxy(sandbox_id)
-        return await proxy.create_session(session_id, request_obj)
-
-    async def delete_session(self, sandbox_id: str, session_id: str) -> bool:
-        proxy = await self._runtime_proxy(sandbox_id)
-        return await proxy.delete_session(session_id)
-
-    async def exec_session_process_command(
-        self,
-        sandbox_id: str,
-        session_id: str,
-        request_obj: ExecCommandRequest,
-    ) -> ExecCommandResponse:
-        proxy = await self._runtime_proxy(sandbox_id)
-        return await proxy.exec_session_process_command(session_id, request_obj)
-
-    async def write_session_process_stdin(
-        self,
-        sandbox_id: str,
-        session_id: str,
-        request_obj: WriteStdinRequest,
-    ) -> ExecCommandResponse:
-        proxy = await self._runtime_proxy(sandbox_id)
-        return await proxy.write_session_process_stdin(session_id, request_obj)
-
-    async def terminate_session_process(
-        self,
-        sandbox_id: str,
-        session_id: str,
-        process_id: str,
-    ) -> ExecCommandResponse:
-        proxy = await self._runtime_proxy(sandbox_id)
-        return await proxy.terminate_session_process(session_id, process_id)
-
-    async def list_session_processes(
-        self,
-        sandbox_id: str,
-        session_id: str,
-    ) -> ListProcessesResponse:
-        proxy = await self._runtime_proxy(sandbox_id)
-        return await proxy.list_session_processes(session_id)
-
-    async def _runtime_proxy(self, sandbox_id: str) -> RuntimeProxy:
-        status_obj = await self.get_status(sandbox_id)
-        if not status_obj.ready:
+        app: SandboxAppSpec,
+        *,
+        protocol: EndpointProtocol = "http",
+    ) -> SandboxEndpoint:
+        del protocol
+        inspect_data = await self._inspect_raw(sandbox_id)
+        if inspect_data is None:
+            raise HTTPException(status_code=404, detail="Sandbox not found")
+        status = self._status_from_inspect(sandbox_id, inspect_data)
+        if not status.ready:
             raise HTTPException(status_code=409, detail="Sandbox is not running")
-        runtime_url = self._runtime_base_url(status_obj)
-        if runtime_url is None:
-            raise HTTPException(status_code=409, detail="Sandbox runtime endpoint is missing")
-        return RuntimeProxy(runtime_url, sandbox_id)
+        app_status = status.apps.get(app.name)
+        base_url = app_status.private_url if app_status else None
+        if app.name == "runtime" and not base_url:
+            base_url = status.runtime_url
+        if not base_url:
+            raise HTTPException(
+                status_code=409, detail="Sandbox app endpoint is missing"
+            )
+        provider_id = inspect_data.get("Id")
+        return SandboxEndpoint(
+            base_url=base_url,
+            instance_id=(
+                str(provider_id) if provider_id else self.container_name(sandbox_id)
+            ),
+        )
 
     async def _inspect_sandbox(self, sandbox_id: str) -> SandboxInternalStatus | None:
         inspect_data = await self._inspect_raw(sandbox_id)
@@ -243,7 +329,9 @@ class DockerSandboxProvider:
             return None
         return self._status_from_inspect(sandbox_id, inspect_data)
 
-    async def _get_status_or_none(self, sandbox_id: str) -> SandboxInternalStatus | None:
+    async def _get_status_or_none(
+        self, sandbox_id: str
+    ) -> SandboxInternalStatus | None:
         try:
             return await self.get_status(sandbox_id)
         except HTTPException as exc:
@@ -341,7 +429,9 @@ class DockerSandboxProvider:
                 ready=running,
                 pod_ip=dns_name if running else None,
                 runtime_url=(
-                    f"http://{dns_name}:{settings.agentbox_runtime_port}" if running else None
+                    f"http://{dns_name}:{settings.agentbox_runtime_port}"
+                    if running
+                    else None
                 ),
                 apps=self._app_statuses_from_network(dns_name, running),
             )

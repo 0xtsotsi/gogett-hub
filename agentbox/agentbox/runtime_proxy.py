@@ -8,6 +8,8 @@ from urllib import error, request
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from agentbox.endpoint_transport import request_endpoint_http
+from agentbox.providers.models import TransientGateway
 from agentbox.schemas import (
     ExecCommandRequest,
     ExecCommandResponse,
@@ -95,29 +97,18 @@ def request_runtime_json(
     *,
     timeout: int | float,
     operation: str,
+    transient_gateway: TransientGateway | None = None,
+    expected_instance_id: str | None = None,
+    expected_port: int | None = None,
 ) -> dict[str, object]:
     try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-    except error.HTTPError as exc:
-        try:
-            runtime_body = _decode_runtime_error_body(exc.read())
-        finally:
-            exc.close()
-        detail = _runtime_failure_detail(
-            operation,
-            f"runtime returned HTTP {exc.code}",
-            runtime_status=exc.code,
-            runtime_body=runtime_body,
+        status_code, _, raw = request_endpoint_http(
+            req,
+            timeout=timeout,
+            transient_gateway=transient_gateway,
+            expected_instance_id=expected_instance_id,
+            expected_port=expected_port,
         )
-        logger.warning(
-            "Sandbox runtime %s returned HTTP %s for %s; body=%r",
-            operation,
-            exc.code,
-            req.full_url,
-            detail.get("runtime_body"),
-        )
-        raise HTTPException(status_code=502, detail=detail) from exc
     except (error.URLError, TimeoutError, socket.timeout, OSError) as exc:
         detail = _runtime_failure_detail(operation, str(exc))
         logger.warning(
@@ -127,6 +118,23 @@ def request_runtime_json(
             exc,
         )
         raise HTTPException(status_code=502, detail=detail) from exc
+
+    if status_code >= 400:
+        runtime_body = _decode_runtime_error_body(raw)
+        detail = _runtime_failure_detail(
+            operation,
+            f"runtime returned HTTP {status_code}",
+            runtime_status=status_code,
+            runtime_body=runtime_body,
+        )
+        logger.warning(
+            "Sandbox runtime %s returned HTTP %s for %s; body=%r",
+            operation,
+            status_code,
+            req.full_url,
+            detail.get("runtime_body"),
+        )
+        raise HTTPException(status_code=502, detail=detail)
 
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -162,9 +170,46 @@ def request_runtime_json(
 
 
 class RuntimeProxy:
-    def __init__(self, base_url: str, sandbox_id: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        sandbox_id: str,
+        *,
+        headers: dict[str, str] | None = None,
+        transient_gateway: TransientGateway | None = None,
+        instance_id: str | None = None,
+        port: int | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.sandbox_id = sandbox_id
+        self.headers = dict(headers or {})
+        self.transient_gateway = transient_gateway
+        self.instance_id = instance_id
+        self.port = port
+
+    def _request_json(
+        self,
+        req: request.Request,
+        *,
+        timeout: int | float,
+        operation: str,
+    ) -> dict[str, object]:
+        return request_runtime_json(
+            req,
+            timeout=timeout,
+            operation=operation,
+            transient_gateway=self.transient_gateway,
+            expected_instance_id=self.instance_id,
+            expected_port=self.port,
+        )
+
+    def _headers(self, *, json_body: bool = False) -> dict[str, str]:
+        headers = dict(self.headers)
+        if json_body:
+            headers.update(
+                {"Content-Type": "application/json", "Accept": "application/json"}
+            )
+        return headers
 
     async def execute_code(
         self,
@@ -173,24 +218,35 @@ class RuntimeProxy:
         session_id: str | None = None,
     ) -> tuple[str, str, str | None, str | None, int | None]:
         def _execute() -> tuple[str, str, str | None, str | None, int | None]:
-            path = "/execute" if session_id is None else f"/sessions/{session_id}/execute"
-            body = json.dumps({"code": code}).encode("utf-8")
+            path = (
+                "/execute" if session_id is None else f"/sessions/{session_id}/execute"
+            )
+            body = json.dumps(
+                {"code": code, "timeout_seconds": timeout_seconds}
+            ).encode("utf-8")
             req = request.Request(
                 f"{self.base_url}{path}",
                 data=body,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers=self._headers(json_body=True),
                 method="POST",
             )
-            payload = request_runtime_json(
+            payload = self._request_json(
                 req,
-                timeout=timeout_seconds,
+                # The runtime owns execution timeout and needs a small grace
+                # window to terminate the session process group and return its
+                # structured TimeoutError response.
+                timeout=timeout_seconds + 5,
                 operation="code execution request",
             )
             return (
                 str(payload.get("stdout") or ""),
                 str(payload.get("stderr") or ""),
-                payload.get("result") if isinstance(payload.get("result"), str) else None,
-                payload.get("error_name") if isinstance(payload.get("error_name"), str) else None,
+                payload.get("result")
+                if isinstance(payload.get("result"), str)
+                else None,
+                payload.get("error_name")
+                if isinstance(payload.get("error_name"), str)
+                else None,
                 0 if payload.get("ok") else 1,
             )
 
@@ -206,10 +262,10 @@ class RuntimeProxy:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}",
                 data=body,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers=self._headers(json_body=True),
                 method="POST",
             )
-            payload = request_runtime_json(
+            payload = self._request_json(
                 req,
                 timeout=120,
                 operation="session create request",
@@ -217,7 +273,9 @@ class RuntimeProxy:
             try:
                 return RuntimeSessionResponse(sandbox_id=self.sandbox_id, **payload)
             except ValidationError as exc:
-                raise _invalid_runtime_response("session create request", payload, exc) from exc
+                raise _invalid_runtime_response(
+                    "session create request", payload, exc
+                ) from exc
 
         return await run_sync(_create)
 
@@ -225,9 +283,12 @@ class RuntimeProxy:
         def _delete() -> bool:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}",
+                headers=self._headers(),
                 method="DELETE",
             )
-            payload = request_runtime_json(req, timeout=30, operation="session delete request")
+            payload = self._request_json(
+                req, timeout=30, operation="session delete request"
+            )
             return bool(payload.get("deleted"))
 
         return await run_sync(_delete)
@@ -246,10 +307,10 @@ class RuntimeProxy:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}/command",
                 data=body,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers=self._headers(json_body=True),
                 method="POST",
             )
-            payload = request_runtime_json(
+            payload = self._request_json(
                 req,
                 timeout=timeout_seconds + 5,
                 operation="command execution request",
@@ -276,10 +337,10 @@ class RuntimeProxy:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}/exec-command",
                 data=body,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers=self._headers(json_body=True),
                 method="POST",
             )
-            payload = request_runtime_json(
+            payload = self._request_json(
                 req,
                 timeout=timeout + 5,
                 operation="process command request",
@@ -287,7 +348,9 @@ class RuntimeProxy:
             try:
                 return ExecCommandResponse(**payload)
             except ValidationError as exc:
-                raise _invalid_runtime_response("process command request", payload, exc) from exc
+                raise _invalid_runtime_response(
+                    "process command request", payload, exc
+                ) from exc
 
         return await run_sync(_execute)
 
@@ -302,10 +365,10 @@ class RuntimeProxy:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}/write-stdin",
                 data=body,
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers=self._headers(json_body=True),
                 method="POST",
             )
-            payload = request_runtime_json(
+            payload = self._request_json(
                 req,
                 timeout=int(wait_ms / 1000) + 35,
                 operation="process stdin request",
@@ -313,7 +376,9 @@ class RuntimeProxy:
             try:
                 return ExecCommandResponse(**payload)
             except ValidationError as exc:
-                raise _invalid_runtime_response("process stdin request", payload, exc) from exc
+                raise _invalid_runtime_response(
+                    "process stdin request", payload, exc
+                ) from exc
 
         return await run_sync(_execute)
 
@@ -325,13 +390,18 @@ class RuntimeProxy:
         def _delete() -> ExecCommandResponse:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}/processes/{process_id}",
+                headers=self._headers(),
                 method="DELETE",
             )
-            payload = request_runtime_json(req, timeout=30, operation="process terminate request")
+            payload = self._request_json(
+                req, timeout=30, operation="process terminate request"
+            )
             try:
                 return ExecCommandResponse(**payload)
             except ValidationError as exc:
-                raise _invalid_runtime_response("process terminate request", payload, exc) from exc
+                raise _invalid_runtime_response(
+                    "process terminate request", payload, exc
+                ) from exc
 
         return await run_sync(_delete)
 
@@ -339,12 +409,17 @@ class RuntimeProxy:
         def _list() -> ListProcessesResponse:
             req = request.Request(
                 f"{self.base_url}/sessions/{session_id}/processes",
+                headers=self._headers(),
                 method="GET",
             )
-            payload = request_runtime_json(req, timeout=30, operation="process list request")
+            payload = self._request_json(
+                req, timeout=30, operation="process list request"
+            )
             try:
                 return ListProcessesResponse(**payload)
             except ValidationError as exc:
-                raise _invalid_runtime_response("process list request", payload, exc) from exc
+                raise _invalid_runtime_response(
+                    "process list request", payload, exc
+                ) from exc
 
         return await run_sync(_list)

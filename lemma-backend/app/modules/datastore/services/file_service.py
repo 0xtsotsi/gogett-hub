@@ -97,7 +97,8 @@ class DatastoreFileService:
         )
         # Resolve the search factory lazily so tests (and callers) can reassign
         # ``self.search_service_factory`` after construction.
-        search_factory_provider = lambda: self.search_service_factory
+        def search_factory_provider():
+            return self.search_service_factory
 
         reader = FileReader(
             file_repository,

@@ -23,20 +23,28 @@ COPY lemma-backend/pyproject.toml lemma-backend/uv.lock ./
 # Copy local path dependencies and repo-native skills.
 COPY agentbox-client /agentbox-client
 COPY lemma-backend/lemma-connectors ./lemma-connectors
+# Build lemma-pod-bundle as a wheel first; we install it as a non-editable wheel
+# (the path-dep entry in pyproject.toml would otherwise create an editable
+# install that shadows the upstream wheel at runtime).
+COPY lemma-pod-bundle /lemma-pod-bundle
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv build --directory /lemma-pod-bundle --wheel --out-dir /lemma-pod-bundle/dist
 COPY lemma-skills ./lemma-skills
 
 # Install dependencies into /app/.venv. The markitdown extra ships in the image
 # so the local stack can run the in-process document processor
 # (DOCUMENT_PROCESSOR=markitdown) without the Kreuzberg container.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra markitdown
+    uv sync --frozen --no-dev --no-install-project --extra markitdown && \
+    uv pip install --no-deps /lemma-pod-bundle/dist/lemma_pod_bundle-0.1.0-py3-none-any.whl
 
 # Copy backend application code
 COPY lemma-backend/ ./
 
 # Sync the project itself
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra markitdown
+    uv sync --frozen --no-dev --extra markitdown && \
+    uv pip install --no-deps /lemma-pod-bundle/dist/lemma_pod_bundle-0.1.0-py3-none-any.whl
 
 # Stage 2: Runtime stage
 FROM python:3.14-slim-bookworm
@@ -57,6 +65,11 @@ COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=builder --chown=appuser:appuser /agentbox-client /agentbox-client
 # Copy skills from the builder stage explicitly instead of relying on the blanket repo copy.
 COPY --from=builder --chown=appuser:appuser /app/lemma-skills /app/lemma-skills
+# The lemma-pod-bundle wheel (built from /lemma-pod-bundle in stage 1) and the
+# connectors path package are COPYed into the runtime stage so the path deps
+# referenced by .pth files in .venv continue to resolve at runtime.
+COPY --from=builder --chown=appuser:appuser /lemma-pod-bundle /lemma-pod-bundle
+COPY --from=builder --chown=appuser:appuser /app/lemma-connectors /app/lemma-connectors
 
 # Copy backend application code
 COPY --chown=appuser:appuser lemma-backend/ ./

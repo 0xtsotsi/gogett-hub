@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import String, ForeignKey, Text
@@ -12,9 +11,10 @@ from app.modules.connectors.domain.connect_request import (
     ConnectRequestEntity,
     ConnectRequestStatus,
 )
-
-if TYPE_CHECKING:
-    from .connector import Connector
+from app.modules.identity.infrastructure.models.user_models import User
+from app.modules.connectors.infrastructure.models.connector import Connector
+from app.modules.connectors.infrastructure.models.auth_config import AuthConfig
+from app.modules.identity.infrastructure.models.organization_models import Organization
 
 
 class ConnectRequest(UUIDAuditBase):
@@ -42,10 +42,10 @@ class ConnectRequest(UUIDAuditBase):
     )
 
     # Relationships
-    connector: Mapped["Connector"] = relationship("Connector")
-    auth_config: Mapped["AuthConfig"] = relationship("AuthConfig")
-    organization: Mapped["Organization"] = relationship("Organization")
-    user: Mapped["User"] = relationship("User")
+    connector: Mapped["Connector"] = relationship(Connector)
+    auth_config: Mapped["AuthConfig"] = relationship(AuthConfig)
+    organization: Mapped["Organization"] = relationship(Organization)
+    user: Mapped["User"] = relationship(User)
 
     def to_entity(self) -> ConnectRequestEntity:
         return ConnectRequestEntity.model_validate(self)

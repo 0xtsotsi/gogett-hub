@@ -15,7 +15,7 @@ export const DEFAULT_VALUE = '__default_runtime__';
 // machine) rather than plain model providers. Single source of truth shared by
 // the Models settings page and the model picker so the two can't disagree about
 // where, say, Cursor belongs.
-export const CODING_AGENT_KINDS = new Set(['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'ANTIGRAVITY', 'CURSOR']);
+export const CODING_AGENT_KINDS = new Set(['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'ANTIGRAVITY', 'CURSOR', 'GG_CODER']);
 
 export function isCodingAgentKind(kind?: string | null): boolean {
     return kind ? CODING_AGENT_KINDS.has(kind) : false;
@@ -38,6 +38,10 @@ export const LOCAL_RUNTIME_SETUP_OPTIONS: Array<{
     { harnessKind: HarnessKind.OPENCODE, title: 'OpenCode' },
     { harnessKind: HarnessKind.CURSOR, title: 'Cursor' },
     { harnessKind: HarnessKind.ANTIGRAVITY, title: 'Antigravity' },
+    // GG_CODER isn't in the SDK's HarnessKind enum yet (added upstream in
+    // value_objects.py). Cast as any to keep TS happy until the OpenAPI
+    // schema regen picks up the new enum member.
+    { harnessKind: 'GG_CODER' as HarnessKind, title: 'GG Coder' },
 ];
 
 export function runtimeKey(runtime: AgentRuntimeConfig): string {

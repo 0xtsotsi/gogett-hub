@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -1133,6 +1134,142 @@ async def test_stream_text_state_persists_nonfinal_and_final_snapshots():
 
 
 @pytest.mark.asyncio
+async def test_run_provider_command_routes_gg_coder_through_harness(monkeypatch):
+    """``GG_CODER`` must hit the streaming ``GgCoderHarness``, not the one-shot branch.
+
+    Without this routing the runner falls through to a generic subprocess shell
+    that returns raw NDJSON as the assistant's text -- the chat would render
+    ``{"type":"text_delta","text":"..."}`` lines instead of prose.
+    """
+    from lemma_cli.daemon import runner as runner_module
+    from lemma_cli.daemon.harnesses import registry
+
+    captured: dict[str, Any] = {}
+
+    class _StubHarness:
+        kind = "GG_CODER"
+
+        async def run(self, **_kwargs):
+            captured["called"] = True
+            captured["event_sink"] = _kwargs.get("event_sink")
+            return {
+                "command": ["stub"],
+                "cwd": "/tmp",
+                "returncode": 0,
+                "stdout": "stub",
+                "stderr": "",
+                "streamed_tokens": True,
+                "streamed_messages": True,
+            }
+
+    stub = _StubHarness()
+    monkeypatch.setattr(registry, "_REGISTRY", {**registry._REGISTRY, "GG_CODER": stub})
+    monkeypatch.setattr(runner_module, "get_harness", registry.get_harness)
+
+    async def sink(*_a, **_kw):
+        return None
+
+    await runner_module.run_provider_command(
+        {
+            "harness_kind": "GG_CODER",
+            "model_name": "any",
+            "prompt": {"system_prompt": "s", "user_prompt": "u"},
+            "mcp": {
+                "url": "http://localhost/mcp",
+                "server_name": "lemma_tools",
+                "conversation_id": "conv-1",
+                "authorization": "Bearer t",
+                "token": "t",
+            },
+        },
+        event_sink=sink,
+    )
+
+    assert captured.get("called") is True, "GG_CODER did not invoke GgCoderHarness.run"
+    assert captured.get("event_sink") is sink, "harness did not receive the runner's event_sink"
+
+
+@pytest.mark.asyncio
+async def test_gg_coder_harness_concatenates_text_deltas_into_plain_prose():
+    """``GgCoderHarness`` translates ``text_delta`` events into one plain assistant message.
+
+    Drives every NDJSON event the upstream ``ggcoder --json`` session emits
+    through the per-event translator and asserts the chat surface receives:
+
+    * a sequence of ``token`` events whose concatenated ``data`` reads as one
+      continuous stream of prose, and
+    * a final ``message`` event whose ``text`` is the same plain prose -- not
+      the raw ``{"type":"text_delta","text":"..."}`` JSON that the user was
+      seeing in the chat bubble.
+
+    ``thinking_delta``/``tool_call_*``/``turn_end``/``agent_done`` are noise
+    here (turn-end and agent_done carry usage metadata only) and must be
+    swallowed without becoming assistant text.
+    """
+    from lemma_cli.daemon.harnesses import gg_coder as gg_coder_module
+    from lemma_cli.daemon.harnesses.base import StreamTextState
+
+    events = [
+        {"type": "text_delta", "text": "I see"},
+        {"type": "text_delta", "text": " an empty message. What would you like to do?"},
+        {"type": "tool_call_start", "toolCallId": "t1", "name": "bash", "args": {"command": "ls"}},
+        {"type": "tool_call_end", "toolCallId": "t1", "name": "bash", "isError": False, "durationMs": 10, "result": "ok"},
+        {"type": "thinking_delta", "text": "thinking..."},
+        {"type": "turn_end", "turn": 1, "stopReason": "end_turn",
+         "usage": {"inputTokens": 0, "outputTokens": 98}},
+        {"type": "agent_done", "totalTurns": 1,
+         "totalUsage": {"inputTokens": 0, "outputTokens": 98}},
+    ]
+
+    emitted: list[tuple[str, Any]] = []
+    state = StreamTextState(harness_kind="GG_CODER", event_sink=lambda t, d: _capture_event(emitted, t, d))
+
+    for event in events:
+        await gg_coder_module._handle_gg_coder_event(event, state)
+    await state.flush(is_final=True)
+
+    raw_signature = '"type":"text_delta"'
+    leaked = [d for _, d in emitted if raw_signature in str(d)]
+    assert not leaked, f"raw NDJSON leaked into events: {leaked}"
+
+    text_tokens = [
+        data for event_type, data in emitted
+        if event_type == "token" and isinstance(data, dict) and data.get("kind") == "text"
+    ]
+    assert text_tokens, f"expected text tokens, got: {[d for _, d in emitted]}"
+    # The streaming tokens that drive the chat bubble's incremental render.
+    assert "".join(d.get("data", "") for d in text_tokens) == (
+        "I see an empty message. What would you like to do?"
+    )
+
+    text_messages = [
+        data for event_type, data in emitted
+        if event_type == "message"
+        and isinstance(data, dict)
+        and data.get("kind") == "text"
+    ]
+    assert text_messages, "expected at least one assistant text message"
+    # Every assistant ``message`` event must be plain prose, not raw NDJSON
+    # fragments -- the exact regression we are fixing. Each message's text is
+    # a slice of the upstream snapshot (this is how the Codex / Cursor
+    # harnesses behave), so we only need to assert unioning everything we
+    # sent via ``message`` covers the full reply without any JSON markers.
+    unioned_prose = "".join(m["text"].strip() for m in text_messages)
+    assert "stopReason" not in unioned_prose
+    assert "turn_end" not in unioned_prose
+    assert "agent_done" not in unioned_prose
+    assert "totalUsage" not in unioned_prose
+    assert '"type":"text_delta"' not in unioned_prose
+    assert "I see" in unioned_prose
+    assert "What would you like to do" in unioned_prose
+
+    # Every emitted event must be a chat-shape event (token / message / status);
+    # raw NDJSON envelopes were translated upstream and must not surface here.
+    for event_type, _ in emitted:
+        assert event_type in {"token", "message", "status"}, event_type
+
+
+@pytest.mark.asyncio
 async def test_daemon_provider_command_runs_in_harness_cwd(monkeypatch, tmp_path):
     cwd = tmp_path / "claude-cwd"
     monkeypatch.setenv("LEMMA_DAEMON_CLAUDE_CODE_CWD", str(cwd))
@@ -2097,3 +2234,607 @@ def _fake_codex_multi_message_notifications() -> list[dict[str, Any]]:
         },
         {"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_gg_coder_harness_end_to_end_real_subprocess(tmp_path, monkeypatch):
+    """End-to-end against the real harness with a fake ggcoder subprocess.
+
+    Feeds `ggcoder --json` NDJSON (text_delta + thinking + tool_call_* +
+    turn_end + agent_done) through the real GgCoderHarness via
+    `run_provider_command`, capturing every event the runner emits to the
+    chat surface.
+
+    Failure modes this pins:
+      * `runner.py` falls through to the one-shot shell (raw NDJSON in
+        stdout_text → token payload) -- the regression the user reported.
+      * the harness translator leaks NDJSON envelopes into a `token` payload.
+      * the harness emits no tokens at all (chat bubble would be empty).
+
+    If this fails, ggcoder chat will render the raw
+    `{"type":"text_delta","text":"..."}` JSON inside the assistant bubble.
+    """
+    from lemma_cli.daemon import runner as runner_module
+    from lemma_cli.daemon.harnesses import gg_coder as gg_coder_module
+
+    # Feed each upstream event the user saw leak into their chat bubble, in
+    # NDJSON form, through a real subprocess. The harness must turn them
+    # into plain-prose `token` events so the chat surface has something
+    # readable to render.
+    ndjson = (
+        '{"type":"text_delta","text":"I see"}\n'
+        '{"type":"text_delta","text":" an empty message. What would you like me to do?"}\n'
+        '{"type":"thinking_delta","text":"thinking..."}\n'
+        '{"type":"tool_call_start","toolCallId":"t1","name":"bash","args":{"command":"ls"}}\n'
+        '{"type":"tool_call_end","toolCallId":"t1","name":"bash","isError":false,"durationMs":10,"result":"ok"}\n'
+        '{"type":"turn_end","turn":1,"stopReason":"end_turn","usage":{"inputTokens":0,"outputTokens":98}}\n'
+        '{"type":"agent_done","totalTurns":1,"totalUsage":{"inputTokens":0,"outputTokens":98}}\n'
+    )
+    ndjson_path = tmp_path / "stream.ndjson"
+    ndjson_path.write_text(ndjson)
+
+    # The harness imports `provider_command` and friends into its module
+    # namespace (`from ..mcp import provider_command, ...`), so monkeypatching
+    # those names on the harness module is what changes which functions the
+    # harness actually calls. Subprocess drives a real `python -u` so stdout
+    # is unbuffered -- mirrors the ggcoder binary's `-json` streaming shape.
+    fake_command = [
+        sys.executable,
+        "-u",
+        "-c",
+        f"import sys; sys.stdout.write(open({str(ndjson_path)!r}).read())",
+    ]
+    monkeypatch.setattr(gg_coder_module, "provider_command", lambda **_k: fake_command)
+    monkeypatch.setattr(gg_coder_module, "provider_command_template", lambda _k: "stub")
+    monkeypatch.setattr(gg_coder_module, "provider_cwd_for_run", lambda _k, _mcp: str(tmp_path))
+    monkeypatch.setattr(gg_coder_module, "provider_environment", lambda **_k: {})
+    monkeypatch.setattr(gg_coder_module, "write_provider_mcp_files", lambda *_a, **_k: None)
+
+    emitted: list[tuple[str, Any]] = []
+
+    async def sink(event_type, data):
+        emitted.append((event_type, data))
+
+    result = await runner_module.run_provider_command(
+        {
+            "harness_kind": "GG_CODER",
+            "model_name": "any",
+            "prompt": {"system_prompt": "s", "user_prompt": "u"},
+            "mcp": {
+                "url": "http://localhost/mcp",
+                "server_name": "lemma_tools",
+                "conversation_id": "conv-e2e",
+                "authorization": "Bearer t",
+                "token": "t",
+            },
+        },
+        event_sink=sink,
+    )
+
+    raw_signature = '"type":"text_delta"'
+    leaked_event = [
+        data for _, data in emitted
+        if isinstance(data, dict) and raw_signature in str(data.get("data") or "")
+    ]
+    assert not leaked_event, (
+        "raw NDJSON leaked into the chat surface token payloads: " + repr(leaked_event)
+    )
+
+    # Without `GG_CODER` in run_provider_command's streaming-harness set, the
+    # runner falls through to the one-shot shell and surfaces raw NDJSON as
+    # the assistant's text. streamed_tokens/messages stay False in that path.
+    assert result["streamed_tokens"] is True, (
+        "harness did not claim streaming -- chat surface would lose tokens: "
+        f"result={result!r}"
+    )
+    assert result["streamed_messages"] is True
+
+    # The assembled assistant text from streamed `message` events must not
+    # start with a JSON envelope (the literal symptom from the bug report).
+    text_messages = [
+        data for _, data in emitted
+        if isinstance(data, dict) and data.get("kind") == "text"
+    ]
+    assert text_messages, "no assistant text message emitted"
+    for msg in text_messages:
+        assert not str(msg.get("text") or "").lstrip().startswith("{"), (
+            f"assistant text starts with JSON envelope: {msg.get('text')!r}"
+        )
+
+
+def test_read_max_reconnect_attempts_default_is_none():
+    """Without ``LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS`` set, the bound is
+    ``None`` (unlimited) -- the production default that keeps held runs
+    alive across long outages. Tests setting the env var can pin the
+    alternate branches below.
+    """
+    from lemma_cli.daemon.runner import _read_max_reconnect_attempts
+    monkey = os.environ
+    monkey.pop("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", None)
+    assert _read_max_reconnect_attempts() is None
+
+
+def test_read_max_reconnect_attempts_parses_positive_int(monkeypatch):
+    from lemma_cli.daemon.runner import _read_max_reconnect_attempts
+    monkeypatch.setenv("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", "4")
+    assert _read_max_reconnect_attempts() == 4
+    monkeypatch.setenv("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", "1")
+    assert _read_max_reconnect_attempts() == 1
+    monkeypatch.setenv("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", "0")
+    assert _read_max_reconnect_attempts() is None  # 0 is treated as None
+    monkeypatch.setenv("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", "-1")
+    assert _read_max_reconnect_attempts() is None
+    monkeypatch.setenv("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", "not-a-number")
+    assert _read_max_reconnect_attempts() is None
+    monkeypatch.setenv("LEMMA_DAEMON_MAX_RECONNECT_ATTEMPTS", "")
+    assert _read_max_reconnect_attempts() is None
+
+
+def test_log_state_emits_grepable_state_line():
+    """``STATE <NAME>`` lines are the at-a-glance connection-state marker
+    for operators running ``tail -f daemon.log``. Pin the format so an
+    accidental edit doesn't break tailing/grepping.
+    """
+    from lemma_cli.daemon.runner import _log_state
+    from lemma_cli.daemon.runner import _STATE_ONLINE, _STATE_ALERT
+
+    captured: list[tuple[str, object]] = []
+
+    def fake_log(label, payload=None):
+        captured.append((label, payload))
+
+    import lemma_cli.daemon.runner as runner
+    orig = runner.daemon_log
+    runner.daemon_log = fake_log
+    try:
+        _log_state(_STATE_ONLINE, {"server": "https://gogett.webrnds.com"})
+        _log_state(_STATE_ALERT, {"reason": "sustained failure"})
+    finally:
+        runner.daemon_log = orig
+
+    labels = [label for label, _ in captured]
+    # Each state emits ``STATE <NAME>`` uppercased, with state payload.
+    assert labels[0] == "STATE ONLINE"
+    assert labels[1] == "STATE ALERT"
+    # Payload is forwarded so ``jq . <state>`` can extract structured fields.
+    assert captured[0][1] == {"server": "https://gogett.webrnds.com"}
+    assert captured[1][1] == {"reason": "sustained failure"}
+
+
+def test_record_failure_fires_alert_once_per_streak():
+    """The STATE ALERT line must fire exactly once per failure-streak within
+    the alarm window -- not on every failure (would spam logs), not never
+    (would hide sustained outages). After the streak resets on a successful
+    reconnect, the next streak fires anew.
+    """
+    from lemma_cli.daemon.runner import (
+        _CONSECUTIVE_FAILURE_ALARM_THRESHOLD,
+        _record_failure,
+    )
+
+    streak = 0
+    first_at: float | None = None
+
+    # Walk up to but not beyond the threshold -- no alert yet.
+    for i in range(1, _CONSECUTIVE_FAILURE_ALARM_THRESHOLD):
+        streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+        assert alert is False, f"alert fired too early at iteration {i}"
+
+    # Crossing the threshold fires once.
+    streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+    assert alert is True, "alert should fire when threshold is crossed"
+
+    # Subsequent failures within the same window do NOT re-fire (streak is
+    # still >= threshold; the helper suppresses by tracking streak<threshold
+    # at the moment of failure).
+    streak_after_first, _first_after_first, _alert_after_first = (
+        streak, first_at, True
+    )
+    streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+    assert alert is False, "alert must fire once per streak, not on every failure"
+    # The counter keeps accumulating so the alarm threshold isn't lost.
+    assert streak == streak_after_first + 1
+
+    # On a successful reconnect the caller resets streak=0 and first_at=None;
+    # the next failure starts a fresh streak that WILL re-fire.
+    streak = 0
+    first_at = None
+    streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+    assert alert is False
+    for _ in range(_CONSECUTIVE_FAILURE_ALARM_THRESHOLD - 2):
+        streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+    streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+    assert alert is True, "second streak should also fire its own alert"
+
+
+def test_record_failure_alarm_window_expires():
+    """If the gap between first failure and the next is longer than the
+    alarm window, the next failure is treated as a brand-new streak and
+    the alert does NOT fire until the threshold is crossed again.
+    """
+    from lemma_cli.daemon.runner import (
+        _CONSECUTIVE_FAILURE_ALARM_THRESHOLD,
+        _CONSECUTIVE_FAILURE_ALARM_WINDOW_SECONDS,
+        _record_failure,
+    )
+
+    # First failure recorded at ``t=0`` (whatever the clock says).
+    streak, first_at, _ = _record_failure(0, None, exc_label="x")
+    original_first = first_at
+
+    # Manually age ``first_at`` past the window.
+    aged = original_first - (_CONSECUTIVE_FAILURE_ALARM_WINDOW_SECONDS + 1.0)
+    streak, first_at, alert = _record_failure(streak, aged, exc_label="x")
+    # We crossed the threshold (streak=2, threshold=5? no, threshold=5) -- but
+    # first_at is past the window so no alert. Actually streak is only 2 here;
+    # ramp up to the threshold while still aged past the window.
+    for _ in range(_CONSECUTIVE_FAILURE_ALARM_THRESHOLD - 1):
+        streak, first_at, alert = _record_failure(streak, first_at, exc_label="x")
+    # streak == threshold; window is expired -> no alarm.
+    assert alert is False, (
+        f"alarm should be silent when first_failure_at is older than the "
+        f"window; streak={streak}, threshold={_CONSECUTIVE_FAILURE_ALARM_THRESHOLD}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_websocket_rejected_branch_increments_streak(monkeypatch):
+    """Pin the non-auth ``InvalidStatus`` branch (e.g. HTTP 500 from the
+    backend). It must increment the failure streak via ``_record_failure`` --
+    same logic as the OSError branch -- so the alarm fires after sustained
+    backend errors. (Earlier the branch typo'd ``_register_failure`` which
+    would NameError on every backend HTTP-error path.)
+    """
+    from websockets.exceptions import InvalidStatus
+
+    import lemma_cli.daemon.runner as runner_mod
+    from lemma_cli.daemon.runner import (
+        run_daemon,
+    )
+
+    monkeypatch.setattr(
+        runner_mod, "ensure_config", lambda: {"device_key": "k", "display_name": "t"}
+    )
+    monkeypatch.setattr(runner_mod, "discover_harness_catalog", lambda: {})
+    monkeypatch.setattr(runner_mod, "save_config", lambda _c: None)
+    monkeypatch.setattr(runner_mod, "device_info", lambda: {})
+    monkeypatch.setattr(runner_mod, "daemon_ws_url", lambda _b: "ws://example/daemon")
+    monkeypatch.setattr(runner_mod, "reconnect_delay_seconds", lambda _a: 0.0)
+    monkeypatch.setattr(runner_mod, "_startup_health_check", lambda **_k: asyncio.sleep(0))
+
+    state_calls: list[tuple[str, dict[str, object]]] = []
+
+    def capturing_log(label, payload=None):
+        state_calls.append((label, payload or {}))
+        return None
+
+    # Patch the name ``_log_state`` resolves inside runner.py's module -- it's
+    # the ``daemon_log`` reference inside that module's namespace, since
+    # ``_log_state`` calls ``daemon_log(...)``.
+    monkeypatch.setattr(runner_mod, "daemon_log", capturing_log)
+
+    # Drive 2 HTTP-500-style connect failures, exit before threshold. The
+    # pin is that THIS BRANCH increments the failure streak (not skipped);
+    # the alarm output is asserted elsewhere. 2 attempts with
+    # max_reconnect_attempts=2 means the loop exits after 2 attempts and
+    # we never cross threshold 5.
+    fail_count = 2
+    attempts = {"n": 0}
+
+    def connect_factory(_token):
+        attempts["n"] += 1
+        if attempts["n"] > fail_count:
+            raise OSError("stop")  # shouldn't reach this far before bound
+        exc = InvalidStatus.__new__(InvalidStatus)
+        Exception.__init__(exc, 500, "Internal Server Error")
+        raise exc
+
+    await run_daemon(
+        base_url="http://example",
+        token="t",
+        verify_ssl=True,
+        connect_factory=connect_factory,
+        max_reconnect_attempts=fail_count,
+    )
+
+    reject_calls = [
+        payload for label, payload in state_calls
+        if payload.get("reason") == "websocket rejected"
+    ]
+    assert len(reject_calls) == fail_count, (
+        f"expected {fail_count} websocket-rejected STATE OFFLINE pins, got "
+        f"{len(reject_calls)}: state_calls={state_calls!r}"
+    )
+
+    # No alert yet (we only had 2 failures; threshold 5).
+    alerts = [label for label, _ in state_calls if "ALERT" in label]
+    assert not alerts, (
+        f"expected no STATE ALERT before threshold; got {alerts}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_health_check_returns_true_on_200(monkeypatch):
+    """Happy path: the daemon can reach ``/users/me`` with the bearer token
+    it just used to open the websocket. The check fires once per
+    connection -- not on every message -- and the result is logged.
+    """
+    from lemma_cli.daemon.runner import _startup_health_check
+
+    class _Resp:
+        status = 200
+
+        def getcode(self) -> int:
+            return 200
+
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+    captured: list[tuple[str, dict[str, str]]] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        captured.append(("urlopen", {"url": req.full_url, "auth": req.headers.get("Authorization")}))
+        return _Resp()
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ok, detail = await _startup_health_check(
+        base_url="https://example.com",
+        token="the-token",
+        verify_ssl=True,
+    )
+    assert ok is True
+    assert "200" in detail
+    assert captured[0][1]["url"] == "https://example.com/users/me"
+    assert captured[0][1]["auth"] == "Bearer the-token"
+
+
+@pytest.mark.asyncio
+async def test_startup_health_check_returns_false_on_401(monkeypatch):
+    """A 401 means the token is rejected: the calling websocket is already
+    on a doomed connection. We surface that fact in the structured detail
+    so the daemon's connect loop can decide to tear down.
+    """
+    import urllib.error
+
+    from lemma_cli.daemon.runner import _startup_health_check
+
+    def fake_urlopen(_req, timeout=None, context=None):
+        raise urllib.error.HTTPError(
+            url="https://example.com/users/me",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=None,
+        )
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ok, detail = await _startup_health_check(
+        base_url="https://example.com",
+        token="bogus",
+        verify_ssl=True,
+    )
+    assert ok is False
+    assert "401" in detail
+
+
+@pytest.mark.asyncio
+async def test_startup_health_check_returns_false_on_network_error(monkeypatch):
+    """Transient network failures (DNS, connection refused, TLS handshake)
+    are NOT startup failures -- the daemon should keep trying to connect.
+    The helper surfaces ``False`` with a labeled detail so the operator can
+    distinguish auth-rejected from network-broken.
+    """
+    from lemma_cli.daemon.runner import _startup_health_check
+
+    def fake_urlopen(_req, timeout=None, context=None):
+        raise OSError("Name or service not known")
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ok, detail = await _startup_health_check(
+        base_url="https://example.com",
+        token="x",
+        verify_ssl=True,
+    )
+    assert ok is False
+    assert "OSError" in detail or "Name or service" in detail
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_emits_state_alert_after_sustained_failures(monkeypatch):
+    """End-to-end wiring: when ``connect_factory`` keeps failing, the
+    reconnect loop fires a single ``STATE ALERT`` line once the failure
+    streak crosses the threshold. After the alert, subsequent failures in
+    the same window do NOT spam; once a connection succeeds, ``STATE ONLINE``
+    fires and the next failure-streak starts a fresh alert.
+    """
+    import lemma_cli.daemon.runner as runner_mod
+    from lemma_cli.daemon.runner import (
+        _CONSECUTIVE_FAILURE_ALARM_THRESHOLD,
+        run_daemon,
+    )
+
+    monkeypatch.setattr(
+        runner_mod, "ensure_config", lambda: {"device_key": "k", "display_name": "t"}
+    )
+    monkeypatch.setattr(runner_mod, "discover_harness_catalog", lambda: {})
+    monkeypatch.setattr(runner_mod, "save_config", lambda _c: None)
+    monkeypatch.setattr(runner_mod, "device_info", lambda: {})
+    monkeypatch.setattr(runner_mod, "daemon_ws_url", lambda _b: "ws://example/daemon")
+    monkeypatch.setattr(runner_mod, "reconnect_delay_seconds", lambda _a: 0.0)
+    monkeypatch.setattr(runner_mod, "_startup_health_check", lambda **_k: asyncio.sleep(0))
+
+    state_calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_log_state(state, payload=None):
+        state_calls.append((state, payload or {}))
+
+    # Capture every daemon_log invocation -- not just STATE-prefixed ones --
+    # so we can debug what run_daemon actually emitted.
+    all_calls: list[tuple[str, dict[str, object]]] = []
+
+    def capturing_log(label, payload=None):
+        all_calls.append((label, payload or {}))
+        return None  # do not print to stderr
+
+    # ``runner_mod.daemon_log`` is the name inside ``runner.py``'s module
+    # namespace (it's ``from ._logging import log as daemon_log``). Patching
+    # it on the module overrides what ``_log_state`` sees at call time.
+    monkeypatch.setattr(runner_mod, "daemon_log", capturing_log)
+    state_calls = all_calls
+
+    # ``_CONSECUTIVE_FAILURE_ALARM_THRESHOLD`` calls all raise ``OSError``,
+    # so the alarm window fully accumulates before any successful
+    # connection resets the streak. Bounded by ``max_reconnect_attempts``
+    # so the test terminates; we never hit a successful connect path,
+    # which is fine -- the alarm is asserted within the same failure
+    # window as the threshold, which is the contract we care about.
+    attempts = {"n": 0}
+    fail_count = _CONSECUTIVE_FAILURE_ALARM_THRESHOLD
+
+    def connect_factory(_token):
+        attempts["n"] += 1
+        raise OSError(f"simulated failure {attempts['n']}")
+
+    await run_daemon(
+        base_url="http://example",
+        token="t",
+        verify_ssl=True,
+        connect_factory=connect_factory,
+        max_reconnect_attempts=fail_count + 4,
+    )
+
+    # Operator-visible contract:
+    # 1. at least one STATE ALERT must fire (the threshold was crossed);
+    # 2. subsequent failures in the same window do NOT spam more alerts
+    #    (one alert per streak, not one per failure);
+    # 3. no STATE ONLINE because we never had a successful connect.
+    alert_lines = [payload for state, payload in state_calls if "ALERT" in state]
+    online_lines = [state for state, _ in state_calls if "ONLINE" in state]
+
+    assert not online_lines, (
+        f"expected no STATE ONLINE because connect_factory always failed; "
+        f"got: {state_calls!r}"
+    )
+    assert alert_lines, f"expected at least one STATE ALERT pin; got: {state_calls!r}"
+    for payload in alert_lines:
+        assert "consecutive_failures" in payload
+        assert "message" in payload
+        assert "window_seconds" in payload
+    # Exactly one alert per consecutive failure window -- not per failure.
+    # We had fail_count = threshold failures above threshold; alarm fires
+    # once at the threshold crossing and is suppressed for the rest.
+    assert len(alert_lines) == 1, (
+        f"alert must fire once per streak, got {len(alert_lines)} alerts: "
+        f"{state_calls!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gg_coder_harness_emits_human_readable_text_and_tool_events():
+    """Regression for the 'User daemon output renders raw NDJSON' user-facing
+    bug. Pins three contracts at the ggcoder harness boundary:
+
+    (a) Every ``text_delta`` translates into a chat-friendly ``token`` whose
+        ``data`` field is plain prose -- never a JSON envelope.
+
+    (b) ``tool_call_start`` translates into a ``token`` whose ``data`` is a
+        chat-friendly ``tool_call`` message (the chat SDK renders these into
+        tool cards instead of dumping them as raw JSON).
+
+    (c) ``tool_call_end`` translates into a ``token`` whose ``data`` is a
+        ``tool_return`` message (chat SDK uses these to mark the card
+        completed / failed).
+
+    Without these, the ggcoder chat surface would render raw
+    ``{"type":"text_delta",...}`` envelopes into the assistant bubble -- the
+    exact symptom the user reported earlier.
+    """
+    from lemma_cli.daemon.harnesses import gg_coder as harness
+
+    captured: list[tuple[str, object]] = []
+
+    async def sink(event_type, data):
+        captured.append((event_type, data))
+
+    # Mix the events that matter for the human-readable contract: text
+    # deltas (including one with a JSON-shaped payload as defense in depth),
+    # one tool_call_start, one tool_call_end.
+    events = [
+        {"type": "text_delta", "text": "I see"},
+        {"type": "text_delta", "text": " an empty message."},
+        # Defense in depth: upstream that emits a dict-shaped ``text`` (rather
+        # than a string) must not surface as raw JSON to the chat bubble.
+        {"type": "text_delta", "text": {"data": " hello"}},
+        {
+            "type": "tool_call_start",
+            "toolCallId": "t1",
+            "name": "bash",
+            "args": {"cmd": "ls"},
+        },
+        {
+            "type": "tool_call_end",
+            "toolCallId": "t1",
+            "name": "bash",
+            "isError": False,
+            "result": "ok",
+        },
+    ]
+
+    state = harness.StreamTextState(harness_kind="GG_CODER", event_sink=sink)
+
+    for event in events:
+        await harness._handle_gg_coder_event(event, state)
+
+    # Pin (a): text_delta yields plain string token events, never a JSON envelope.
+    text_tokens = [
+        data for event_type, data in captured
+        if event_type == "token"
+        and isinstance(data, dict)
+        and data.get("kind") == "text"
+    ]
+    assert text_tokens, f"no text token events emitted; got: {captured}"
+    concatenated = "".join(t.get("data", "") for t in text_tokens)
+    assert concatenated == "I see an empty message. hello", (
+        f"text tokens must concatenate to plain prose; got {concatenated!r}"
+    )
+    # The dict-shaped text_delta's defensive path must produce a plain string
+    # token (no embedded JSON envelope).
+    assert "{" not in concatenated, (
+        f"text tokens must not contain raw JSON envelopes; got {concatenated!r}"
+    )
+
+    # Pin (b): tool_call_start emits a tool_call MESSAGE (the chat SDK reads
+    # ``kind`` to render tool cards; without ``kind: tool_call`` it falls back
+    # to JSON dump in the bubble).
+    tool_call_messages = [
+        data for event_type, data in captured
+        if event_type == "message"
+        and isinstance(data, dict)
+        and data.get("kind") == "tool_call"
+    ]
+    assert tool_call_messages, (
+        f"tool_call_start must produce a tool_call message; got: {captured}"
+    )
+    assert tool_call_messages[0].get("tool_name") == "bash"
+    assert tool_call_messages[0].get("tool_call_id") == "t1"
+
+    # Pin (c): tool_call_end emits a tool_return MESSAGE.
+    tool_return_messages = [
+        data for event_type, data in captured
+        if event_type == "message"
+        and isinstance(data, dict)
+        and data.get("kind") == "tool_return"
+    ]
+    assert tool_return_messages, (
+        f"tool_call_end must produce a tool_return message; got: {captured}"
+    )
+    assert tool_return_messages[0].get("tool_call_id") == "t1"

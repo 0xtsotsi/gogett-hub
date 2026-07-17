@@ -71,6 +71,7 @@ const KNOWN_LOCAL_AGENTS: Array<{ kind: string; name: string }> = [
     { kind: 'OPENCODE', name: 'OpenCode' },
     { kind: 'ANTIGRAVITY', name: 'Antigravity' },
     { kind: 'CURSOR', name: 'Cursor' },
+    { kind: 'GG_CODER', name: 'GG Coder' },
 ];
 
 type ConnectTarget = { kind: CustomProviderKind; name: string; baseUrl: string };

@@ -15,14 +15,14 @@ from app.modules.connectors.domain.ports import (
     ConnectorRepositoryPort,
     OperationDetailsPort,
 )
-
-logger = get_logger(__name__)
 from app.modules.connectors.infrastructure.adapters.composio_operation_gateway import (
     ComposioOperationGateway,
 )
 from app.modules.connectors.infrastructure.adapters.lemma_operation_gateway import (
     LemmaOperationGateway,
 )
+
+logger = get_logger(__name__)
 
 
 class RoutingOperationGateway(AppOperationGatewayPort):

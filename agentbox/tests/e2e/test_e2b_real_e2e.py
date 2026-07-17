@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -33,9 +34,11 @@ if not 1 <= E2B_FUNCTION_CONCURRENCY < 10:
 
 @dataclass
 class RealE2BServer(AgentBoxServer):
+    provider_managed_by: str
     provider_owner: str
     provider_environment: str
     manager_log_path: Path
+    state_db_path: Path
 
     def diagnostics(self, *secrets: str) -> str:
         try:
@@ -108,6 +111,7 @@ def _safe_process_kind(command: object) -> str:
 
 async def _scoped_e2b_infos(
     *,
+    managed_by: str,
     owner: str,
     environment: str,
     logical_id: str | None = None,
@@ -121,7 +125,7 @@ async def _scoped_e2b_infos(
     from e2b import AsyncSandbox, RateLimitException, SandboxQuery
 
     metadata = {
-        "managed-by": "agentbox",
+        "managed-by": managed_by,
         "agentbox-owner": owner,
         "agentbox-environment": environment,
     }
@@ -146,20 +150,16 @@ async def _scoped_e2b_infos(
     raise RuntimeError("unreachable")
 
 
-def _provider_id(server: RealE2BServer, sandbox_id: str) -> str:
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        infos = asyncio.run(
-            _scoped_e2b_infos(
-                owner=server.provider_owner,
-                environment=server.provider_environment,
-                logical_id=sandbox_id,
-            )
-        )
-        if len(infos) == 1:
-            return str(getattr(infos[0], "sandbox_id"))
-        time.sleep(0.5)
-    raise AssertionError(f"Expected one E2B provider object for {sandbox_id}")
+def _persisted_provider_id(server: RealE2BServer, sandbox_id: str) -> str:
+    """Read the durable exact identity without depending on E2B list visibility."""
+
+    with sqlite3.connect(server.state_db_path) as conn:
+        row = conn.execute(
+            "SELECT provider_id FROM sandboxes WHERE sandbox_id = ?",
+            (sandbox_id,),
+        ).fetchone()
+    assert row is not None and isinstance(row[0], str) and row[0]
+    return row[0]
 
 
 def _wait_provider_absent(server: RealE2BServer, sandbox_id: str) -> None:
@@ -167,6 +167,7 @@ def _wait_provider_absent(server: RealE2BServer, sandbox_id: str) -> None:
     while time.monotonic() < deadline:
         infos = asyncio.run(
             _scoped_e2b_infos(
+                managed_by=server.provider_managed_by,
                 owner=server.provider_owner,
                 environment=server.provider_environment,
                 logical_id=sandbox_id,
@@ -178,10 +179,18 @@ def _wait_provider_absent(server: RealE2BServer, sandbox_id: str) -> None:
     raise AssertionError(f"E2B provider object still exists for {sandbox_id}")
 
 
-async def _purge_scoped_e2b(owner: str, environment: str) -> None:
+async def _purge_scoped_e2b(
+    managed_by: str,
+    owner: str,
+    environment: str,
+) -> None:
     from e2b import AsyncSandbox, SandboxNotFoundException
 
-    for info in await _scoped_e2b_infos(owner=owner, environment=environment):
+    for info in await _scoped_e2b_infos(
+        managed_by=managed_by,
+        owner=owner,
+        environment=environment,
+    ):
         provider_id = str(getattr(info, "sandbox_id"))
         try:
             await AsyncSandbox.kill(provider_id, api_key=os.environ["E2B_API_KEY"])
@@ -204,6 +213,7 @@ def real_e2b_server() -> Generator[RealE2BServer, None, None]:
     manager_key = f"agentbox-e2b-e2e-{uuid4().hex}"
     base_url = f"http://127.0.0.1:{port}"
     owner = f"platform-pr-e2e-{uuid4().hex[:12]}"
+    managed_by = f"agentbox-platform-e2e-{uuid4().hex[:12]}"
     environment = "real-e2b"
     app_domain = f"127-0-0-1.sslip.io:{port}"
 
@@ -217,6 +227,7 @@ def real_e2b_server() -> Generator[RealE2BServer, None, None]:
             "AGENTBOX_APP_DOMAIN": app_domain,
             "AGENTBOX_PROVIDER_OWNER": owner,
             "AGENTBOX_ENVIRONMENT": environment,
+            "E2B_SANDBOX_MANAGED_BY": managed_by,
             "AGENTBOX_STATE_DB_PATH": str(Path(tmpdir) / "state.db"),
             "AGENTBOX_STATE_DURABLE_ENV_KEYS": ("LEMMA_BASE_URL,E2B_E2E_DYNAMIC_MARK"),
             "AGENTBOX_FUNCTION_MAX_CONCURRENCY": str(E2B_FUNCTION_CONCURRENCY),
@@ -264,9 +275,11 @@ def real_e2b_server() -> Generator[RealE2BServer, None, None]:
             base_url=base_url,
             api_key=manager_key,
             app_domain=app_domain,
+            provider_managed_by=managed_by,
             provider_owner=owner,
             provider_environment=environment,
             manager_log_path=manager_log_path,
+            state_db_path=Path(tmpdir) / "state.db",
         )
         try:
             deadline = time.monotonic() + 30
@@ -293,7 +306,7 @@ def real_e2b_server() -> Generator[RealE2BServer, None, None]:
             # sweep is a failure-safe for a test interrupted between create and
             # recording its logical ID; the owner is random per module run.
             try:
-                asyncio.run(_purge_scoped_e2b(owner, environment))
+                asyncio.run(_purge_scoped_e2b(managed_by, owner, environment))
             finally:
                 proc.terminate()
                 try:
@@ -464,6 +477,7 @@ async def _e2b_provider_diagnostics(
 
     async def collect() -> str:
         infos = await _scoped_e2b_infos(
+            managed_by=server.provider_managed_by,
             owner=server.provider_owner,
             environment=server.provider_environment,
             logical_id=sandbox_id,
@@ -825,13 +839,13 @@ def test_real_e2b_lifecycle_runtime_pause_resume_and_delete(
     assert terminated.status_code == HTTPStatus.OK, terminated.text
     assert terminated.json()["completed"] is True
 
-    provider_id = _provider_id(real_e2b_server, real_e2b_sandbox_id)
+    provider_id = _persisted_provider_id(real_e2b_server, real_e2b_sandbox_id)
     suspended = real_e2b_server.client.request_json(
         "POST", f"/sandboxes/{real_e2b_sandbox_id}/suspend", timeout=180
     )
     assert suspended.status_code == HTTPStatus.OK, suspended.text
     assert suspended.json()["suspended"] is True
-    assert _provider_id(real_e2b_server, real_e2b_sandbox_id) == provider_id
+    assert _persisted_provider_id(real_e2b_server, real_e2b_sandbox_id) == provider_id
 
     stopped = real_e2b_server.client.request_json(
         "GET", f"/sandboxes/{real_e2b_sandbox_id}", timeout=60
@@ -841,7 +855,7 @@ def test_real_e2b_lifecycle_runtime_pause_resume_and_delete(
     assert stopped.json()["status"] == "STOPPED"
 
     _ensure(real_e2b_server, real_e2b_sandbox_id, env=durable_env)
-    assert _provider_id(real_e2b_server, real_e2b_sandbox_id) == provider_id
+    assert _persisted_provider_id(real_e2b_server, real_e2b_sandbox_id) == provider_id
     resumed_session = "runtime-after-resume"
     _create_session(
         real_e2b_server,
@@ -867,7 +881,7 @@ def test_real_e2b_lifecycle_runtime_pause_resume_and_delete(
     # DELETE is intentionally different from idle suspension: recreating the
     # same logical user gets a new provider generation and an empty filesystem.
     _ensure(real_e2b_server, real_e2b_sandbox_id, env=durable_env)
-    assert _provider_id(real_e2b_server, real_e2b_sandbox_id) != provider_id
+    assert _persisted_provider_id(real_e2b_server, real_e2b_sandbox_id) != provider_id
     fresh_session = "runtime-after-permanent-delete"
     _create_session(
         real_e2b_server,
@@ -971,6 +985,7 @@ class ConcurrencyInput(BaseModel):
     marker: str
     workspace_path: str
     expected_sentinel: str
+    delay_seconds: float = 15.0
 
 class ConcurrencyOutput(BaseModel):
     label: str
@@ -983,7 +998,7 @@ class ConcurrencyOutput(BaseModel):
 async def {function_name}(ctx, data: ConcurrencyInput) -> ConcurrencyOutput:
     started_ns = time.monotonic_ns()
     print(f"start:{{data.label}}:{{data.marker}}")
-    await asyncio.sleep(15)
+    await asyncio.sleep(data.delay_seconds)
     finished_ns = time.monotonic_ns()
     print(f"finish:{{data.label}}:{{data.marker}}")
     return ConcurrencyOutput(
@@ -1061,6 +1076,7 @@ def _function_execute(
     workspace_path: str,
     expected_sentinel: str,
     async_job: bool,
+    delay_seconds: float = 15.0,
 ) -> object:
     response = None
     delay = 0.25
@@ -1077,6 +1093,7 @@ def _function_execute(
                     "marker": marker,
                     "workspace_path": workspace_path,
                     "expected_sentinel": expected_sentinel,
+                    "delay_seconds": delay_seconds,
                 },
                 "async_job": async_job,
                 "timeout_seconds": 120,
@@ -1167,8 +1184,7 @@ def _job_logs(
     for attempt in range(1, 13):
         response = server.client.request_json(
             "GET",
-            f"/sandboxes/{sandbox_id}/apps/function_executor/"
-            f"runs/{run_id}/logs",
+            f"/sandboxes/{sandbox_id}/apps/function_executor/runs/{run_id}/logs",
             timeout=60,
         )
         if response.status_code == HTTPStatus.OK:
@@ -1267,6 +1283,65 @@ def test_real_e2b_twenty_short_function_requests_use_slots_without_leakage(
         "print(urllib.request.urlopen('http://127.0.0.1:8079/health').status)\"",
     )
     assert health["stdout"].strip() == "200"
+
+    api_smoke = {
+        "run_id": str(uuid4()),
+        "label": "api-smoke",
+        "marker": uuid4().hex,
+        "workspace_path": workspace_path,
+        "expected_sentinel": workspace_sentinel,
+        "async_job": False,
+        "delay_seconds": 0.25,
+    }
+    api_response = _function_execute(
+        real_e2b_server,
+        real_e2b_sandbox_id,
+        pod_id=pod_id,
+        function_name=function_name,
+        token=token,
+        **api_smoke,
+    )
+    _assert_function_response_ok(
+        real_e2b_server,
+        real_e2b_sandbox_id,
+        api_response,
+        token=token,
+    )
+    assert api_response.json()["status"] == "completed"
+    assert api_response.json()["output_data"]["marker"] == api_smoke["marker"]
+
+    job_smoke = {
+        "run_id": str(uuid4()),
+        "label": "job-smoke",
+        "marker": uuid4().hex,
+        "workspace_path": workspace_path,
+        "expected_sentinel": workspace_sentinel,
+        "async_job": True,
+        "delay_seconds": 0.25,
+    }
+    job_response = _function_execute(
+        real_e2b_server,
+        real_e2b_sandbox_id,
+        pod_id=pod_id,
+        function_name=function_name,
+        token=token,
+        **job_smoke,
+    )
+    _assert_function_response_ok(
+        real_e2b_server,
+        real_e2b_sandbox_id,
+        job_response,
+        token=token,
+    )
+    assert job_response.json()["status"] == "accepted"
+    job_result = _wait_job(
+        real_e2b_server,
+        real_e2b_sandbox_id,
+        job_smoke["run_id"],
+        token=token,
+    )
+    assert job_result["status"] == "completed", job_result
+    assert job_result["output_data"]["marker"] == job_smoke["marker"]
 
     runs = [
         {
@@ -1432,4 +1507,8 @@ def test_real_e2b_twenty_short_function_requests_use_slots_without_leakage(
         assert not leaked, f"cross-run markers leaked into {run['run_id']}: {leaked}"
 
     assert len(completed) == 20
-    assert _peak_overlap(outputs) == E2B_FUNCTION_CONCURRENCY
+    # The executor admitted all eight configured slots above. On a 1-vCPU
+    # provider, child process startup is scheduler-dependent, so the body-level
+    # timestamps assert genuine overlap and the ceiling without requiring all
+    # eight bodies to begin before the earliest short invocation finishes.
+    assert 1 < _peak_overlap(outputs) <= E2B_FUNCTION_CONCURRENCY

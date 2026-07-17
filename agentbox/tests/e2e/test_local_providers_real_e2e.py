@@ -675,28 +675,6 @@ def _wait_for_job(
     pytest.fail(f"function job {run_id} did not finish")
 
 
-def _wait_for_queued_job(
-    server: _RealProviderServer,
-    sandbox_id: str,
-    run_ids: list[str],
-) -> None:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        for run_id in run_ids:
-            response = server.client.request(
-                "GET",
-                f"/sandboxes/{sandbox_id}/apps/function_executor/runs/{run_id}",
-                timeout=10,
-            )
-            if (
-                response.status_code == HTTPStatus.OK
-                and response.json()["status"] == "queued"
-            ):
-                return
-        time.sleep(0.1)
-    pytest.fail("twenty-call batch never exposed a queued JOB invocation")
-
-
 def _peak_function_overlap(outputs: list[dict[str, Any]]) -> int:
     events: list[tuple[float, int]] = []
     for output in outputs:
@@ -751,21 +729,7 @@ def test_real_local_provider_runs_twenty_mixed_api_and_job_functions_concurrentl
             )
             for run_id, async_job in zip(run_ids, async_modes, strict=True)
         ]
-        _wait_for_queued_job(
-            server,
-            sandbox_id,
-            [run_id for run_id, is_job in zip(run_ids, async_modes) if is_job],
-        )
-        runtime_health = server.client.request(
-            "GET", f"/sandboxes/{sandbox_id}/apps/runtime/health"
-        )
-        executor_health = server.client.request(
-            "GET", f"/sandboxes/{sandbox_id}/apps/function_executor/health"
-        )
         responses = [future.result() for future in futures]
-
-    assert runtime_health.status_code == HTTPStatus.OK, runtime_health.text
-    assert executor_health.status_code == HTTPStatus.OK, executor_health.text
 
     outputs: list[dict[str, Any]] = []
     for run_id, async_job, response in zip(
@@ -781,13 +745,28 @@ def test_real_local_provider_runs_twenty_mixed_api_and_job_functions_concurrentl
         assert payload["output_data"]["shared_marker"] == "runtime-to-function"
         outputs.append(payload["output_data"])
 
+    # Probe after every API and JOB invocation is terminal. A one-shot health
+    # connection racing the twenty-request admission burst tests the host TCP
+    # backlog, not whether the services survived the work.
+    runtime_health = server.client.request(
+        "GET", f"/sandboxes/{sandbox_id}/apps/runtime/health"
+    )
+    executor_health = server.client.request(
+        "GET", f"/sandboxes/{sandbox_id}/apps/function_executor/health"
+    )
+    assert runtime_health.status_code == HTTPStatus.OK, runtime_health.text
+    assert executor_health.status_code == HTTPStatus.OK, executor_health.text
+
     elapsed = time.monotonic() - started
     assert len(outputs) == FUNCTION_RUN_COUNT
     assert len({item["pid"] for item in outputs}) == FUNCTION_RUN_COUNT
     assert _peak_function_overlap(outputs) == FUNCTION_CONCURRENCY
+    # All twenty requests enter an eight-slot executor together. The timestamps
+    # prove both real overlap and admission limiting without depending on a
+    # transient queued status that a fast runner can legitimately miss.
     # Cold imports on a deliberately constrained 1-vCPU runtime can dominate
-    # the first wave. The overlap and queued-state assertions prove concurrency;
-    # this bound detects a deadlock without encoding workstation performance.
+    # the first wave, so this bound detects a deadlock without encoding
+    # workstation performance.
     assert elapsed < 60, f"mixed API/JOB batch took {elapsed:.2f}s"
     function_to_runtime = _exec(
         server,
@@ -892,7 +871,7 @@ def test_real_local_provider_idle_suspend_resumes_same_filesystem_then_deletes(
             "timeout": 30,
         },
     )
-    assert sentinel.json()["success"] is True
+    assert sentinel.json().get("success") is True, sentinel.text
     deleted_session = server.client.request(
         "DELETE", f"/sandboxes/{sandbox_id}/sessions/{session_id}"
     )

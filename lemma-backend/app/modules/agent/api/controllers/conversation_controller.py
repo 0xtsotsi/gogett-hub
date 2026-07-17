@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from app.core.api.dependencies import CurrentUser, get_uow_factory
 from app.core.api.pagination import parse_uuid_page_token
 from app.core.authorization.dependencies import PodContextDep
+from app.core.authorization.delegation import POD_DEFAULT_AGENT_SELECTOR_ALIASES
 from app.core.authorization.scope import pod_context_scope
 from app.core.domain.errors import BadRequestError
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
@@ -42,6 +43,7 @@ from app.modules.agent.domain.errors import (
     ConversationNotFoundError,
 )
 from app.modules.agent.domain.value_objects import (
+    ConversationAgentSelection,
     ConversationStatus,
     ConversationType,
     JsonObject,
@@ -88,6 +90,21 @@ def _parse_metadata_filters(
             )
         filters[key] = value
     return filters or None
+
+
+def _parse_conversation_agent_selection(
+    agent_name: str | None,
+) -> ConversationAgentSelection[str]:
+    if agent_name is None:
+        return ConversationAgentSelection.all()
+    if not agent_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="agent_name cannot be empty",
+        )
+    if agent_name in POD_DEFAULT_AGENT_SELECTOR_ALIASES:
+        return ConversationAgentSelection.pod_default()
+    return ConversationAgentSelection.named(agent_name)
 
 
 def _parse_message_page_token(page_token: str | None) -> int | None:
@@ -143,11 +160,12 @@ async def create_conversation(
     operation_id="agent.conversation.list",
     summary="List Pod Agent Conversations",
     description=(
-        "List root conversations for the current user in a pod. Use "
-        "agent_name to list conversations for a specific pod agent; omit it "
-        "to list default pod assistant conversations. Child (sub-agent) "
-        "conversations are omitted by default; pass parent_id to list the "
-        "children of a specific conversation instead."
+        "List root conversations for the current user in a pod. Omit "
+        "agent_name to list conversations across the pod, pass POD_DEFAULT "
+        "(or pod_default) to list default pod assistant conversations, or "
+        "pass a name to list conversations for a specific pod agent. Child "
+        "(sub-agent) conversations are omitted by default; pass parent_id to "
+        "list the children of a specific conversation instead."
     ),
 )
 async def list_conversations(
@@ -156,7 +174,7 @@ async def list_conversations(
     user: CurrentUser,
     service: ConversationServiceDep,
     ctx: PodContextDep,
-    agent_name: str | None = Query(default=None),
+    agent_name: str | None = Query(default=None, min_length=1),
     run_status: ConversationStatus | None = Query(default=None, alias="status"),
     conversation_type: ConversationType | None = Query(default=None, alias="type"),
     parent_id: UUID | None = Query(default=None),
@@ -166,7 +184,7 @@ async def list_conversations(
     _ = ctx
     conversations, next_cursor = await service.list_conversations(
         pod_id=pod_id,
-        agent_name=agent_name,
+        agent_selection=_parse_conversation_agent_selection(agent_name),
         user_id=user.id,
         status=run_status,
         type=conversation_type,

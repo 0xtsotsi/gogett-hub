@@ -41,6 +41,7 @@ from app.modules.agent.domain.value_objects import (
     AgentRunStartResult,
     AgentRunStatus,
     AgentRuntimeConfig,
+    ConversationAgentSelection,
     ConversationStatus,
     ConversationType,
     MessageDraft,
@@ -234,7 +235,7 @@ class ConversationService:
         self,
         *,
         pod_id: UUID,
-        agent_name: str | None,
+        agent_selection: ConversationAgentSelection[str],
         user_id: UUID,
         status: ConversationStatus | None = None,
         type: ConversationType | None = None,
@@ -245,8 +246,9 @@ class ConversationService:
     ) -> tuple[list[Conversation], UUID | None]:
         expected_agent_id = await self._expected_agent_id(
             pod_id=pod_id,
-            agent_name=agent_name,
+            agent_name=agent_selection.value,
         )
+        resolved_selection = agent_selection.resolve(expected_agent_id)
         await self._require_agent_action(
             user_id=user_id,
             pod_id=pod_id,
@@ -256,7 +258,7 @@ class ConversationService:
         return await self.conversation_repository.list_conversations(
             user_id=user_id,
             pod_id=pod_id,
-            agent_id=expected_agent_id,
+            agent_selection=resolved_selection,
             status=status,
             conversation_type=type,
             metadata_filters=metadata_filters,

@@ -8,13 +8,17 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from starlette.datastructures import QueryParams
 
 from app.modules.agent.api.controllers import conversation_controller
 from app.modules.agent.api.controllers.conversation_controller import (
     _parse_metadata_filters,
     send_message,
 )
-from app.modules.agent.domain.value_objects import AgentRunStartResult
+from app.modules.agent.domain.value_objects import (
+    AgentRunStartResult,
+    ConversationAgentScope,
+)
 from app.modules.test_support.authz import allow_all_context
 from app.modules.usage.domain.errors import UsageLimitExceededError
 
@@ -74,6 +78,94 @@ class _ConversationService:
         if self.exc is not None:
             raise self.exc
         return self.result
+
+
+class _ConversationListService:
+    def __init__(self) -> None:
+        self.kwargs = None
+
+    async def list_conversations(self, **kwargs):
+        self.kwargs = kwargs
+        return [], None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "agent_name", "expected_scope", "expected_value"),
+    [
+        ("", None, ConversationAgentScope.ALL, None),
+        (
+            "agent_name=POD_DEFAULT",
+            "POD_DEFAULT",
+            ConversationAgentScope.POD_DEFAULT,
+            None,
+        ),
+        (
+            "agent_name=pod_default",
+            "pod_default",
+            ConversationAgentScope.POD_DEFAULT,
+            None,
+        ),
+        (
+            "agent_name=researcher",
+            "researcher",
+            ConversationAgentScope.NAMED,
+            "researcher",
+        ),
+    ],
+)
+async def test_list_conversations_parses_agent_selection(
+    query,
+    agent_name,
+    expected_scope,
+    expected_value,
+) -> None:
+    service = _ConversationListService()
+
+    response = await conversation_controller.list_conversations(
+        pod_id=uuid4(),
+        request=SimpleNamespace(query_params=QueryParams(query)),
+        user=SimpleNamespace(id=uuid4()),
+        service=service,
+        ctx=SimpleNamespace(),
+        agent_name=agent_name,
+        run_status=None,
+        conversation_type=None,
+        parent_id=None,
+        page_token=None,
+        limit=20,
+    )
+
+    assert response.items == []
+    selection = service.kwargs["agent_selection"]
+    assert selection.scope is expected_scope
+    assert selection.value == expected_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_name", ["", "   "])
+async def test_list_conversations_rejects_empty_agent_name(agent_name) -> None:
+    service = _ConversationListService()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await conversation_controller.list_conversations(
+            pod_id=uuid4(),
+            request=SimpleNamespace(
+                query_params=QueryParams(f"agent_name={agent_name}")
+            ),
+            user=SimpleNamespace(id=uuid4()),
+            service=service,
+            ctx=SimpleNamespace(),
+            agent_name=agent_name,
+            run_status=None,
+            conversation_type=None,
+            parent_id=None,
+            page_token=None,
+            limit=20,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert service.kwargs is None
 
 
 class _ChannelService:

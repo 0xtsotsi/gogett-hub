@@ -1,0 +1,24 @@
+# EditorConfig: https://editorconfig.org
+# Top-level config for this monorepo. Most editors pick this up automatically
+# without any plugin configuration.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{py,rs,toml,ps1}]
+indent_size = 4
+
+[*.md]
+# Two trailing spaces in Markdown are a hard line break (<br>). Don't strip.
+trim_trailing_whitespace = false
+
+[Makefile]
+# Makefiles require literal tabs for recipe lines; spaces break them silently.
+indent_style = tab

@@ -1,0 +1,36 @@
+# Prettier ignore — additive on top of .gitignore (Prettier reads both).
+# Keeps generated artifacts, framework caches, and dependency trees out of
+# `npm run format:check` so drift in those paths doesn't fail the check.
+
+# Dependencies
+node_modules
+.pnp.*
+
+# Production / build artifacts
+dist
+build
+*.tsbuildinfo
+
+# Local TS bundle scratch dir (used by tsconfig.bundle.json)
+.bundle-tmp
+
+# Coverage outputs
+coverage
+*.lcov
+
+# Package manager caches / logs
+.npm-cache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Generated OpenAPI client (built by scripts/generate_openapi_client.sh via
+# openapi-typescript-codegen — first line is "do not edit")
+src/openapi_client/**
+
+# Generated browser bundles + registry (built by scripts/build_browser_bundle.mjs,
+# scripts/build_ui_bundle.mjs, and `npm run registry:build`)
+public/lemma-client.js
+public/lemma-ui.js
+public/r/**

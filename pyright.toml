@@ -1,0 +1,47 @@
+# Shared Pyright baseline for every Python package in this monorepo. Each
+# package's pyproject.toml has a [tool.pyright] block that `extends` this file
+# and pins its own pythonVersion / include / exclude. Editing this file
+# changes every package at once; tighten individual packages by adding the
+# same key with a stricter value in their [tool.pyright] block.
+#
+# Why pyrightconfig.json was NOT used: per Pyright's official docs, a
+# "pyrightconfig.json" file is a single workspace-root config and always
+# takes precedence over [tool.pyright]. A monorepo with N Python packages
+# needs N scoped configs, which only works with [tool.pyright] in each
+# package's pyproject.toml + `extends` pointing at this shared baseline. So
+# this file is the only "dedicated Pyright config" in the repo.
+
+[tool.pyright]
+# Practical near-strict baseline. "standard" enables the diagnostics pyright
+# enables by default (argument/return-type mismatches, missing imports,
+# undefined-variable, etc.). "strict" would also fire on every untyped
+# third-party dep (textual, typer, textual-dev, pytest-asyncio, ...) which
+# would drown the report in noise until every direct dep ships py.typed.
+# Move a single package to "strict" by adding `typeCheckingMode = "strict"`
+# to its own [tool.pyright] block; the shared baseline below still applies.
+typeCheckingMode = "standard"
+
+# reportMissingTypeStubs defaults to "none" in "standard" mode anyway, but
+# stating it explicitly here so contributors know it was a deliberate choice,
+# not an oversight. Revisit when every direct dependency ships py.typed.
+reportMissingTypeStubs = false
+
+# Generated build / vendor / cache dirs every Python package in this
+# monorepo produces. Each package extends this with its own narrower
+# excludes (generated clients, vendored markdown, migrations, ...).
+# Paths resolve relative to whichever config file pyright is reading.
+exclude = [
+    "**/.venv/**",
+    "**/build/**",
+    "**/dist/**",
+    "**/__pycache__/**",
+    "**/.ruff_cache/**",
+    "**/.pytest_cache/**",
+    "**/*.egg-info/**",
+]
+
+# Tests run in their own process context and routinely have legitimate
+# dynamic imports / fixtures that pyright's standard mode treats as
+# errors. Keep these warnings so any new ones surface, but at "warning"
+# severity so they don't gate CI.
+reportMissingModuleSource = "warning"

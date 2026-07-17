@@ -17,7 +17,6 @@ from app.modules.datastore.services.files.path_resolver import PathResolver
 from app.modules.datastore.services.files.projection import FileProjection
 from app.modules.datastore.services.files.storage_phase import (
     FileStoragePhase,
-    _PathDeletionCleanup,
     _UpdatePlan,
 )
 

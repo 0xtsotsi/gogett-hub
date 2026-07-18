@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,40 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    environment: str = Field(
+        default="development",
+        validation_alias=AliasChoices(
+            "LEMMA_ENVIRONMENT", "AGENTBOX_ENVIRONMENT", "ENVIRONMENT"
+        ),
+    )
+    release_sha: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LEMMA_RELEASE_SHA", "RELEASE_SHA"),
+    )
+    observability_enabled: bool = False
+    otel_sdk_disabled: bool = False
+    otel_service_name: str = "lemma-agentbox"
+    otel_service_namespace: str | None = None
+    otel_exporter_otlp_protocol: str = "grpc"
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_exporter_otlp_headers: str | None = None
+    otel_exporter_otlp_traces_endpoint: str | None = None
+    otel_exporter_otlp_metrics_endpoint: str | None = None
+    otel_exporter_otlp_logs_endpoint: str | None = None
+    otel_exporter_otlp_traces_protocol: str | None = None
+    otel_exporter_otlp_metrics_protocol: str | None = None
+    otel_exporter_otlp_logs_protocol: str | None = None
+    otel_exporter_otlp_traces_headers: str | None = None
+    otel_exporter_otlp_metrics_headers: str | None = None
+    otel_exporter_otlp_logs_headers: str | None = None
+    otel_traces_exporter: str = "otlp"
+    otel_metrics_exporter: str = "none"
+    otel_logs_exporter: str = "none"
+    otel_signals: str | None = None
+    otel_traces_sampler: str = "parentbased_traceidratio"
+    otel_traces_sampler_arg: float = Field(default=0.05, ge=0.0, le=1.0)
+    otel_metric_export_interval: int = Field(default=60000, ge=1000)
 
     agentbox_api_key: str
     agentbox_api_url: str

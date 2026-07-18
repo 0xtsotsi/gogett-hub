@@ -262,9 +262,7 @@ class AppService:
         embed bridge or conversation padding), and deployed as the app's bundle.
         """
         for issue in lint_app_html(artifact.content):
-            logger.warning(
-                "app_html_lint", app=name, pod_id=str(pod_id), issue=issue
-            )
+            logger.debug('apps.app_service.app_html_lint.diagnostic', pod_id=str(pod_id))
         document = wrap_html_fragment(artifact.content, title=name, embed=False)
         entity_data: dict = {
             "pod_id": pod_id,

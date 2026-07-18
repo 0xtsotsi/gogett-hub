@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import inspect
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
@@ -49,7 +48,14 @@ from agentbox.state_store.models import (
 from agentbox.state_store.protocol import AsyncStateStore
 
 
-logger = logging.getLogger(__name__)
+from agentbox.observability import (
+    DependencyIncident,
+    create_background_task,
+    create_inherited_task,
+    get_logger,
+)
+
+logger = get_logger(__name__)
 _OUTCOME_UNKNOWN_CODES = {
     "provider_create_outcome_unknown",
     "provider_cleanup_outcome_unknown",
@@ -74,6 +80,24 @@ class SandboxLifecycleManager:
         self.owner = owner
         self._reconcile_lock = asyncio.Lock()
         self._failure_tasks: dict[str, asyncio.Task[None]] = {}
+        self.last_reconcile_succeeded_at: float | None = None
+        self.last_reconcile_failed_at: float | None = None
+
+    def record_reconciliation_success(self) -> None:
+        self.last_reconcile_succeeded_at = time.monotonic()
+
+    def record_reconciliation_failure(self) -> None:
+        self.last_reconcile_failed_at = time.monotonic()
+
+    def reconciliation_is_fresh(self) -> bool:
+        succeeded = self.last_reconcile_succeeded_at
+        if succeeded is None:
+            return False
+        failed = self.last_reconcile_failed_at
+        if failed is not None and failed >= succeeded:
+            return False
+        max_age = max(5.0, settings.agentbox_reconcile_interval_seconds * 2.5)
+        return (time.monotonic() - succeeded) <= max_age
 
     @staticmethod
     def _status_from_record(record: SandboxRecord) -> SandboxInternalStatus:
@@ -307,11 +331,12 @@ class SandboxLifecycleManager:
         task = self._failure_tasks.get(sandbox_id)
         if task is not None and not task.done():
             return
-        task = asyncio.create_task(
+        task = create_background_task(
             self._repair_degraded_generation(
                 sandbox_id,
                 record.observed_generation,
-            )
+            ),
+            name=f"repair-sandbox-{sandbox_id}",
         )
         self._failure_tasks[sandbox_id] = task
         task.add_done_callback(
@@ -328,11 +353,7 @@ class SandboxLifecycleManager:
             return
         error = task.exception()
         if error is not None:
-            logger.error(
-                "agentbox_route_repair_task_failed sandbox_id=%s error=%s",
-                sandbox_id,
-                error,
-            )
+            logger.error("agentbox.route_repair.failed", sandbox_id=sandbox_id)
 
     async def _repair_degraded_generation(
         self,
@@ -446,7 +467,10 @@ class SandboxLifecycleManager:
             )
 
         owner_task = asyncio.current_task()
-        renewal = asyncio.create_task(self._renew_claim(claim, owner_task))
+        renewal = create_inherited_task(
+            self._renew_claim(claim, owner_task),
+            name=f"renew-claim-{claim.sandbox_id}",
+        )
         try:
             yield claim
         finally:
@@ -475,9 +499,9 @@ class SandboxLifecycleManager:
             )
             if renewed is None:
                 logger.error(
-                    "agentbox_lifecycle_claim_lost sandbox_id=%s operation=%s",
-                    claim.sandbox_id,
-                    claim.operation,
+                    "agentbox.lifecycle.claim_lost",
+                    sandbox_id=claim.sandbox_id,
+                    operation=claim.operation,
                 )
                 # Continuing after the durable claim expires permits a second
                 # manager to mutate the same sandbox. Cancellation is our
@@ -826,7 +850,7 @@ class SandboxLifecycleManager:
                 # exact purge succeeds. Never release this fence merely because
                 # a later state-store write or bootstrap step failed.
                 generation_create_started = True
-                create_task = asyncio.create_task(
+                create_task = create_inherited_task(
                     self.provider.create_generation(
                         sandbox_id,
                         durable_request,
@@ -834,7 +858,7 @@ class SandboxLifecycleManager:
                     )
                 )
             else:
-                create_task = asyncio.create_task(
+                create_task = create_inherited_task(
                     self.provider.create(sandbox_id, durable_request)
                 )
         cancelled: asyncio.CancelledError | None = None
@@ -1224,9 +1248,10 @@ class SandboxLifecycleManager:
         try:
             await self._release_compute_if_present(sandbox_id)
         except Exception:
-            logger.exception(
-                "agentbox_failed_ensure_cleanup_unknown sandbox_id=%s",
-                sandbox_id,
+            logger.error(
+                "agentbox.cleanup.failed",
+                sandbox_id=sandbox_id,
+                exc_info=True,
             )
             return
         if allocation is not None:
@@ -1471,12 +1496,10 @@ class SandboxLifecycleManager:
                         current.sandbox_id,
                         current.provider_id,
                     )
-                except (ProviderError, HTTPException) as exc:
-                    logger.warning(
-                        "agentbox_background_provider_lease_renewal_failed "
-                        "sandbox_id=%s error=%s",
-                        record.sandbox_id,
-                        exc,
+                except (ProviderError, HTTPException):
+                    logger.debug(
+                        "agentbox.lifecycle_manager.background_provider_lease_renewal_sandbox.diagnostic",
+                        sandbox_id=record.sandbox_id,
                     )
                 finally:
                     await self.store.release_activity_lease(
@@ -1857,9 +1880,8 @@ class SandboxLifecycleManager:
                 except ProviderError as exc:
                     if exc.code in {"lifecycle_busy", "sandbox_not_found"}:
                         logger.debug(
-                            "AgentBox reconciliation skipped busy lifecycle; "
-                            "sandbox_id=%s",
-                            record.sandbox_id,
+                            "agentbox.lifecycle_manager.reconciliation_skipped_busy_lifecycle_sandbox.observed",
+                            sandbox_id=record.sandbox_id,
                         )
                         continue
                     if exc.retryable or exc.code in _OUTCOME_UNKNOWN_CODES:
@@ -1867,11 +1889,10 @@ class SandboxLifecycleManager:
                         # remains durably fenced, but it must not keep the
                         # manager from serving every other sandbox. A later
                         # periodic pass retries this record.
-                        logger.warning(
-                            "AgentBox reconciliation deferred retryable provider "
-                            "outcome; sandbox_id=%s code=%s",
-                            record.sandbox_id,
-                            exc.code,
+                        logger.debug(
+                            "agentbox.lifecycle_manager.reconciliation_deferred_retryable_provider_outcome.diagnostic",
+                            sandbox_id=record.sandbox_id,
+                            error_code=exc.code,
                         )
                         continue
                     raise
@@ -1985,9 +2006,14 @@ class SandboxLifecycleManager:
 
 
 async def reconciliation_loop(manager: SandboxLifecycleManager) -> None:
+    incident = DependencyIncident("agentbox.reconciliation", logger=logger)
     while True:
         await asyncio.sleep(settings.agentbox_reconcile_interval_seconds)
         try:
             await manager.reconcile()
-        except Exception:
-            logger.exception("AgentBox reconciliation pass failed")
+        except Exception as exc:
+            manager.record_reconciliation_failure()
+            incident.record_failure(exc)
+        else:
+            manager.record_reconciliation_success()
+            incident.record_success()

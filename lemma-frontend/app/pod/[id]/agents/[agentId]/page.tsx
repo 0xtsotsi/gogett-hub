@@ -29,6 +29,8 @@ import { usePodAutomation } from '@/lib/hooks/use-pod-automation';
 import { Agent, UpdateAgentData } from '@/lib/types';
 import { formatAgentName } from '@/lib/utils/agents';
 import { SURFACE_PLATFORM_META, getSurfacePlatformKey } from '@/lib/utils/surfaces';
+import { playSoundFeedback } from '@/lib/feedback/sound-feedback';
+import { requestConversationStageNavigation } from '@/lib/assistant/conversation-presentation';
 
 type AgentDetailMode = 'overview' | 'edit';
 
@@ -144,6 +146,7 @@ export default function AgentDetailPage({
             await updateAgentAsync({ podId, agentName, data: payload });
             lastSavedHashRef.current = payloadHash;
             setHasUnsavedChanges(false);
+            playSoundFeedback('action-success');
         } catch (error) {
             console.error('Failed to save agent:', error);
             toast.error(error instanceof Error ? error.message : 'Failed to save agent. Please try again.');
@@ -226,7 +229,8 @@ export default function AgentDetailPage({
         const text = message.trim();
         const params = new URLSearchParams({ agent: displayName });
         if (text) params.set('assistantMessage', text);
-        router.push(`/pod/${podId}/conversations/new?${params.toString()}`);
+        const href = `/pod/${podId}/conversations/new?${params.toString()}`;
+        if (!requestConversationStageNavigation(href)) router.push(href);
     };
 
     return (

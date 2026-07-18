@@ -1,14 +1,17 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Maximize2, PanelRightClose } from '@/components/ui/icons';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
     buildConversationStageEmbedHref,
     buildConversationStandaloneResourceHref,
+    resolveConversationStageNavigationHref,
 } from '@/lib/assistant/conversation-presentation';
+import { playSoundFeedback } from '@/lib/feedback/sound-feedback';
 
 function decodeLabel(value: string | null | undefined): string {
     if (!value) return '';
@@ -37,16 +40,33 @@ function presentationTitle(resourceHref: string): string {
 }
 
 export function ConversationPresentationStage({
+    podId,
     resourceHref,
     onClose,
     children,
 }: {
+    podId: string;
     resourceHref: string;
     onClose: () => void;
     children: ReactNode;
 }) {
+    const router = useRouter();
+    const iframeRef = useRef<HTMLIFrameElement | null>(null);
     const embedHref = buildConversationStageEmbedHref(resourceHref);
     const standaloneHref = buildConversationStandaloneResourceHref(resourceHref);
+
+    useEffect(() => {
+        const handleMessage = (event: MessageEvent) => {
+            if (event.origin !== window.location.origin) return;
+            if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
+
+            const nextHref = resolveConversationStageNavigationHref(event.data, podId);
+            if (nextHref) router.push(nextHref);
+        };
+
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, [podId, router]);
 
     if (!embedHref || !standaloneHref) return children;
 
@@ -88,11 +108,14 @@ export function ConversationPresentationStage({
                 <div className="relative min-h-0 flex-1 overflow-hidden">
                     <iframe
                         key={embedHref}
+                        ref={iframeRef}
                         src={embedHref}
                         title={title}
                         className="absolute inset-0 block h-full min-h-0 w-full border-0 bg-[var(--pod-main-bg)]"
                         allow="clipboard-read; clipboard-write; fullscreen"
                         referrerPolicy="strict-origin-when-cross-origin"
+                        onLoad={() => playSoundFeedback('agent-open')}
+                        onError={() => playSoundFeedback('load-failure')}
                     />
                 </div>
             </section>

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import anyio
 from collections.abc import AsyncGenerator, Iterable
 from uuid import UUID
 
@@ -17,16 +16,21 @@ from app.core.authorization.scope import pod_context_scope
 from app.core.domain.errors import BadRequestError
 from app.core.infrastructure.db.uow_factory import UnitOfWorkFactory
 from app.core.log.log import get_logger
+from app.modules.agent.api.controllers.conversation_streaming import (
+    load_authorized_agent_run,
+    start_and_stream_run,
+    terminal_run_chunk,
+)
 from app.modules.agent.api.controllers.shared import (
     ChannelServiceDep,
     conversation_channel,
-    encode_stream_chunk,
     iter_subscription,
 )
 from app.modules.agent.api.dependencies import (
     ConversationServiceDep,
 )
 from app.modules.agent.api.schemas import (
+    AgentRunStartResponse,
     ApprovalDecisionResponse,
     ConversationListResponse,
     ConversationResponse,
@@ -38,11 +42,9 @@ from app.modules.agent.api.schemas import (
     UpdateConversationRequest,
     UserApprovalListResponse,
 )
-from app.modules.agent.domain.errors import (
-    AgentNotFoundError,
-    ConversationNotFoundError,
-)
+from app.modules.agent.domain.errors import AgentNotFoundError, ConversationNotFoundError
 from app.modules.agent.domain.value_objects import (
+    AgentRunStartResult,
     ConversationAgentSelection,
     ConversationStatus,
     ConversationType,
@@ -52,9 +54,12 @@ from app.modules.agent.infrastructure.repositories import (
     AgentRepository,
     ConversationRepository,
 )
+from app.modules.agent.services.conversation_retry_service import (
+    ConversationRetryService,
+)
 from app.modules.agent.services.conversation_service import ConversationService
 from app.composition.authorization import create_authorization_service
-from app.composition.agent_usage import build_usage_service, UsageLimitExceededError
+from app.composition.agent_usage import build_usage_service
 
 logger = get_logger(__name__)
 
@@ -66,6 +71,16 @@ router = APIRouter(
 
 def _build_conversation_service(uow) -> ConversationService:
     return ConversationService(
+        uow=uow,
+        conversation_repository=ConversationRepository(uow),
+        agent_repository=AgentRepository(uow),
+        authorization_service=create_authorization_service(uow),
+        usage_service=build_usage_service(uow),
+    )
+
+
+def _build_conversation_retry_service(uow) -> ConversationRetryService:
+    return ConversationRetryService(
         uow=uow,
         conversation_repository=ConversationRepository(uow),
         agent_repository=AgentRepository(uow),
@@ -392,61 +407,60 @@ async def send_message(
     # dependencies (and their pooled connection) alive for the whole SSE stream,
     # which pins one DB connection per in-flight stream. Here the connection is
     # released the moment add_user_message_and_start_run commits, before streaming.
-    async def close_subscription(
-        exc_type=None,
-        exc=None,
-        traceback=None,
-    ) -> None:
-        try:
-            with anyio.CancelScope(shield=True):
-                await subscription.__aexit__(exc_type, exc, traceback)
-        except Exception:
-            return
-
-    subscription = channel_service.subscribe([conversation_channel(conversation_id)])
-    iterator = await subscription.__aenter__()
-    try:
+    async def start_run() -> AgentRunStartResult:
         async with pod_context_scope(
             uow_factory, request=request, user_id=user.id, pod_id=pod_id
         ) as scope:
             service = _build_conversation_service(scope.uow)
-            result = await service.add_user_message_and_start_run(
+            return await service.add_user_message_and_start_run(
                 conversation_id=conversation_id,
                 user_id=user.id,
                 content=data.content,
                 pod_id=pod_id,
                 message_metadata=data.metadata,
             )
-    except (AgentNotFoundError, ConversationNotFoundError) as exc:
-        await close_subscription(type(exc), exc, exc.__traceback__)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
-    except UsageLimitExceededError as exc:
-        await close_subscription(type(exc), exc, exc.__traceback__)
-        raise
-    except BaseException as exc:
-        await close_subscription(type(exc), exc, exc.__traceback__)
-        raise
 
-    async def event_generator() -> AsyncGenerator[str, None]:
-        try:
-            async for chunk in iter_subscription(iterator, result.agent_run_id):
-                yield chunk
-        except Exception:
-            logger.error(
-                "agent.conversation_controller.agent_realtime_subscription.failed",
-                conversation_id=str(conversation_id),
-                agent_run_id=str(result.agent_run_id),
-                exc_info=True,
-            )
-            yield encode_stream_chunk(
-                event_type="error",
-                data="Realtime stream interrupted. Reconnect to continue.",
-                agent_run_id=result.agent_run_id,
-            )
-        finally:
-            await close_subscription()
+    return await start_and_stream_run(
+        channel_service=channel_service,
+        conversation_id=conversation_id,
+        start_run=start_run,
+    )
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@router.post(
+    "/{conversation_id}/retry",
+    response_model=AgentRunStartResponse,
+    operation_id="agent.conversation.retry",
+    summary="Retry Failed Pod Conversation Run",
+    description=(
+        "Start a new run from the latest failed run's persisted conversation "
+        "history without appending a duplicate user message. Retry is allowed "
+        "only when the failed run produced no assistant, tool, or system activity. "
+        "Attach to the returned run with the conversation stream endpoint."
+    ),
+    responses={
+        404: {"description": "Conversation was not found or is not visible"},
+        409: {"description": "The latest run is not safely retryable"},
+        429: {"description": "The account usage limit was exceeded"},
+    },
+)
+async def retry_failed_run(
+    pod_id: UUID,
+    conversation_id: UUID,
+    user: CurrentUser,
+    request: Request,
+    uow_factory: UnitOfWorkFactory = Depends(get_uow_factory),
+) -> AgentRunStartResponse:
+    async with pod_context_scope(
+        uow_factory, request=request, user_id=user.id, pod_id=pod_id
+    ) as scope:
+        service = _build_conversation_retry_service(scope.uow)
+        result = await service.retry_failed_run(
+            conversation_id=conversation_id,
+            user_id=user.id,
+            pod_id=pod_id,
+        )
+    return AgentRunStartResponse.model_validate(result)
 
 
 @router.get(
@@ -458,7 +472,7 @@ async def send_message(
         "Subscribe to Server-Sent Events for an existing pod-scoped "
         "conversation. The stream closes immediately when the conversation "
         "has no active run. Optionally filter to a specific internal run id "
-        "for reconnects."
+        "for reconnects; terminal runs replay their persisted terminal event."
     ),
 )
 async def stream_conversation(
@@ -483,6 +497,14 @@ async def stream_conversation(
                 user_id=user.id,
                 pod_id=pod_id,
             )
+            if agent_run_id is not None:
+                await load_authorized_agent_run(
+                    service,
+                    conversation_id=conversation_id,
+                    agent_run_id=agent_run_id,
+                    user_id=user.id,
+                    pod_id=pod_id,
+                )
     except (AgentNotFoundError, ConversationNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
 
@@ -494,19 +516,30 @@ async def stream_conversation(
                 uow_factory, request=request, user_id=user.id, pod_id=pod_id
             ) as scope:
                 service = _build_conversation_service(scope.uow)
-                active_run = await service.get_active_agent_run(
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    pod_id=pod_id,
+                target_run = (
+                    await load_authorized_agent_run(
+                        service,
+                        conversation_id=conversation_id,
+                        agent_run_id=agent_run_id,
+                        user_id=user.id,
+                        pod_id=pod_id,
+                    )
+                    if agent_run_id is not None
+                    else await service.get_active_agent_run(
+                        conversation_id=conversation_id,
+                        user_id=user.id,
+                        pod_id=pod_id,
+                    )
                 )
-            if active_run is None:
+            if target_run is None:
                 return
 
-            stream_agent_run_id = agent_run_id or active_run.id
-            if agent_run_id is not None and agent_run_id != active_run.id:
+            terminal_chunk = terminal_run_chunk(target_run)
+            if terminal_chunk is not None:
+                yield terminal_chunk
                 return
 
-            async for chunk in iter_subscription(iterator, stream_agent_run_id):
+            async for chunk in iter_subscription(iterator, target_run.id):
                 yield chunk
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

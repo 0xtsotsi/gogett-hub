@@ -8,10 +8,12 @@ function setup() {
     limit: 20,
     next_page_token: null,
   }));
-  const http = { request } as unknown as HttpClient;
+  const stream = vi.fn(async () => new ReadableStream<Uint8Array>());
+  const http = { request, stream } as unknown as HttpClient;
   return {
     conversations: new ConversationsNamespace(http, () => "pod-1"),
     request,
+    stream,
   };
 }
 
@@ -69,6 +71,29 @@ describe("ConversationsNamespace.list", () => {
       expect.objectContaining({
         params: expect.objectContaining({ agent_name: "POD_DEFAULT" }),
       }),
+    );
+  });
+
+  it("starts a failed-run retry and returns the run identity", async () => {
+    const { conversations, request } = setup();
+
+    await conversations.retryFailedRun("conversation-1");
+
+    expect(request).toHaveBeenCalledWith(
+      "POST",
+      "/pods/pod-1/conversations/conversation-1/retry",
+      expect.objectContaining({ signal: undefined }),
+    );
+  });
+
+  it("filters a resumed stream to the requested run", async () => {
+    const { conversations, stream } = setup();
+
+    await conversations.resumeStream("conversation-1", { agent_run_id: "run-1" });
+
+    expect(stream).toHaveBeenCalledWith(
+      "/pods/pod-1/conversations/conversation-1/stream",
+      expect.objectContaining({ params: { agent_run_id: "run-1" } }),
     );
   });
 });

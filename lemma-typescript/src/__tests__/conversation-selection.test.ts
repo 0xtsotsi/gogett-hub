@@ -58,6 +58,17 @@ function fakeClient(items: Conversation[]) {
       controller.close();
     },
   }));
+  const retryFailedRun = vi.fn(async () => ({
+    conversation_id: "failed",
+    agent_run_id: "retry-run-1",
+    started_new_run: true,
+  }));
+  const resumeStream = vi.fn(async () => new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"type":"completed"}\n\n'));
+      controller.close();
+    },
+  }));
   const listModels = vi.fn(async () => ({ items: [] }));
 
   const client = {
@@ -74,13 +85,14 @@ function fakeClient(items: Conversation[]) {
         list: vi.fn(async () => ({ items: [], limit: 100, next_page_token: null })),
       },
       sendMessageStream,
-      resumeStream: vi.fn(),
+      retryFailedRun,
+      resumeStream,
       stopRun: vi.fn(),
       update: vi.fn(),
     },
   } as unknown as LemmaClient;
 
-  return { client, create, get, list, listModels, sendMessageStream };
+  return { client, create, get, list, listModels, resumeStream, retryFailedRun, sendMessageStream };
 }
 
 async function render(element: ReturnType<typeof createElement>) {
@@ -282,5 +294,121 @@ describe("explicit conversation selection", () => {
     expect(create).toHaveBeenCalledOnce();
     expect(sendMessageStream).toHaveBeenCalledOnce();
     expect(controller.get().openedConversationId).toBe("created");
+  });
+
+  it("retries a failed run without appending a duplicate user message", async () => {
+    const failedConversation = {
+      ...conversation("failed", "2026-07-19T12:00:00.000Z"),
+      last_run_status: "FAILED",
+      last_run_error: "User daemon is not connected",
+      last_run_retryable: true,
+    } as Conversation;
+    const { client, resumeStream, retryFailedRun, sendMessageStream } = fakeClient([
+      failedConversation,
+    ]);
+    retryFailedRun.mockImplementationOnce(async () => {
+      failedConversation.status = "RUNNING" as Conversation["status"];
+      failedConversation.last_run_status = "RUNNING" as Conversation["last_run_status"];
+      failedConversation.last_run_error = null;
+      failedConversation.last_run_retryable = false;
+      return {
+        conversation_id: failedConversation.id,
+        agent_run_id: "retry-run-1",
+        started_new_run: true,
+      };
+    });
+    const encoder = new TextEncoder();
+    sendMessageStream.mockImplementationOnce(async () => new ReadableStream<Uint8Array>({
+      start(streamController) {
+        streamController.enqueue(encoder.encode(
+          'data: {"type":"error","data":{"message":"User daemon is not connected"}}\n\n',
+        ));
+        streamController.close();
+      },
+    }));
+    const controller = captureHookResult<UseAssistantControllerResult>();
+
+    function Harness() {
+      controller.set(useAssistantController({
+        client,
+        podId: "pod-1",
+        autoLoadMessages: false,
+      }));
+      return null;
+    }
+
+    await render(createElement(Harness));
+    await settle();
+    await act(async () => controller.get().openConversation("failed"));
+    await act(async () => controller.get().sendMessage("finish the report"));
+
+    expect(controller.get().error).toBe("User daemon is not connected");
+    expect(controller.get().canRetryFailedMessage).toBe(true);
+    expect(controller.get().messages.filter((message) => message.role === "user")).toHaveLength(1);
+
+    await act(async () => controller.get().retryFailedMessage());
+
+    expect(retryFailedRun).toHaveBeenCalledOnce();
+    expect(resumeStream).toHaveBeenCalledWith(
+      "failed",
+      expect.objectContaining({ agent_run_id: "retry-run-1" }),
+    );
+    expect(sendMessageStream).toHaveBeenCalledOnce();
+    expect(controller.get().messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(controller.get().canRetryFailedMessage).toBe(false);
+    expect(controller.get().error).toBeNull();
+  });
+
+  it("restores a partial failure banner without enabling retry", async () => {
+    const partialFailure = {
+      ...conversation("partial", "2026-07-19T12:00:00.000Z"),
+      last_run_status: "FAILED",
+      last_run_error: "Tool execution failed",
+      last_run_retryable: false,
+    } as Conversation;
+    const { client } = fakeClient([partialFailure]);
+    const controller = captureHookResult<UseAssistantControllerResult>();
+
+    function Harness() {
+      controller.set(useAssistantController({
+        client,
+        podId: "pod-1",
+        autoLoadMessages: false,
+      }));
+      return null;
+    }
+
+    await render(createElement(Harness));
+    await settle();
+    await act(async () => controller.get().openConversation("partial"));
+    await settle();
+
+    expect(controller.get().error).toBe("Tool execution failed");
+    expect(controller.get().canRetryFailedMessage).toBe(false);
+  });
+
+  it("does not enable retry for a generic transport failure", async () => {
+    const { client, sendMessageStream } = fakeClient([
+      conversation("waiting", "2026-07-19T12:00:00.000Z"),
+    ]);
+    sendMessageStream.mockRejectedValueOnce(new Error("Network unavailable"));
+    const controller = captureHookResult<UseAssistantControllerResult>();
+
+    function Harness() {
+      controller.set(useAssistantController({
+        client,
+        podId: "pod-1",
+        autoLoadMessages: false,
+      }));
+      return null;
+    }
+
+    await render(createElement(Harness));
+    await settle();
+    await act(async () => controller.get().openConversation("waiting"));
+    await act(async () => controller.get().sendMessage("hello"));
+
+    expect(controller.get().error).toBe("Network unavailable");
+    expect(controller.get().canRetryFailedMessage).toBe(false);
   });
 });

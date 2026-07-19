@@ -126,6 +126,7 @@ export interface UseAssistantSessionResult {
     pageToken?: string;
   }) => Promise<CursorPage<ConversationMessage>>;
   sendMessage: (content: string, options?: SendAssistantMessageOptions) => Promise<Conversation>;
+  retryFailedRun: (conversationId?: string | null) => Promise<Conversation>;
   resume: (conversationId?: string | null | ResumeAssistantOptions) => Promise<void>;
   resumeIfRunning: (conversationId?: string | null) => Promise<boolean>;
   stop: (conversationId?: string | null) => Promise<void>;
@@ -607,11 +608,13 @@ export function useAssistantSession(options: UseAssistantSessionOptions): UseAss
     stream,
     controller,
     streamConversationId,
+    agentRunId,
     syncAfterStream,
   }: {
     stream: ReadableStream<Uint8Array>;
     controller: AbortController;
     streamConversationId?: string | null;
+    agentRunId?: string | null;
     syncAfterStream?: boolean;
   }): Promise<void> => {
     setIsStreaming(true);
@@ -718,12 +721,14 @@ export function useAssistantSession(options: UseAssistantSessionOptions): UseAss
               const newStream = await scopedClient.conversations.resumeStream(syncConversationId, {
                 pod_id: scope.podId ?? undefined,
                 signal: controller.signal,
+                agent_run_id: agentRunId,
               });
               streamReconnectCountRef.current = 0;
               return await consumeRef.current({
                 stream: newStream,
                 controller,
                 streamConversationId: syncConversationId,
+                agentRunId,
                 syncAfterStream,
               });
             } catch (reconnectError) {
@@ -731,7 +736,10 @@ export function useAssistantSession(options: UseAssistantSessionOptions): UseAss
               streamFailure = reconnectError;
             }
           }
-        } else if (syncConversationId && (syncAfterStream ?? syncOnTurnEnd)) {
+        } else if (
+          syncConversationId
+          && (sawTerminalStatus || (syncAfterStream ?? syncOnTurnEnd))
+        ) {
           await refreshConversation(syncConversationId);
           await loadMessages({ conversationId: syncConversationId, limit: 100 });
         }
@@ -826,6 +834,67 @@ export function useAssistantSession(options: UseAssistantSessionOptions): UseAss
       throw normalized;
     }
   }, [cancel, client, consume, defaultScope, ensureConversation, setConversationStatus]);
+
+  const retryFailedRun = useCallback(async (
+    explicitConversationId?: string | null,
+  ): Promise<Conversation> => {
+    setError(null);
+    try {
+      const resolvedConversation = await ensureConversation(explicitConversationId);
+      const resolvedConversationId = requireConversationId(resolvedConversation.id);
+
+      cancel();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const scope = normalizeScope(client, defaultScope);
+      const scopedClient = applyPodScope(client, scope.podId);
+      const start = await scopedClient.conversations.retryFailedRun(
+        resolvedConversationId,
+        {
+          pod_id: scope.podId ?? undefined,
+          signal: controller.signal,
+        },
+      );
+
+      setConversationStatus("RUNNING");
+      let stream: ReadableStream<Uint8Array>;
+      try {
+        stream = await scopedClient.conversations.resumeStream(
+          resolvedConversationId,
+          {
+            pod_id: scope.podId ?? undefined,
+            signal: controller.signal,
+            agent_run_id: start.agent_run_id,
+          },
+        );
+      } catch (attachError) {
+        const latestConversation = await refreshConversation(resolvedConversationId);
+        if (!latestConversation) throw attachError;
+        stream = await scopedClient.conversations.resumeStream(
+          resolvedConversationId,
+          {
+            pod_id: scope.podId ?? undefined,
+            signal: controller.signal,
+            agent_run_id: start.agent_run_id,
+          },
+        );
+      }
+      await consume({
+        stream,
+        controller,
+        streamConversationId: resolvedConversationId,
+        agentRunId: start.agent_run_id,
+        syncAfterStream: syncOnTurnEnd,
+      });
+      return resolvedConversation;
+    } catch (retryError) {
+      const normalized = normalizeError(retryError, "Failed to retry agent message.");
+      setError(normalized);
+      onErrorRef.current?.(retryError);
+      throw normalized;
+    }
+  }, [cancel, client, consume, defaultScope, ensureConversation, refreshConversation, setConversationStatus, syncOnTurnEnd]);
 
   const resume = useCallback(async (input?: string | null | ResumeAssistantOptions): Promise<void> => {
     setError(null);
@@ -1015,6 +1084,7 @@ export function useAssistantSession(options: UseAssistantSessionOptions): UseAss
     refreshConversation,
     loadMessages,
     sendMessage,
+    retryFailedRun,
     resume,
     resumeIfRunning,
     stop,

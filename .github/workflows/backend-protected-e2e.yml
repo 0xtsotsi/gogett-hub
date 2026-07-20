@@ -18,8 +18,8 @@ jobs:
       run:
         working-directory: lemma-backend
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.1
         with:
           enable-cache: true
       - name: Sync protected dependencies
@@ -42,7 +42,7 @@ jobs:
           LEMMA_E2E_MODEL_TIMEOUT_SECONDS: "120"
       - name: Publish commit-linked evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.4.3
         with:
           name: backend-protected-e2e-${{ github.sha }}
           path: lemma-backend/protected-e2e.xml

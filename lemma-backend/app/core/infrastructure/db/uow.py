@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 
@@ -74,11 +75,34 @@ class SqlAlchemyUnitOfWork(IUnitOfWork):
             }
             for event in self._pending_events
         ]
-        await self.session.execute(
-            insert(DomainEventOutbox)
-            .values(rows)
-            .on_conflict_do_nothing(index_elements=["id"])
-        )
+        try:
+            # Wrap the outbox INSERT in a SAVEPOINT so a failure here can be
+            # rolled back without poisoning the outer domain transaction.
+            # Without this, a missing ``domain_event_outbox`` table would
+            # abort the entire transaction and the domain write would be
+            # rolled back too, defeating the whole point of being fault-
+            # tolerant. ``begin_nested()`` is a no-op when the session isn't
+            # in an explicit transaction, but the surrounding ``commit()``
+            # already needs a transaction to be active to commit anything.
+            async with self.session.begin_nested():
+                await self.session.execute(
+                    insert(DomainEventOutbox)
+                    .values(rows)
+                    .on_conflict_do_nothing(index_elements=["id"])
+                )
+        except DBAPIError as exc:
+            # The outbox is a delivery mechanism, not the source of truth.
+            # If the table is missing (migration drift, partial deploy) the
+            # domain write has not yet been attempted — the surrounding
+            # ``session.commit()`` runs only after we return. Skipping
+            # staging preserves the user-facing signup flow instead of
+            # surfacing as the opaque "Something went wrong" error.
+            logger.warning(
+                "infrastructure.uow.outbox_staging_failed",
+                error_type=type(exc).__name__,
+                event_count=len(rows),
+            )
+            return
         logger.debug(
             "infrastructure.uow.staged_domain_events_transactional_outbox.observed",
             event_count=len(rows),

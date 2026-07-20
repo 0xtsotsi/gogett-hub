@@ -25,13 +25,27 @@ class UserService:
         self.organization_repository = organization_repository
         self.user_cache = user_cache
 
-    async def create_user(self, entity: UserEntity) -> UserEntity:
+    async def create_user(
+        self,
+        entity: UserEntity,
+        *,
+        emit_signed_up_event: bool = True,
+    ) -> UserEntity:
+        """Persist a new local ``UserEntity``.
+
+        ``emit_signed_up_event`` defaults to True so first-time signups emit
+        the welcome email event. Self-healing paths (e.g. a signin that finds
+        the local row missing) set this to False: the SuperTokens user is
+        not new, so re-emitting the signup event would send a duplicate
+        welcome email and is otherwise misleading.
+        """
         entity.email = normalize_identity_email(entity.email)
         existing = await self.user_repository.get_by_email(entity.email)
         if existing:
             raise UserConflictError("User with this email already exists")
 
-        entity.mark_signed_up()
+        if emit_signed_up_event:
+            entity.mark_signed_up()
         user = await self.user_repository.create(entity)
         if self.user_cache is not None:
             await self.user_cache.set(user)

@@ -243,6 +243,158 @@ async def test_emailpassword_signup_and_signin_normalize_email(
 
 
 @pytest.mark.asyncio
+async def test_signin_recovers_missing_local_user_row(
+    async_client: AsyncClient,
+    signup_user,
+    db_session,
+):
+    """Regression: a user with a SuperTokens session but no ``users`` row
+    must be able to sign in and reach ``/users/me``. Otherwise every authed
+    call 404s with USER_NOT_FOUND and the user is locked out."""
+    from sqlalchemy import delete, select
+
+    from app.modules.identity.infrastructure.models import User
+
+    user = await signup_user()
+    headers = _auth_headers(user["token"])
+
+    # Sanity check: signup already wired up the local row + session.
+    me_before = await async_client.get("/users/me", headers=headers)
+    assert me_before.status_code == 200, me_before.text
+
+    # Simulate the bug: the SuperTokens user still has a valid session, but
+    # the local ``users`` row is gone (failed signup override, manual data
+    # surgery, etc.).
+    result = await db_session.execute(delete(User).where(User.id == user["id"]))
+    await db_session.commit()
+    assert result.rowcount == 1
+
+    # Flush the Redis user cache too — the read path is cache → DB, and a
+    # leftover snapshot would mask the missing-row bug for the TTL window.
+    from app.modules.identity.infrastructure.user_cache import get_user_cache
+
+    await get_user_cache().invalidate(user["id"])
+
+    me_after_delete = await async_client.get("/users/me", headers=headers)
+    assert me_after_delete.status_code == 404, me_after_delete.text
+
+    # A fresh signin must transparently rebuild the local row so the user is
+    # not stuck on a 404 USER_NOT_FOUND loop.
+    async_client.cookies.clear()
+    signin_response = await async_client.post(
+        "/st/auth/signin",
+        json=_emailpassword_payload(user["email"], user["password"]),
+    )
+    assert signin_response.status_code == 200, signin_response.text
+    signin_payload = signin_response.json()
+    assert signin_payload["status"] == "OK", signin_payload
+    assert signin_payload["user"]["id"] == user["id"]
+
+    signin_token = signin_response.headers.get(
+        "st-access-token"
+    ) or signin_response.cookies.get("sAccessToken")
+    assert signin_token
+
+    me_after_signin = await async_client.get(
+        "/users/me",
+        headers=_auth_headers(signin_token),
+    )
+    assert me_after_signin.status_code == 200, me_after_signin.text
+    assert me_after_signin.json()["email"] == user["email"]
+
+    rebuilt = await db_session.execute(select(User).where(User.id == user["id"]))
+    assert rebuilt.scalar_one().email == user["email"]
+
+
+@pytest.mark.asyncio
+async def test_signin_recovers_when_concurrent_recovery_creates_the_row(
+    async_client: AsyncClient,
+    signup_user,
+    db_session,
+    monkeypatch,
+):
+    """If two requests race the recovery path, the second must not 5xx —
+    the recovery helper must treat ``UserConflictError`` as success."""
+    from sqlalchemy import delete
+
+    from app.modules.identity.domain.errors import UserConflictError
+    from app.modules.identity.infrastructure.models import User
+    from app.modules.identity.infrastructure.supertokens_auth import (
+        user_entity_sync,
+    )
+
+    user = await signup_user()
+
+    await db_session.execute(delete(User).where(User.id == user["id"]))
+    await db_session.commit()
+    from app.modules.identity.infrastructure.user_cache import get_user_cache
+
+    await get_user_cache().invalidate(user["id"])
+
+    # Simulate the race: the second ``ensure_user_entity`` call sees no row
+    # by id, then tries to create, then collides with a concurrent insert that
+    # another request just committed. The helper must catch that
+    # ``UserConflictError`` and read the row back instead of letting it bubble
+    # up as a 500.
+    repo = user_entity_sync.UserRepository
+    real_get = repo.get
+
+    call_count = {"n": 0}
+
+    async def racing_get(self, user_id):
+        # The first call sees nothing (normal recovery path).
+        # The second call also sees nothing — we want it to race to create_user
+        # and hit the conflict branch.
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None
+        # Second call: pretend the row doesn't exist yet, but ensure_user_entity
+        # will get a UserConflictError when it tries to create it.
+        return await real_get(self, user_id)
+
+    monkeypatch.setattr(repo, "get", racing_get)
+
+    create_call_count = {"n": 0}
+    real_create = user_entity_sync.UserService.create_user
+
+    async def maybe_conflict_create(self, entity, *, emit_signed_up_event=True):
+        # Recovery path always passes emit_signed_up_event=False. Verify that.
+        assert emit_signed_up_event is False, (
+            "Recovery must not re-emit the signup event"
+        )
+        create_call_count["n"] += 1
+        if create_call_count["n"] == 1:
+            return await real_create(self, entity, emit_signed_up_event=False)
+        # Second call: simulate losing the race by raising the conflict.
+        raise UserConflictError("raced")
+
+    monkeypatch.setattr(
+        user_entity_sync.UserService, "create_user", maybe_conflict_create
+    )
+
+    from uuid import UUID
+
+    user_uuid = UUID(user["id"])
+
+    first = await user_entity_sync.ensure_user_entity(
+        user_id=user_uuid,
+        email=user["email"],
+        is_verified=True,
+    )
+    assert first is not None
+    assert first.id == user_uuid
+
+    # Second call must succeed despite the simulated race.
+    second = await user_entity_sync.ensure_user_entity(
+        user_id=user_uuid,
+        email=user["email"],
+        is_verified=True,
+    )
+    assert second is not None
+    assert second.id == user_uuid
+
+
+@pytest.mark.asyncio
 async def test_org_domain_slug_availability_and_suggestions(
     async_client: AsyncClient,
     signup_user,

@@ -75,6 +75,14 @@ def override_thirdparty_functions(
         if not isinstance(result, SignInUpOkResult) or not result.user.emails:
             return result
 
+        # ``is_verified`` here means "did the upstream provider already
+        # verify the email?" — for returning sign-ins we read it off the
+        # user the override just resolved. The third-party override's
+        # parameter ``is_verified`` is what SuperTokens passed in; the
+        # resolved user's login methods reflect what was stored.
+        login_methods = result.user.login_methods
+        is_verified = bool(login_methods[0].verified) if login_methods else False
+
         # The original behaviour: first-time third-party signins (no existing
         # session, brand-new recipe user, single login method) eagerly create
         # the local row. Everything else — returning third-party users, or

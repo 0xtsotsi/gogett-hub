@@ -72,8 +72,14 @@ async def ensure_user_entity(
             return existing
 
         # The SuperTokens user id may have been re-mapped to a different local
-        # row (e.g. after a backup restore that preserved emails but minted new
-        # ids). Catch that here so we don't blindly create a duplicate.
+        # row (e.g. after a backup restore that preserved emails but minted
+        # new ids). Reusing the existing row by-email would leave the authed
+        # session broken — every subsequent endpoint loads by the session's
+        # ``user_id`` and would 404 with ``USER_NOT_FOUND``. We can't safely
+        # ``UPDATE users SET id`` because of foreign keys elsewhere, and we
+        # can't ``DELETE`` the old row without losing memberships. Surface
+        # this loudly so ops can run the documented backfill: a later
+        # ``INSERT`` here would also collide with the unique-email index.
         by_email = await user_repository.get_by_email(normalized_email)
         if by_email is not None:
             if by_email.id != user_id:
@@ -86,9 +92,12 @@ async def ensure_user_entity(
 
         # Drop any stale cache entry before rebuilding: the read path goes
         # cache → DB, and a leftover snapshot would hide the recovery for as
-        # long as the TTL lasts.
+        # long as the TTL lasts. ``get_user_cache`` may legitimately return
+        # ``None`` (caching disabled, certain test environments); guard so
+        # we never raise during a recovery that should always succeed.
         user_cache = get_user_cache()
-        await user_cache.invalidate(user_id)
+        if user_cache is not None:
+            await user_cache.invalidate(user_id)
 
         try:
             user = await user_service.create_user(
@@ -112,7 +121,8 @@ async def ensure_user_entity(
             user = await user_repository.get_by_email(normalized_email)
             if user is None:
                 raise
-            await user_cache.invalidate(user.id)
+            if user_cache is not None:
+                await user_cache.invalidate(user.id)
             logger.info(
                 "identity.supertokens_auth.ensure_user_entity.recovered_via_concurrent_insert",
                 user_id=str(user_id),
@@ -123,7 +133,8 @@ async def ensure_user_entity(
         # ``create_user`` re-populates the cache via the service layer; force
         # an invalidate just in case that path was skipped, so the next read
         # goes through the freshly-written row.
-        await user_cache.invalidate(user.id)
+        if user_cache is not None:
+            await user_cache.invalidate(user.id)
         logger.info(
             "identity.supertokens_auth.ensure_user_entity.recovered",
             user_id=str(user_id),

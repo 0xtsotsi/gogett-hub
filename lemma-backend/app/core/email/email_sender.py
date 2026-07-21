@@ -6,6 +6,7 @@ import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
+import os
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
@@ -19,6 +20,9 @@ logger = get_logger(__name__)
 class EmailNotConfiguredError(Exception):
     """Raised when SMTP email is not properly configured."""
 
+
+class EmailDeliveryError(Exception):
+    """Raised when a security-sensitive email could not be delivered to SMTP."""
 
 
 class EmailSender:
@@ -55,8 +59,50 @@ class EmailSender:
         self.from_email = from_email
         self.from_name = from_name
         self.use_tls = use_tls
+        if transport == "filesystem" and settings.environment == "production":
+            raise EmailNotConfiguredError(
+                "Filesystem email transport is not permitted in production"
+            )
         self.transport = transport
         self.output_dir = output_dir
+
+    def _write_filesystem_email(
+        self,
+        *,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str],
+    ) -> None:
+        """Write a local/test mail spool with owner-only filesystem access."""
+        output_dir = Path(self.output_dir)
+        output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        output_dir.chmod(0o700)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        safe_email = to_email.replace("@", "_at_").replace("/", "_")
+        email_file = output_dir / f"{timestamp}_{safe_email}.json"
+        descriptor = os.open(
+            email_file,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            # This opt-in local/test spool intentionally contains reset and
+            # verification links so realistic auth flows can be exercised. It
+            # is forbidden in production and confined to 0700/0600 paths.
+            json.dump(  # lgtm[py/clear-text-storage-sensitive-data]
+                {
+                    "to_email": to_email,
+                    "from_email": self.from_email,
+                    "from_name": self.from_name,
+                    "subject": subject,
+                    "text_content": text_content,
+                    "html_content": html_content,
+                    "transport": self.transport,
+                },
+                output,
+                indent=2,
+            )
 
     @classmethod
     def from_settings(cls) -> EmailSender:
@@ -106,6 +152,8 @@ class EmailSender:
         subject: str,
         html_content: str,
         text_content: Optional[str] = None,
+        *,
+        raise_on_failure: bool = False,
     ) -> bool:
         """
         Send an email asynchronously.
@@ -121,25 +169,11 @@ class EmailSender:
         """
         try:
             if self.transport == "filesystem":
-                output_dir = Path(self.output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-                safe_email = to_email.replace("@", "_at_").replace("/", "_")
-                email_file = output_dir / f"{timestamp}_{safe_email}.json"
-                email_file.write_text(
-                    json.dumps(
-                        {
-                            "to_email": to_email,
-                            "from_email": self.from_email,
-                            "from_name": self.from_name,
-                            "subject": subject,
-                            "text_content": text_content,
-                            "html_content": html_content,
-                            "transport": self.transport,
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
+                self._write_filesystem_email(
+                    to_email=to_email,
+                    subject=subject,
+                    html_content=html_content,
+                    text_content=text_content,
                 )
                 return True
 
@@ -159,16 +193,21 @@ class EmailSender:
             msg.attach(html_part)
 
             # Send email asynchronously
+            implicit_tls = self.use_tls and self.smtp_port == 465
             async with aiosmtplib.SMTP(
                 hostname=self.smtp_host,
                 port=self.smtp_port,
-                use_tls=self.use_tls,
+                use_tls=implicit_tls,
+                start_tls=self.use_tls and not implicit_tls,
+                timeout=15,
             ) as server:
                 await server.login(self.smtp_user, self.smtp_password)
                 await server.send_message(msg)
 
             return True
 
-        except Exception:
+        except Exception as exc:
             logger.error("email.send.failed", exc_info=True)
+            if raise_on_failure:
+                raise EmailDeliveryError("SMTP delivery failed") from exc
             return False

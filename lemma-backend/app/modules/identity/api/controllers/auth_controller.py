@@ -1,16 +1,37 @@
 from __future__ import annotations
 
+from typing import Literal
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
+from supertokens_python.recipe.session.asyncio import (
+    get_session,
+)
+
 from app.core.config import settings
+from app.core.infrastructure.db.session import async_session_maker
 from app.modules.identity.api.dependencies import PodMembershipDep, UserServiceDep
 from app.modules.identity.domain.user_entities import UserEntity
 from app.modules.identity.infrastructure.supertokens_auth.helpers import (
     create_cli_session_tokens,
+    create_browser_session,
     create_desktop_browser_session,
     refresh_cli_session_tokens,
+)
+from app.modules.identity.infrastructure.models.user_models import User
+from app.modules.identity.services.auth_abuse import (
+    RateLimitExceeded,
+    client_ip,
+    get_auth_abuse_store,
+)
+from app.modules.identity.services.telegram_oidc import (
+    TelegramOIDCError,
+    TelegramPurpose,
+    get_telegram_oidc_service,
+    safe_return_to,
 )
 from app.modules.identity.services.desktop_auth_handoff import (
     DesktopAuthCompletionConflict,
@@ -91,6 +112,140 @@ class DesktopAuthSessionResponse(BaseModel):
     status: str = "complete"
     user_id: UUID
     session_handle: str
+
+
+class AltchaChallengeResponse(BaseModel):
+    enabled: bool
+    algorithm: str | None = None
+    challenge: str | None = None
+    maxnumber: int | None = None
+    salt: str | None = None
+    signature: str | None = None
+
+
+class AltchaConfigResponse(BaseModel):
+    enabled: bool
+
+
+class TelegramConfigResponse(BaseModel):
+    enabled: bool
+
+
+async def _enforce_telegram_rate_limit(request: Request) -> None:
+    store = get_auth_abuse_store()
+    ip_hash = store.digest(client_ip(request.scope))
+    try:
+        await store.enforce(
+            f"identity:rate:telegram:ip:{ip_hash}", limit=10, window_seconds=900
+        )
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many Telegram login requests",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
+
+
+def _telegram_error_redirect(return_to: str | None, code: str) -> RedirectResponse:
+    destination = safe_return_to(return_to)
+    separator = "&" if "?" in destination else "?"
+    return RedirectResponse(
+        f"{destination}{separator}{urlencode({'telegram_error': code})}",
+        status_code=303,
+    )
+
+
+@router.get(
+    "/altcha/config",
+    include_in_schema=False,
+    response_model=AltchaConfigResponse,
+)
+async def altcha_config() -> AltchaConfigResponse:
+    return AltchaConfigResponse(enabled=settings.auth_altcha_enabled)
+
+
+@router.get(
+    "/altcha/challenge",
+    include_in_schema=False,
+    response_model=AltchaChallengeResponse,
+)
+async def create_altcha_challenge(
+    purpose: Literal["signup", "verification", "password-reset", "signin-risk"],
+) -> AltchaChallengeResponse:
+    try:
+        challenge = await get_auth_abuse_store().issue_altcha(purpose)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return AltchaChallengeResponse.model_validate(challenge)
+
+
+@router.get(
+    "/telegram/config",
+    include_in_schema=False,
+    response_model=TelegramConfigResponse,
+)
+async def telegram_config() -> TelegramConfigResponse:
+    return TelegramConfigResponse(enabled=settings.is_telegram_oidc_configured())
+
+
+@router.get("/telegram/start", include_in_schema=False)
+async def telegram_start(
+    request: Request,
+    purpose: TelegramPurpose = Query(default="signin"),
+    return_to: str | None = Query(default=None, max_length=2048),
+) -> RedirectResponse:
+    await _enforce_telegram_rate_limit(request)
+    user_id: UUID | None = None
+    if purpose == "verify_mobile":
+        session = await get_session(request, session_required=True)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        user_id = UUID(session.get_user_id())
+        async with async_session_maker() as db_session:
+            user = await db_session.get(User, user_id)
+        if user is None or not user.is_active or not user.is_verified:
+            raise HTTPException(status_code=403, detail="Verified account required")
+    try:
+        authorization_url = await get_telegram_oidc_service().start(
+            purpose=purpose,
+            return_to=return_to,
+            user_id=user_id,
+        )
+    except TelegramOIDCError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return RedirectResponse(authorization_url, status_code=303)
+
+
+@router.get("/telegram/callback", include_in_schema=False)
+async def telegram_callback(
+    request: Request,
+    state: str = Query(min_length=20, max_length=256),
+    code: str | None = Query(default=None, min_length=1, max_length=4096),
+    error: str | None = Query(default=None, max_length=255),
+) -> RedirectResponse:
+    await _enforce_telegram_rate_limit(request)
+    service = get_telegram_oidc_service()
+    transaction = None
+    try:
+        transaction = await service.consume(state)
+        if error or not code:
+            raise TelegramOIDCError("Telegram login was cancelled")
+        claims = await service.exchange_and_validate(code=code, transaction=transaction)
+        phone = str(claims["phone_number"])
+        if transaction.purpose == "signin":
+            user = await service.find_signin_user(phone)
+            await create_browser_session(request, user.id, client="telegram-oidc")
+        else:
+            session = await get_session(request, session_required=False)
+            if session is None or session.get_user_id() != transaction.user_id:
+                raise TelegramOIDCError("The Lemma session changed during verification")
+            await service.verify_mobile(UUID(transaction.user_id), phone)  # type: ignore[arg-type]
+        return RedirectResponse(transaction.return_to, status_code=303)
+    except TelegramOIDCError:
+        return _telegram_error_redirect(
+            transaction.return_to if transaction is not None else None,
+            "unable_to_authenticate",
+        )
 
 
 @router.get(

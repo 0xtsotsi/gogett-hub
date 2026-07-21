@@ -26,30 +26,30 @@ class UserService:
         self.user_cache = user_cache
 
     async def create_user(
-        self,
-        entity: UserEntity,
-        *,
-        emit_signed_up_event: bool = True,
+        self, entity: UserEntity, *, send_welcome: bool = True
     ) -> UserEntity:
-        """Persist a new local ``UserEntity``.
-
-        ``emit_signed_up_event`` defaults to True so first-time signups emit
-        the welcome email event. Self-healing paths (e.g. a signin that finds
-        the local row missing) set this to False: the SuperTokens user is
-        not new, so re-emitting the signup event would send a duplicate
-        welcome email and is otherwise misleading.
-        """
         entity.email = normalize_identity_email(entity.email)
         existing = await self.user_repository.get_by_email(entity.email)
         if existing:
             raise UserConflictError("User with this email already exists")
 
-        if emit_signed_up_event:
+        if send_welcome:
             entity.mark_signed_up()
         user = await self.user_repository.create(entity)
         if self.user_cache is not None:
             await self.user_cache.set(user)
         return user
+
+    async def mark_email_verified(self, user_id: UUID) -> UserEntity:
+        """Persist the first verified transition and its one-time welcome event."""
+        user = await self.user_repository.get(user_id)
+        if not user:
+            raise UserNotFoundError()
+        user.mark_email_verified()
+        updated = await self.user_repository.update(user)
+        if self.user_cache is not None:
+            await self.user_cache.set(updated)
+        return updated
 
     async def get_user(self, user_id: UUID) -> UserEntity:
         if self.user_cache is not None:
@@ -73,7 +73,7 @@ class UserService:
         clean 409 before the DB partial-unique indexes raise an IntegrityError.
         """
         digits = normalize_mobile_digits(entity.mobile_number)
-        if digits:
+        if digits and entity.mobile_verified_at is not None:
             owner_id = await self.user_repository.get_id_by_mobile_digits(digits)
             if owner_id is not None and owner_id != entity.id:
                 raise UserConflictError("This mobile number is already in use")

@@ -21,6 +21,7 @@ from app.modules.agent.infrastructure.daemon_hub import (
     AgentRuntimeDaemonHub,
     agent_runtime_daemon_hub,
 )
+from app.modules.agent.tests.unit.test_agent_runtime_redis import _ScriptedRedis
 from app.modules.agent.infrastructure.harnesses.daemon import (
     DEFAULT_DAEMON_EVENT_TIMEOUT_SECONDS,
     DEFAULT_RECONNECT_GRACE_SECONDS,
@@ -843,6 +844,86 @@ async def test_start_run_raises_when_daemon_at_capacity(monkeypatch):
 
     # The capacity check short-circuits before any dispatch attempt.
     assert websocket.sent == []
+
+    await hub.unregister(daemon_id=daemon_id, user_id=daemon_user_id)
+
+
+@pytest.mark.asyncio
+async def test_start_run_enforces_per_user_cap_on_shared_profile(monkeypatch):
+    """ORGANIZATION-scoped (shared) daemon profiles cap each user's concurrent
+    runs independently. Two users at the limit each must still be allowed;
+    a third run from the same user must fail fast with a clear message.
+    """
+    import app.modules.agent.infrastructure.daemon_hub as daemon_hub_module
+
+    async def _no_capacity(*, daemon_id):
+        del daemon_id
+        return None
+
+    monkeypatch.setattr(daemon_hub_module, "get_daemon_capacity", _no_capacity)
+
+    # Use the real scripted fake Redis so the slot reservation is exercised
+    # end-to-end. limit = 2 keeps the test fast. The helpers read
+    # ``get_agent_runtime_redis`` from the agent_runtime_redis module, so patch
+    # it there.
+    import app.modules.agent.infrastructure.agent_runtime_redis as redis_module
+
+    fake_redis = _ScriptedRedis()
+    monkeypatch.setattr(redis_module, "get_agent_runtime_redis", lambda: fake_redis)
+
+    from app.modules.agent.config import agent_settings as _agent_settings
+
+    monkeypatch.setattr(_agent_settings, "shared_daemon_per_user_concurrent_runs", 2)
+
+    hub = AgentRuntimeDaemonHub()
+    daemon_id = uuid4()
+    daemon_user_id = uuid4()
+    websocket = _FakeWebSocket()
+    await hub.register(daemon_id=daemon_id, user_id=daemon_user_id, websocket=websocket)  # type: ignore[arg-type]
+
+    # Two reservations for the daemon's owner succeed.
+    await hub.start_run(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        agent_run_id=uuid4(),
+        payload={},
+        is_shared_profile=True,
+    )
+    await hub.start_run(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        agent_run_id=uuid4(),
+        payload={},
+        is_shared_profile=True,
+    )
+    # Third is rejected before any dispatch.
+    with pytest.raises(RuntimeError, match=r"already have 2 concurrent runs"):
+        await hub.start_run(
+            daemon_id=daemon_id,
+            user_id=daemon_user_id,
+            agent_run_id=uuid4(),
+            payload={},
+            is_shared_profile=True,
+        )
+
+    # PERSONAL profile path ignores the per-user cap (no reservation attempt).
+    await hub.start_run(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        agent_run_id=uuid4(),
+        payload={},
+        is_shared_profile=False,
+    )
+    # finish_run must release exactly one slot, leaving one reserved.
+    await hub.finish_run(daemon_id=daemon_id, user_id=daemon_user_id, agent_run_id=uuid4())
+    # Now the owner can start another shared run again.
+    await hub.start_run(
+        daemon_id=daemon_id,
+        user_id=daemon_user_id,
+        agent_run_id=uuid4(),
+        payload={},
+        is_shared_profile=True,
+    )
 
     await hub.unregister(daemon_id=daemon_id, user_id=daemon_user_id)
 

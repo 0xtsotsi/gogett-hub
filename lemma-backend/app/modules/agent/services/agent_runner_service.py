@@ -337,6 +337,14 @@ class AgentRunnerService:
                 extra={
                     "runtime_profile": runtime_profile_snapshot,
                     "runtime_credentials": runtime_credentials,
+                    # Surface the profile scope to the daemon harness so the
+                    # shared-daemon per-user concurrent-run cap is enforced
+                    # only for ORGANIZATION profiles.
+                    "runtime_profile_scope": (
+                        runtime_profile_snapshot.get("scope")
+                        if isinstance(runtime_profile_snapshot, dict)
+                        else None
+                    ),
                 },
             )
             terminal_event_seen = False

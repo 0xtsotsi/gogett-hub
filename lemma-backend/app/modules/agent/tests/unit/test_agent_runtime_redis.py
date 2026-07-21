@@ -134,3 +134,100 @@ async def test_publish_json_uses_shared_realtime_channel(monkeypatch):
     await agent_runtime_redis.publish_json("agent-runtime:test", {"ready": True})
 
     assert published == [("agent-runtime:test", {"ready": True})]
+
+
+class _ScriptedRedis:
+    """Minimal Redis stub that emulates the slot-reservation Lua script.
+
+    The real implementation atomically compares current count to limit and
+    increments, all-or-nothing. Replicate that here so the test exercises the
+    same ``try_reserve_user_run_slot`` / ``release_user_run_slot`` contract
+    without spinning up a Redis container.
+    """
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def eval(
+        self,
+        script: str,
+        num_keys: int,
+        key: str,
+        *args: object,
+    ) -> int:
+        assert num_keys == 1
+        current = int(self.values.get(key, "0"))
+        if "INCR" in script:
+            limit = int(args[0])  # type: ignore[arg-type]
+            if current >= limit:
+                return -1
+            new = current + 1
+            self.values[key] = str(new)
+            return new
+        if current <= 0:
+            self.values.pop(key, None)
+            return 0
+        new = current - 1
+        self.values[key] = str(new)
+        return new
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+
+@pytest.mark.asyncio
+async def test_user_run_slot_respects_per_user_limit():
+    agent_runtime_redis._redis_client = _ScriptedRedis()  # type: ignore[assignment]
+    daemon_id = uuid4()
+    user_id = uuid4()
+
+    assert await agent_runtime_redis.try_reserve_user_run_slot(
+        daemon_id=daemon_id, user_id=user_id, per_user_limit=2
+    )
+    assert await agent_runtime_redis.try_reserve_user_run_slot(
+        daemon_id=daemon_id, user_id=user_id, per_user_limit=2
+    )
+    # Third reservation by the same user must fail atomically.
+    assert not await agent_runtime_redis.try_reserve_user_run_slot(
+        daemon_id=daemon_id, user_id=user_id, per_user_limit=2
+    )
+    # A different user on the same daemon has their own bucket.
+    other_user_id = uuid4()
+    assert await agent_runtime_redis.try_reserve_user_run_slot(
+        daemon_id=daemon_id, user_id=other_user_id, per_user_limit=2
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_run_slot_release_is_clamped_at_zero():
+    agent_runtime_redis._redis_client = _ScriptedRedis()  # type: ignore[assignment]
+    daemon_id = uuid4()
+    user_id = uuid4()
+
+    await agent_runtime_redis.release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
+    await agent_runtime_redis.release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
+    assert await agent_runtime_redis.get_user_run_count(
+        daemon_id=daemon_id, user_id=user_id
+    ) == 0
+
+    # Reserve 2, release 3 -> counter clamped at 0, not -1.
+    for _ in range(2):
+        assert await agent_runtime_redis.try_reserve_user_run_slot(
+            daemon_id=daemon_id, user_id=user_id, per_user_limit=5
+        )
+    await agent_runtime_redis.release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
+    await agent_runtime_redis.release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
+    await agent_runtime_redis.release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
+    assert await agent_runtime_redis.get_user_run_count(
+        daemon_id=daemon_id, user_id=user_id
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_user_run_slot_zero_limit_always_rejects():
+    agent_runtime_redis._redis_client = _ScriptedRedis()  # type: ignore[assignment]
+    daemon_id = uuid4()
+    user_id = uuid4()
+    assert not await agent_runtime_redis.try_reserve_user_run_slot(
+        daemon_id=daemon_id, user_id=user_id, per_user_limit=0
+    )

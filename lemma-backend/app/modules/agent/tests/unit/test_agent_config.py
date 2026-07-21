@@ -23,6 +23,11 @@ EXPECTED = [
     ("conversation_title_model", "CONVERSATION_TITLE_MODEL", None),
     ("daemon_ws_ping_stale_after_seconds", "DAEMON_WS_PING_STALE_AFTER_SECONDS", 90.0),
     ("daemon_reconnect_grace_seconds", "DAEMON_RECONNECT_GRACE_SECONDS", 120.0),
+    (
+        "shared_daemon_per_user_concurrent_runs",
+        "SHARED_DAEMON_PER_USER_CONCURRENT_RUNS",
+        2,
+    ),
     ("widget_url_expiry_seconds", "WIDGET_URL_EXPIRY_SECONDS", 1800),
     ("speech_provider", "SPEECH_PROVIDER", "auto"),
     ("deepgram_api_key", "DEEPGRAM_API_KEY", None),

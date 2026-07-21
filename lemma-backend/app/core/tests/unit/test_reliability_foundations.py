@@ -72,6 +72,22 @@ class _FakeSession:
     async def rollback(self) -> None:
         self.rolled_back = True
 
+    def begin_nested(self):
+        # The real SqlAlchemy async session exposes ``begin_nested()`` as an
+        # async context manager (SAVEPOINT). The production UoW uses it as
+        # a no-op-tolerant guard around the outbox insert; in the unit test
+        # we have no real database so a no-op ``nullcontext``-shaped object
+        # is sufficient. See
+        # ``app/core/infrastructure/db/uow.py::commit`` for the call site.
+        class _NoOpNested:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        return _NoOpNested()
+
 
 @pytest.mark.asyncio
 async def test_uow_stages_event_before_database_commit() -> None:

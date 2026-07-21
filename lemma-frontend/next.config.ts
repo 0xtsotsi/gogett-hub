@@ -14,6 +14,14 @@ const devOrigins: string[] = [
   "127-0-0-1.sslip.io",
   "127-0-0-2.sslip.io",
   "127-0-0-3.sslip.io",
+  // Public hostnames routed via the local Cloudflare Tunnel so the
+  // HMR WebSocket's Origin header (https://gogett.webrnds.com) doesn't get
+  // rejected by `blockCrossSiteDEV` -- otherwise the upgrade returns 403
+  // and the browser surfaces a "Failed to fetch" / "Unexpected response
+  // code: 502" on the webpack-hmr socket.
+  "gogett.webrnds.com",
+  "webrnds.com",
+  "www.webrnds.com",
 ];
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;

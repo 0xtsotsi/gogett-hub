@@ -26,6 +26,13 @@ class UserEntity(AggregateRoot):
     deactivated_at: datetime | None = None
     deactivation_reason: str | None = None
 
+    # Local password credential hash (scrypt). Optional because some
+    # users are OAuth-only / passkey-only (their identity is owned by
+    # SuperTokens or the upstream IdP). The ``LocalPasswordAuthService``
+    # paths reject ``password_unset`` cleanly so OAuth-only users do not
+    # see an unexpected authentication error from the local service.
+    password_hash: str | None = None
+
     first_name: str | None = None
     last_name: str | None = None
     mobile_number: str | None = None

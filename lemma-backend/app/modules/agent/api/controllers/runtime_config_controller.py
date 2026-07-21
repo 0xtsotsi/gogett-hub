@@ -315,6 +315,11 @@ async def daemon_websocket(websocket: WebSocket) -> None:
                 harness_catalog=_json_object(payload.get("harness_catalog")),
             )
             daemon_id = daemon.id
+            # Snapshot the connected_at this socket wrote so the disconnect
+            # path below can prove it owns the row -- otherwise a stale
+            # finally-block from an older socket would clobber the ONLINE
+            # status a newer socket just took over with.
+            connected_at = daemon.connected_at
         await agent_runtime_daemon_hub.register(
             daemon_id=daemon_id,
             user_id=user_id,
@@ -396,6 +401,7 @@ async def daemon_websocket(websocket: WebSocket) -> None:
                 await AgentRuntimeDaemonRepository(uow).mark_offline(
                     daemon_id=daemon_id,
                     user_id=user_id,
+                    connected_at=connected_at,
                 )
 
 

@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # When set, sandbox containers join this container network instead of
     # publishing host ports; the manager reaches them by container-name DNS.
     agentbox_network: str | None = None
-    agentbox_add_host_gateway: bool = True
+    agentbox_add_host_gateway: bool = False
     agentbox_platform: str | None = None
     agentbox_memory_limit: str | None = None
     agentbox_cpu_limit: str | None = None

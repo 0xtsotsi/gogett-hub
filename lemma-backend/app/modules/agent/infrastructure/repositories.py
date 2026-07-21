@@ -89,6 +89,28 @@ class AgentRuntimeProfileRepository:
         self.encryption = encryption
 
     @staticmethod
+    def _assert_personal_visibility(rows: list[AgentRuntimeProfileModel], *, viewer_id: UUID) -> None:
+        """Reject any PERSONAL row not owned by ``viewer_id``.
+
+        Defense-in-depth: the SQL filter in :meth:`get_visible` already excludes
+        other users' PERSONAL profiles, but a future refactor that widens the
+        filter would silently leak encrypted credentials' ``availability`` to
+        non-owners. Keep this assertion as a loud failure so tests catch such
+        regressions instead of users discovering them in production.
+        """
+        leaked = [
+            row.id
+            for row in rows
+            if row.scope == RuntimeProfileScope.PERSONAL.value
+            and row.user_id != viewer_id
+        ]
+        if leaked:
+            raise RuntimeError(
+                "Runtime profile visibility filter leaked PERSONAL rows to "
+                f"non-owner user_id={viewer_id}: {leaked!r}"
+            )
+
+    @staticmethod
     def _serialize_json(value: object | None) -> dict | None:
         if value is None:
             return None
@@ -149,6 +171,14 @@ class AgentRuntimeProfileRepository:
         user_id: UUID,
         include_disabled: bool = False,
     ) -> list[AgentRuntimeProfile]:
+        # Defense-in-depth: a PERSONAL profile is only visible to its owner.
+        # The OR clause below already enforces this, but a future refactor that
+        # accidentally widens the filter (e.g. dropping the user_id predicate)
+        # would leak other members' personal profiles — including their
+        # encrypted credential availability. Add a redundant Python-side
+        # assertion so such regressions fail loudly in tests rather than
+        # silently leaking in production. SYSTEM profiles (organization_id NULL)
+        # bypass this check on purpose.
         stmt = select(AgentRuntimeProfileModel).where(
             AgentRuntimeProfileModel.organization_id == organization_id,
             (
@@ -171,7 +201,9 @@ class AgentRuntimeProfileRepository:
             AgentRuntimeProfileModel.name.asc(),
         )
         result = await self.session.execute(stmt)
-        return [self._to_entity(instance) for instance in result.scalars()]
+        rows = list(result.scalars())
+        self._assert_personal_visibility(rows, viewer_id=user_id)
+        return [self._to_entity(instance) for instance in rows]
 
     async def get_visible_by_id(
         self,
@@ -295,16 +327,42 @@ class AgentRuntimeDaemonRepository:
         *,
         daemon_id: UUID,
         user_id: UUID,
+        connected_at: datetime | None = None,
     ) -> AgentRuntimeDaemonModel | None:
-        instance = await self.get_for_user(daemon_id=daemon_id, user_id=user_id)
-        if instance is None:
-            return None
+        """Flip a daemon row to OFFLINE.
+
+        When ``connected_at`` is supplied, the UPDATE is gated on
+        ``connected_at = connected_at`` so a stale disconnect (an older
+        websocket's finally-block firing after a newer connection has already
+        taken over the same ``daemon_id``) cannot clobber the live
+        ``ONLINE`` status the newer connection just wrote. A rowcount of 0
+        means a newer connection won the race and the live row is left
+        untouched; we return ``None`` so the caller doesn't observe a phantom
+        "just went offline" result.
+        """
         now = datetime.now(timezone.utc)
-        instance.status = "OFFLINE"
-        instance.last_seen_at = now
-        instance.disconnected_at = now
+        stmt = (
+            update(AgentRuntimeDaemonModel)
+            .where(
+                AgentRuntimeDaemonModel.id == daemon_id,
+                AgentRuntimeDaemonModel.user_id == user_id,
+            )
+            .values(
+                status="OFFLINE",
+                last_seen_at=now,
+                disconnected_at=now,
+            )
+        )
+        if connected_at is not None:
+            stmt = stmt.where(AgentRuntimeDaemonModel.connected_at == connected_at)
+        result = await self.session.execute(stmt)
+        if result.rowcount == 0:
+            # No row matched: either the daemon is gone or a newer connection
+            # has already taken over. In both cases the caller should NOT see
+            # this disconnect overwrite the live status.
+            return None
         await self.session.flush()
-        return instance
+        return await self.get_for_user(daemon_id=daemon_id, user_id=user_id)
 
     async def get_for_user(
         self,

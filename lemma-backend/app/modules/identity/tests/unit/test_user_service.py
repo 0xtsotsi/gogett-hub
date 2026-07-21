@@ -54,7 +54,9 @@ async def test_create_user_raises_conflict_when_email_exists(
     user_service: UserService,
     user_repository_mock: AsyncMock,
 ):
-    user_repository_mock.get_by_email.return_value = UserEntity(email="test+user@example.com")
+    user_repository_mock.get_by_email.return_value = UserEntity(
+        email="test+user@example.com"
+    )
 
     with pytest.raises(UserConflictError):
         await user_service.create_user(UserEntity(email="test+user@example.com"))
@@ -124,6 +126,25 @@ async def test_get_user_by_email_normalizes_before_lookup(
 
     assert await user_service.get_user_by_email("Test+User@Example.COM") == user
     user_repository_mock.get_by_email.assert_awaited_once_with("test+user@example.com")
+
+
+@pytest.mark.asyncio
+async def test_create_user_skips_signup_event_when_emit_flag_false(
+    user_service: UserService,
+    user_repository_mock: AsyncMock,
+):
+    """Self-healing paths (signin/signinup when the local row is missing)
+    must not re-emit the signed-up event — that would send a duplicate
+    welcome email and is otherwise misleading."""
+    user = UserEntity(email="test+recovered@example.com")
+    user_repository_mock.get_by_email.return_value = None
+    user_repository_mock.create.return_value = user
+
+    created = await user_service.create_user(user, emit_signed_up_event=False)
+
+    assert created == user
+    create_user_arg = user_repository_mock.create.await_args.args[0]
+    assert create_user_arg.collect_events() == []
 
 
 @pytest.mark.asyncio

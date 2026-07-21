@@ -91,11 +91,19 @@ class DaemonHarness:
                 options=options,
                 prompt=_prompt_text(payload),
             )
+            # ``scope == "ORGANIZATION"`` identifies a shared (org-wide) daemon
+            # profile. Only shared profiles enforce the per-user concurrent-run
+            # cap; PERSONAL profiles already get their own daemon one-to-one.
+            # Scope is passed via ``options.extra`` so the daemon harness
+            # doesn't need to know about ConversationContext.
+            runtime_scope = options.extra.get("runtime_profile_scope") if options.extra else None
+            is_shared_profile = runtime_scope == "ORGANIZATION"
             queue = await agent_runtime_daemon_hub.start_run(
                 daemon_id=daemon_id,
                 user_id=daemon_user_id,
                 agent_run_id=agent_run_id,
                 payload=payload,
+                is_shared_profile=is_shared_profile,
             )
         except RuntimeError as exc:
             yield AgentEvent(

@@ -56,6 +56,15 @@ class AgentSettings(BaseSettings):
         default=120.0,
         description="Time allowed for a disconnected daemon to reattach an in-flight run.",
     )
+    # Per-user concurrent-run cap on ORGANIZATION-scoped (shared) daemon
+    # profiles. Prevents one noisy org member from monopolising the shared
+    # ggcoder host. 0 disables the cap (only the daemon-wide
+    # max_concurrent_runs ceiling applies).
+    shared_daemon_per_user_concurrent_runs: int = Field(
+        default=2,
+        ge=0,
+        description="Maximum concurrent agent runs one user may hold against an ORGANIZATION-scoped daemon profile.",
+    )
     local_agent_runtime_config_path: str = Field(
         default_factory=_default_local_runtime_config_path,
         description="Local file containing the persisted system agent runtime default.",

@@ -44,7 +44,21 @@ def test_ci_publishes_one_authoritative_module_wise_coverage_comment() -> None:
     assert "Publish authoritative E2E union PR comment" not in e2e_workflow
     assert "Update PR backend coverage comment" not in e2e_workflow
     assert "Update PR backend coverage comment" not in ci_workflow
-    assert e2e_workflow.count("actions/github-script@v8") == 1
+    # Pinned: every GitHub Action uses a 40-char SHA, with a ``# vMAJOR``
+    # comment (BP-SUP-002 / commit fafa88a7). The previous contract asserted
+    # the floating ``@v8`` form, but the SHA pin is the security boundary
+    # so the contract now asserts the SHA form and the trailing comment.
+    assert (
+        e2e_workflow.count("actions/github-script@")
+        == e2e_workflow.count(
+            "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0"
+        )
+        >= 1
+    ), (
+        "every actions/github-script usage must be SHA-pinned to "
+        "ed597411d8f924073f98dfc5c65a23a2325f34cd with a trailing version comment "
+        "(see BP-SUP-002 in commit fafa88a7)"
+    )
 
 
 def test_required_e2e_allows_hermetic_worker_scenarios() -> None:

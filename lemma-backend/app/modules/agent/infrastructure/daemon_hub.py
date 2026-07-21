@@ -24,9 +24,12 @@ from app.modules.agent.infrastructure.agent_runtime_redis import (
     get_daemon_capacity,
     is_daemon_online as _is_daemon_online,
     publish_json as _publish_json,
+    release_user_run_slot,
     run_event_channel as _run_event_channel,
+    try_reserve_user_run_slot,
 )
 from app.modules.agent.infrastructure.mcp import normalize_local_mcp_tool_name
+from app.modules.agent.config import agent_settings
 from app.modules.agent.domain.value_objects import (
     AgentEvent,
     AgentEventType,
@@ -234,6 +237,7 @@ class AgentRuntimeDaemonHub:
         user_id: UUID,
         agent_run_id: UUID,
         payload: JsonObject,
+        is_shared_profile: bool = False,
     ) -> asyncio.Queue[AgentEvent]:
         capacity = await get_daemon_capacity(daemon_id=daemon_id)
         if capacity is not None:
@@ -244,65 +248,97 @@ class AgentRuntimeDaemonHub:
                     f"User daemon is at capacity ({active}/{cap} runs active). "
                     "Try again shortly."
                 )
-        connection = await self._connection_for(daemon_id=daemon_id, user_id=user_id)
-        queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
-        if connection is None:
-            if not await _is_daemon_online(daemon_id=daemon_id, user_id=user_id):
-                raise RuntimeError("User daemon is not connected")
-            run_ready = asyncio.Event()
-            task = create_inherited_task(
-                self._listen_for_run_events(
-                    agent_run_id=agent_run_id,
-                    queue=queue,
-                    ready=run_ready,
-                )
-            )
-            async with self._lock:
-                self._remote_runs[agent_run_id] = _RemoteRunSubscription(
-                    agent_run_id=agent_run_id,
-                    queue=queue,
-                    task=task,
-                )
-            # Wait until the run-event subscription is live before telling the
-            # daemon to start, otherwise a fast daemon's first events can be
-            # published before this subscriber is ready and would be lost.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(run_ready.wait(), timeout=2)
-            await self._publish_daemon_command(
+        # Per-user concurrent-run cap for shared (ORGANIZATION-scoped) daemon
+        # profiles. Reserve atomically *only* once we know we'll actually
+        # dispatch -- otherwise a "daemon not connected" failure below would
+        # leak the slot for ``_USER_RUN_COUNT_TTL_SECONDS`` because the
+        # harness's caller path catches RuntimeError and returns without
+        # calling ``finish_run``. We additionally bracket dispatch in
+        # ``try/except`` so even a redis publish failure releases the slot.
+        per_user_limit = (
+            agent_settings.shared_daemon_per_user_concurrent_runs
+            if is_shared_profile
+            else 0
+        )
+        if per_user_limit > 0:
+            reserved = await try_reserve_user_run_slot(
                 daemon_id=daemon_id,
                 user_id=user_id,
-                payload={
+                per_user_limit=per_user_limit,
+            )
+            if not reserved:
+                raise RuntimeError(
+                    f"You already have {per_user_limit} concurrent runs on this "
+                    "shared daemon. Wait for one to finish before starting another."
+                )
+        connection = await self._connection_for(daemon_id=daemon_id, user_id=user_id)
+        try:
+            queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
+            if connection is None:
+                if not await _is_daemon_online(daemon_id=daemon_id, user_id=user_id):
+                    raise RuntimeError("User daemon is not connected")
+                run_ready = asyncio.Event()
+                task = create_inherited_task(
+                    self._listen_for_run_events(
+                        agent_run_id=agent_run_id,
+                        queue=queue,
+                        ready=run_ready,
+                    )
+                )
+                async with self._lock:
+                    self._remote_runs[agent_run_id] = _RemoteRunSubscription(
+                        agent_run_id=agent_run_id,
+                        queue=queue,
+                        task=task,
+                    )
+                # Wait until the run-event subscription is live before telling the
+                # daemon to start, otherwise a fast daemon's first events can be
+                # published before this subscriber is ready and would be lost.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(run_ready.wait(), timeout=2)
+                await self._publish_daemon_command(
+                    daemon_id=daemon_id,
+                    user_id=user_id,
+                    payload={
+                        "type": "run.start",
+                        "daemon_id": str(daemon_id),
+                        "user_id": str(user_id),
+                        "agent_run_id": str(agent_run_id),
+                        "payload": payload,
+                    },
+                )
+                return queue
+
+            if agent_run_id in connection.run_queues:
+                # Defense in depth: the CLI daemon itself guards against a
+                # redelivered run.start for an id it's already running, but this
+                # would otherwise silently clobber the first queue reference here
+                # too (same shape of bug) if some other caller ever double-dispatched.
+                logger.debug(
+                    'agent.daemon_hub.start_run_called_agent_run.diagnostic',
+                    daemon_id=str(daemon_id),
+                    agent_run_id=str(agent_run_id),
+                )
+                return connection.run_queues[agent_run_id]
+
+            connection.run_queues[agent_run_id] = queue
+            await self._send(
+                connection,
+                {
                     "type": "run.start",
-                    "daemon_id": str(daemon_id),
-                    "user_id": str(user_id),
                     "agent_run_id": str(agent_run_id),
                     "payload": payload,
                 },
             )
             return queue
-
-        if agent_run_id in connection.run_queues:
-            # Defense in depth: the CLI daemon itself guards against a
-            # redelivered run.start for an id it's already running, but this
-            # would otherwise silently clobber the first queue reference here
-            # too (same shape of bug) if some other caller ever double-dispatched.
-            logger.debug(
-                'agent.daemon_hub.start_run_called_agent_run.diagnostic',
-                daemon_id=str(daemon_id),
-                agent_run_id=str(agent_run_id),
-            )
-            return connection.run_queues[agent_run_id]
-
-        connection.run_queues[agent_run_id] = queue
-        await self._send(
-            connection,
-            {
-                "type": "run.start",
-                "agent_run_id": str(agent_run_id),
-                "payload": payload,
-            },
-        )
-        return queue
+        except BaseException:
+            # Release the per-user slot we just reserved; nothing else
+            # tracked it. Swallow redis errors so the original exception
+            # (the real reason dispatch failed) reaches the caller intact.
+            if per_user_limit > 0:
+                with contextlib.suppress(Exception):
+                    await release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
+            raise
 
     async def stop_run(
         self,
@@ -354,6 +390,11 @@ class AgentRuntimeDaemonHub:
             subscription.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await subscription.task
+        # Release any per-user concurrent-run slot reserved at start_run time.
+        # The release is idempotent and clamped at 0 in Redis, so calling it
+        # for a PERSONAL-profile run that never reserved is a safe no-op.
+        with contextlib.suppress(Exception):
+            await release_user_run_slot(daemon_id=daemon_id, user_id=user_id)
 
     async def handle_run_event(
         self,

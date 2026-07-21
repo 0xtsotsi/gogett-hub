@@ -12,6 +12,12 @@ from app.core.infrastructure.channels.channel_service import get_channel_service
 from app.modules.agent.domain.value_objects import JsonObject
 
 _DAEMON_CAPACITY_TTL_SECONDS = 120
+# Per-user concurrent-run counter for shared (ORGANIZATION-scoped) daemon
+# profiles. Keyed by (daemon_id, user_id) so each org member gets their own
+# independent quota slice of the daemon's max_concurrent_runs. TTL is renewed
+# on every increment so an idle user's counter drops back to 0 once they stop
+# running runs for a while, instead of leaking forever after a process crash.
+_USER_RUN_COUNT_TTL_SECONDS = 600
 _redis_client: Redis | None = None
 
 
@@ -29,6 +35,10 @@ def daemon_online_key(daemon_id: UUID) -> str:
 
 def _daemon_capacity_key(daemon_id: UUID) -> str:
     return f"agent-runtime:daemon:{daemon_id}:capacity"
+
+
+def _user_run_count_key(*, daemon_id: UUID, user_id: UUID) -> str:
+    return f"agent-runtime:daemon:{daemon_id}:user:{user_id}:active_runs"
 
 
 def get_agent_runtime_redis() -> Redis:
@@ -72,6 +82,62 @@ async def get_daemon_capacity(*, daemon_id: UUID) -> JsonObject | None:
 
 async def clear_daemon_capacity(*, daemon_id: UUID) -> None:
     await get_agent_runtime_redis().delete(_daemon_capacity_key(daemon_id))
+
+
+async def try_reserve_user_run_slot(
+    *, daemon_id: UUID, user_id: UUID, per_user_limit: int
+) -> bool:
+    """Atomically reserve a run slot for ``user_id`` against a shared daemon.
+
+    Returns ``True`` when the user's current active-run count is below
+    ``per_user_limit`` and the counter has been incremented. Returns ``False``
+    when the user is at their personal cap. Uses a Lua script so the
+    INCR-and-compare is atomic across processes (the daemon hub can run in
+    multiple workers).
+    """
+    if per_user_limit <= 0:
+        return False
+    redis = get_agent_runtime_redis()
+    key = _user_run_count_key(daemon_id=daemon_id, user_id=user_id)
+    # KEYS[1] = key, ARGV[1] = limit, ARGV[2] = ttl seconds.
+    # Returns the new counter value on success, -1 when at limit.
+    script = """
+    local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+    local limit = tonumber(ARGV[1])
+    if current >= limit then
+      return -1
+    end
+    local new = redis.call('INCR', KEYS[1])
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+    return new
+    """
+    result = await redis.eval(script, 1, key, per_user_limit, _USER_RUN_COUNT_TTL_SECONDS)
+    return int(result) != -1
+
+
+async def release_user_run_slot(*, daemon_id: UUID, user_id: UUID) -> None:
+    """Decrement the per-user run counter, clamping at 0 to avoid negative drift."""
+    redis = get_agent_runtime_redis()
+    key = _user_run_count_key(daemon_id=daemon_id, user_id=user_id)
+    script = """
+    local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+    if current <= 0 then
+      redis.call('DEL', KEYS[1])
+      return 0
+    end
+    return redis.call('DECR', KEYS[1])
+    """
+    await redis.eval(script, 1, key)
+
+
+async def get_user_run_count(*, daemon_id: UUID, user_id: UUID) -> int:
+    raw = await get_agent_runtime_redis().get(_user_run_count_key(daemon_id=daemon_id, user_id=user_id))
+    if raw is None:
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 async def publish_json(channel: str, payload: JsonObject) -> None:

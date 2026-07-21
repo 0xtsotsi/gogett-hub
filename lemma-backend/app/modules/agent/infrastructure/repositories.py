@@ -295,16 +295,42 @@ class AgentRuntimeDaemonRepository:
         *,
         daemon_id: UUID,
         user_id: UUID,
+        connected_at: datetime | None = None,
     ) -> AgentRuntimeDaemonModel | None:
-        instance = await self.get_for_user(daemon_id=daemon_id, user_id=user_id)
-        if instance is None:
-            return None
+        """Flip a daemon row to OFFLINE.
+
+        When ``connected_at`` is supplied, the UPDATE is gated on
+        ``connected_at = connected_at`` so a stale disconnect (an older
+        websocket's finally-block firing after a newer connection has already
+        taken over the same ``daemon_id``) cannot clobber the live
+        ``ONLINE`` status the newer connection just wrote. A rowcount of 0
+        means a newer connection won the race and the live row is left
+        untouched; we return ``None`` so the caller doesn't observe a phantom
+        "just went offline" result.
+        """
         now = datetime.now(timezone.utc)
-        instance.status = "OFFLINE"
-        instance.last_seen_at = now
-        instance.disconnected_at = now
+        stmt = (
+            update(AgentRuntimeDaemonModel)
+            .where(
+                AgentRuntimeDaemonModel.id == daemon_id,
+                AgentRuntimeDaemonModel.user_id == user_id,
+            )
+            .values(
+                status="OFFLINE",
+                last_seen_at=now,
+                disconnected_at=now,
+            )
+        )
+        if connected_at is not None:
+            stmt = stmt.where(AgentRuntimeDaemonModel.connected_at == connected_at)
+        result = await self.session.execute(stmt)
+        if result.rowcount == 0:
+            # No row matched: either the daemon is gone or a newer connection
+            # has already taken over. In both cases the caller should NOT see
+            # this disconnect overwrite the live status.
+            return None
         await self.session.flush()
-        return instance
+        return await self.get_for_user(daemon_id=daemon_id, user_id=user_id)
 
     async def get_for_user(
         self,
